@@ -1,6 +1,17 @@
 # 闭环状态
 
-open
+closed
+
+（2026-07-26）已完成。背景问题已消除，目标 1—6 全部达成，具备自主验证充分证据。
+
+## 闭环证据
+
+- **Publish fail-fast/新产物证据**：`eng/Publish.ps1` 对 framework-dependent 与 self-contained 各自立即捕获 `$LASTEXITCODE`；首阶段非零直接停止。每阶段先移除旧 exe，再要求本次生成的 `ProviderPriceSwitcher.App.exe` 存在、非空且写入时间不早于阶段开始；固定产物目录和 profiles 不变。
+- **隔离 fake 故障注入**：`eng/fixtures/publish/self-check.ps1` 使用临时 fake dotnet 与输出根。首阶段返回 `17` 时脚本非零、调用次数为 `1`、无第二产物；预置陈旧 exe 且 fake 返回 `0` 但不写新产物时失败；双成功时调用次数为 `2` 且两目录均有非空 exe。自检输出 `publish fixture self-check passed`，未执行真实 publish。
+- **runner 隔离与引用**：OmpConfig/OmpProcess runner 每次创建唯一临时 root，并派生 data/OMP/working root 与 run-id sentinel；OmpConfig 的合成 settings 显式指向隔离目录，备份/原子写入保持在 OMP root；OmpProcess 使用可控短生命周期 PowerShell fake 子进程，按精确 PID 跟踪、Kill/Wait/Dispose，最外层 `finally` 删除目录。两个 runner 直接使用 Infrastructure 公开类型，故保留各自唯一 Infrastructure `ProjectReference`，未新增 Core/Application 直引。
+- **canonical 验证**：使用 `eng/Verify.ps1 -Impact Behavior -Runner OmpConfig,OmpProcess`，固定 SDK `8.0.423`，完成静态依赖检查、solution `0` warning / `0` error build，并依次输出 `OMP configuration runner passed.`、`OmpProcess contract tests passed.`，退出码 `0`。
+- **安全与未执行项**：未访问真实 Provider/凭据，未启动真实 OMP，未修改真实用户 settings、`%USERPROFILE%\.omp` 或 LocalAppData，临时目录清理；未执行正式 publish、上传或发布产物替换。LSP 未配置，以源码调用图、项目引用、编译器和 canonical runner 证明调用者/引用。
+- **三问结论**：背景问题已消除；目标 1—6 全部达成；fake 首失败/陈旧/双成功、隔离 runner 行为和 canonical Verify 提供充分自主验证证据。
 
 # 背景
 

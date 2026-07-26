@@ -76,6 +76,7 @@
  try {
      if ($SkipCommands) { Fail 'SkipCommands is not supported' }
      if ($Impact -eq 'Document' -and ($Runner -or $AllRunners)) { Fail 'Document impact rejects Runner and AllRunners' }
+     if ($Runner) { $Runner = @($Runner | ForEach-Object { $_ -split ',' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) }
      if ($Impact -in @('Internal','Behavior') -and ($AllRunners -or $null -eq $Runner -or @($Runner).Count -eq 0)) { Fail "$Impact impact requires at least one Runner and rejects AllRunners" }
      if ($Impact -eq 'CrossLayer' -and (-not $AllRunners -or $Runner)) { Fail 'CrossLayer requires AllRunners and rejects Runner' }
      Stage 'static manifest and dependency checks'
