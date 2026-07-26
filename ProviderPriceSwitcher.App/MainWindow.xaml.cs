@@ -82,8 +82,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly SettingsUseCase _settingsUseCase;
     private readonly SwitchAndStartUseCase _switchAndStart;
     private readonly IUserNotificationService _notifications;
-    private readonly ISiteCredentialStore _credentialStore;
-    private readonly SiteManagementUseCase _siteManagement;
+    private readonly ISitesDialogFactory _sitesDialogFactory;
     private readonly ILogger<MainViewModel> _logger;
     private static readonly Action<ILogger, string, Exception?> LogUiFailure =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(200, "UiFailure"), "UI operation failed: {FailureKind}");
@@ -96,27 +95,10 @@ public sealed class MainViewModel : ObservableObject
     private ProviderChoice? _selectedProvider;
     private string? _selectedWorkingDirectory;
     private PricingRefreshResult? _lastResult;
-
-    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, SwitchAndStartUseCase switchAndStart, SiteManagementUseCase siteManagement, IOmpCurrentProviderQuery currentProviderQuery, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications, ILogger<MainViewModel> logger)
+    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, SwitchAndStartUseCase switchAndStart, IOmpCurrentProviderQuery currentProviderQuery, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, LocalAppSettings settings, ISitesDialogFactory sitesDialogFactory, IUserNotificationService notifications, ILogger<MainViewModel> logger)
     {
-        _pricingCheck = pricingCheck;
-        _settingsUseCase = settingsUseCase;
-        _switchAndStart = switchAndStart;
-        _siteManagement = siteManagement;
-        _currentProviderQuery = currentProviderQuery;
-        _snapshotQuery = snapshotQuery;
-        _adapterRegistry = adapterRegistry;
-        _settings = settings;
-        _notifications = notifications;
-        _credentialStore = credentialStore;
-        _logger = logger;
-        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
-        CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
-        CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
-        SwitchAndStartCommand = new AsyncCommand(SwitchAndStartAsync, HandleCommandError, () => SelectedProvider is not null && !string.IsNullOrWhiteSpace(SelectedWorkingDirectory));
-        ManageSitesCommand = new RelayCommand(ManageSites);
-        SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
-        SyncSettings();
+        _pricingCheck = pricingCheck; _settingsUseCase = settingsUseCase; _switchAndStart = switchAndStart; _currentProviderQuery = currentProviderQuery; _snapshotQuery = snapshotQuery; _adapterRegistry = adapterRegistry; _settings = settings; _sitesDialogFactory = sitesDialogFactory; _notifications = notifications; _logger = logger;
+        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError); CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null); CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null); SwitchAndStartCommand = new AsyncCommand(SwitchAndStartAsync, HandleCommandError, () => SelectedProvider is not null && !string.IsNullOrWhiteSpace(SelectedWorkingDirectory)); ManageSitesCommand = new RelayCommand(ManageSites); SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError); SyncSettings();
     }
 
     public ObservableCollection<PriceRow> Rows { get; } = [];
@@ -279,7 +261,6 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _siteManagement, _snapshotQuery, _adapterRegistry, _credentialStore, _notifications, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
     private async Task EditSettingsAsync() { var dialog = new SettingsDialog(_settings); if (dialog.ShowDialog() == true) { _settings = _settingsUseCase.Save(dialog.Settings); SyncSettings(); await ReadCurrentProviderAsync(); LoadPersistedPrices(); } }
     private void HandleCommandError(Exception exception)
     {
@@ -291,12 +272,10 @@ public sealed class MainViewModel : ObservableObject
     private void LoadProviderChoices(string? preferredProvider)
     {
         ProviderChoices.Clear();
-        foreach (var providerId in _settings.Sites.Select(x => x.ProviderId).Distinct(StringComparer.Ordinal))
-            ProviderChoices.Add(new ProviderChoice(providerId));
-        SelectedProvider = ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, preferredProvider, StringComparison.Ordinal))
-            ?? ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, CurrentProvider, StringComparison.Ordinal))
-            ?? ProviderChoices.FirstOrDefault();
+        foreach (var providerId in _settings.Sites.Select(x => x.ProviderId).Distinct(StringComparer.Ordinal)) ProviderChoices.Add(new ProviderChoice(providerId));
+        SelectedProvider = ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, preferredProvider, StringComparison.Ordinal)) ?? ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, CurrentProvider, StringComparison.Ordinal));
     }
+    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = _sitesDialogFactory.Create(_settings, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
     private void SyncSettings() { WorkingDirectories.Clear(); foreach (var item in _settings.OmpWorkingDirectories.Distinct(StringComparer.OrdinalIgnoreCase)) WorkingDirectories.Add(item); SelectedWorkingDirectory = WorkingDirectories.FirstOrDefault(x => string.Equals(x, _settings.LastOmpWorkingDirectory, StringComparison.OrdinalIgnoreCase)) ?? WorkingDirectories.FirstOrDefault(); }
 }
 

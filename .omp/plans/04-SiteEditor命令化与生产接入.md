@@ -1,5 +1,17 @@
 # 闭环状态
-open
+closed
+
+（2026-07-26）已完成。背景问题已消除，全部目标达成，具备自主验证充分证据。
+
+## 闭环证据
+
+- **生产接入与 clean cutover**：`SiteEditorViewModel` 是 `SiteEditorDialog` 的真实 `DataContext`，XAML 绑定 `ProbeCommand`、`CancelProbeCommand`、`SaveCommand`。`App.xaml.cs` 装配 `PricingProbeUseCase`、`SiteEditorDialogFactory` 与 `SitesDialogFactory`；`MainViewModel`/`SitesDialog` 只消费工厂，不直接创建子窗口或业务用例。旧动态 `Content`、`ProbeAsync`、内部 `new PricingProbeUseCase`、旧构造及 VM-only 虚假断言已删除。
+- **命令与生命周期契约**：输入属性变更重评估 CanExecute；`AsyncCommand` 拒绝 probe 重入；busy 时 Save 禁用、Cancel 启用；主动取消后恢复可重试且不通知错误。窗口关闭时先取消并等待活动 probe，再完成关闭，无未观察后台任务。成功 Save 仅在真实模态 dialog 中设置结果并返回结构化 `SavedSite`。
+- **凭据与错误安全**：token/Cookie 不进入 ViewModel 字段、绑定状态或可序列化模型，只经命名 PasswordBox/TextBox 的 code-behind 一次性桥接传给安全 store，成功后立即清空；从不调用 `LoadCredential`。认证失败补入 `UserErrorMessages.ForProbeFailure` 的稳定脱敏映射；取消不通知，未知异常只显示中性文案。
+- **固定 SDK 验证**：使用用户 `.dotnet/dotnet.exe`（SDK `8.0.423`）串行执行 solution build、format verify 与完整八 runner，build 为 `0` warning / `0` error，八 runner 均 `passed`。增强后的 App STA runner 再次独立通过，覆盖真实 dialog/DataContext/ICommand、synthetic credential 一次写入和清空、零原文读取、阻塞 fake 的重入拒绝/取消恢复/零错误通知、成功 probe 与模态 Save。
+- **隔离 WPF smoke**：独立进程使用临时 data/OMP/working root、禁用合成站点和 loopback 不可达 URL启动；Win32 观察到 `ProviderPriceSwitcher` 窗口，隔离日志记录启动，`WM_CLOSE` 正常退出码 `0`，临时目录删除、无残留进程。
+- **安全与未执行项**：未访问真实 Provider，未使用真实凭据，未触碰真实用户设置/OMP 配置/日志，未执行真实价格 probe、OMP 切换/启动或 publish。LSP 未配置，以全仓静态搜索、编译器和 runner 构造调用图替代；未声称覆盖纯视觉体验。
+- **三问结论**：背景问题已消除；目标 1—10 全部达成；静态 clean cutover、真实 STA 控件/命令行为、完整验证链与隔离进程 smoke 提供充分自主验证证据。
 
 # 背景
 

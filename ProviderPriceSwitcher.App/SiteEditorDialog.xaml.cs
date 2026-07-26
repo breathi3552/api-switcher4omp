@@ -1,265 +1,40 @@
-﻿using System.Globalization;
-using Microsoft.Win32;
-using System.Windows;
-using System.Windows.Controls;
+﻿using System.Windows;
 using ProviderPriceSwitcher.Core;
 using ProviderPriceSwitcher.Application;
-
 namespace ProviderPriceSwitcher.App;
+public interface ISiteEditorDialogFactory { SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner); }
 public sealed partial class SiteEditorDialog : Window
 {
-    private readonly SiteConfiguration? _original;
-    private readonly LocalAppSettings _settings;
-    private readonly IPricingAdapterRegistry _adapterRegistry;
-    private readonly PricingProbeUseCase _pricingProbe;
-    private readonly TextBox _displayName = new(), _provider = new(), _url = new(), _configurationApiAddress = new(), _model = new(), _group = new(), _ratio = new(), _currency = new(), _conversion = new(), _cookieHeader = new();
-    private readonly PasswordBox _token = new();
-    private readonly ComboBox _siteType = new() { IsReadOnly = true, DisplayMemberPath = nameof(PricingAdapterDescriptor.DisplayName) };
-    private readonly ComboBox _authentication = new() { IsReadOnly = true };
-    private readonly ISiteCredentialStore _credentialStore;
-    private readonly IUserNotificationService _notifications;
-    private readonly TextBlock _credentialStatus = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
-    private readonly TextBlock _probeResult = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
-    private readonly Button _save = new() { Content = "保存", IsDefault = true };
-    public SiteConfiguration? Site { get; private set; }
-
-    public SiteEditorDialog(SiteConfiguration? original, LocalAppSettings settings, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
+    private readonly SiteEditorViewModel _viewModel;
+    private bool _closePending;
+    public SiteConfiguration? Site => _viewModel.SavedSite;
+    public SiteEditorDialog(SiteEditorViewModel viewModel, Window owner)
     {
-        InitializeComponent();
-        _original = original;
-        _settings = settings;
-        _adapterRegistry = adapterRegistry;
-        _credentialStore = credentialStore;
-        _notifications = notifications;
-        _siteType.ItemsSource = adapterRegistry.Descriptors;
-        _pricingProbe = new PricingProbeUseCase(adapterRegistry);
-        Title = original is null ? "新增站点" : "编辑站点";
-        Width = 720;
-        Height = 760;
-        MinHeight = 620;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        _displayName.Text = original?.DisplayName ?? string.Empty;
-        _provider.Text = original?.ProviderId ?? string.Empty;
-        _siteType.SelectedItem = adapterRegistry.Descriptors.FirstOrDefault(x => string.Equals(x.SiteType, original?.SiteType, StringComparison.Ordinal)) ?? (adapterRegistry.Descriptors.Count > 0 ? adapterRegistry.Descriptors[0] : null);
-        _url.Text = original?.BaseUrl.ToString() ?? string.Empty;
-        _configurationApiAddress.Text = original?.ConfigurationApiAddress ?? "/keys";
-        var initialDescriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
-        _authentication.ItemsSource = initialDescriptor?.AuthenticationModes ?? [];
-        _authentication.SelectedItem = original?.AuthenticationMode ?? (initialDescriptor?.AuthenticationModes.Count > 0 ? initialDescriptor.AuthenticationModes[0] : null);
-        _model.Text = original?.Model ?? settings.Model;
-        _group.Text = original?.CurrentGroup ?? string.Empty;
-        var snapshotResult = snapshotQuery.Load();
-        _ratio.Text = (original?.CurrentGroupRatio ?? (snapshotResult.IsSuccess ? snapshotResult.Snapshots.GetValueOrDefault(original?.ProviderId ?? string.Empty)?.CurrentGroupRatio : null))?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-        _currency.Text = original?.Currency ?? string.Empty;
-        _conversion.Text = original?.CnyConversionRate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-        var form = new StackPanel { Margin = new Thickness(20) };
-        form.Children.Add(Section("基本信息"));
-        form.Children.Add(Field("显示名称（预留）", _displayName));
-        form.Children.Add(Field("ProviderId（对应 OMP Provider ID）", _provider));
-        form.Children.Add(Field("站点类型", _siteType));
-        form.Children.Add(Section("连接配置"));
-        form.Children.Add(Field("Base URL", _url));
-        form.Children.Add(Field("配置 API 地址", _configurationApiAddress));
-        form.Children.Add(Field("认证方式", _authentication));
-        form.Children.Add(_credentialStatus);
-        form.Children.Add(Field("本次绑定/更新的访问令牌", _token));
-        form.Children.Add(Field("本次绑定/更新的浏览器会话 Cookie（形如 refresh_token=...）", _cookieHeader));
-        var credentialButtons = new StackPanel { Orientation = Orientation.Horizontal };
-        var bindCredential = new Button { Content = "绑定/更新令牌" };
-        bindCredential.Click += (_, _) => SaveCredential();
-        var clearCredential = new Button { Content = "清除凭据" };
-        clearCredential.Click += (_, _) => ClearCredential();
-        credentialButtons.Children.Add(bindCredential);
-        credentialButtons.Children.Add(clearCredential);
-        form.Children.Add(credentialButtons);
-        form.Children.Add(Section("价格查询"));
-        form.Children.Add(Field("目标模型", _model));
-        form.Children.Add(Field("当前分组", _group));
-        form.Children.Add(Field("当前分组倍率（正数）", _ratio));
-        form.Children.Add(Field("计价币种（预留，暂未用于推荐）", _currency));
-        form.Children.Add(Field("人民币换算率（预留，暂未用于推荐）", _conversion));
-        var probe = new Button { Content = "测试价格查询" };
-        probe.Click += async (_, _) => await ProbeAsync(probe);
-        form.Children.Add(probe);
-        form.Children.Add(_probeResult);
-        form.Children.Add(Section("账户能力（预留）"));
-        form.Children.Add(new TextBlock { Text = "余额查询：暂未接入    日志查询：暂未接入    缓存命中率：—", Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 0, 0, 14) });
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        _save.Click += (_, _) => Save();
-        buttons.Children.Add(_save);
-        buttons.Children.Add(new Button { Content = "取消", IsCancel = true });
-        form.Children.Add(buttons);
-        Content = new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        UpdateCredentialStatus();
+        InitializeComponent(); _viewModel = viewModel; DataContext = viewModel; Owner = owner; Width = 720; Height = 760; MinHeight = 620; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        viewModel.Saved += (_, _) => DialogResult = true;
+        Closing += OnClosing;
     }
-
-    private void UpdateCredentialStatus()
+    private async void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
-        var provider = _provider.Text.Trim();
-        var descriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
-        var summary = string.IsNullOrWhiteSpace(provider)
-            ? new SiteCredentialSummary { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured, StatusText = descriptor?.RequiresCredential == true ? "请先填写 ProviderId，再绑定令牌。" : "当前站点无需凭据。" }
-            : _credentialStore.GetSummary(provider);
-        var expiry = summary.ExpiresAt is DateTimeOffset expiresAt ? $"；到期 {expiresAt.LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty;
-        var updated = summary.UpdatedAt is DateTimeOffset updatedAt ? $"；更新 {updatedAt.LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty;
-        _credentialStatus.Text = $"凭据状态：{summary.StatusText}{expiry}{updated}";
+        if (_closePending || !_viewModel.IsProbing) return;
+        e.Cancel = true;
+        _closePending = true;
+        await _viewModel.CloseAsync();
+        if (IsVisible) Close();
     }
-
-    private void SaveCredential()
+    private void SaveCredentialClick(object sender, RoutedEventArgs e)
     {
-        var provider = _provider.Text.Trim();
-        var descriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
-        var siteType = descriptor?.SiteType ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(provider) || descriptor?.RequiresCredential != true)
-        {
-            _notifications.ShowWarning("当前站点类型不支持绑定令牌，请先填写 ProviderId 并选择需要凭据的站点类型。", "无法绑定");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(_token.Password))
-        {
-            _notifications.ShowWarning("访问令牌不能为空。", "校验失败");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(_cookieHeader.Text))
-        {
-            _notifications.ShowWarning("浏览器会话 Cookie 不能为空。请从成功的价格请求中复制 Cookie header。", "校验失败");
-            return;
-        }
-        _credentialStore.SaveCredential(new SiteCredentialRecord
-        {
-            ProviderId = provider,
-            SiteType = siteType,
-            AuthorizationScheme = "Bearer",
-            AccessToken = _token.Password.Trim(),
-            CookieHeader = _cookieHeader.Text.Trim()
-        });
-        _token.Password = string.Empty;
-        _cookieHeader.Text = string.Empty;
-        UpdateCredentialStatus();
-        _probeResult.Text = "凭据已更新。有效性将在价格查询时确认。";
+        var token = TokenBox.Password;
+        var cookie = CookieBox.Text;
+        try { _viewModel.SaveCredential(token, cookie); }
+        finally { TokenBox.Clear(); CookieBox.Clear(); }
     }
-
-    private void ClearCredential()
+    private void ClearCredentialClick(object sender, RoutedEventArgs e)
     {
-        var provider = _provider.Text.Trim();
-        var descriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
-        if (string.IsNullOrWhiteSpace(provider) || descriptor?.RequiresCredential != true) return;
-        if (!_notifications.Confirm($"确定清除 Provider {provider} 的本地凭据吗？", "清除凭据")) return;
-        _credentialStore.ClearCredential(provider);
-        _token.Password = string.Empty;
-        _cookieHeader.Text = string.Empty;
-        UpdateCredentialStatus();
-        _probeResult.Text = "已清除本地凭据。";
-    }
-
-    private static TextBlock Section(string text) => new() { Text = text, FontSize = 16, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 8, 0, 10) };
-    private static FrameworkElement Field(string label, Control control)
-    {
-        control.Margin = new Thickness(0, 3, 0, 10);
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = label });
-        panel.Children.Add(control);
-        return panel;
-    }
-
-    private bool TryBuild(out SiteConfiguration site, bool validateDuplicate = true)
-    {
-        site = null!;
-        var provider = _provider.Text.Trim();
-        var model = _model.Text.Trim();
-        var group = _group.Text.Trim();
-        var type = (_siteType.SelectedItem as PricingAdapterDescriptor)?.SiteType ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(provider) || string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(group) || string.IsNullOrWhiteSpace(type) ||
-            !Uri.TryCreate(_url.Text.Trim(), UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-        {
-            MessageBox.Show("ProviderId、站点类型、有效的 http(s) Base URL、目标模型和当前分组均为必填项。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-        var configurationApiAddress = _configurationApiAddress.Text.Trim();
-        if (configurationApiAddress.Length == 0) configurationApiAddress = "/keys";
-        else if (!configurationApiAddress.StartsWith('/') || configurationApiAddress.StartsWith("//", StringComparison.Ordinal) ||
-            configurationApiAddress.Contains('?') || configurationApiAddress.Contains('#') ||
-            !Uri.TryCreate(configurationApiAddress, UriKind.RelativeOrAbsolute, out var configurationUri) || configurationUri.IsAbsoluteUri)
-        {
-            MessageBox.Show("配置 API 地址必须是以 / 开头的相对路径，且不得包含 query 或 fragment。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-        if (validateDuplicate && _settings.Sites.Any(x => !ReferenceEquals(x, _original) && string.Equals(x.ProviderId, provider, StringComparison.Ordinal)))
-        {
-            MessageBox.Show("ProviderId 不能重复。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-        if (!decimal.TryParse(_ratio.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var ratio) || ratio <= 0)
-        {
-            MessageBox.Show("当前分组倍率必须是大于 0 的数字。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-        decimal? conversion = null;
-        if (!string.IsNullOrWhiteSpace(_conversion.Text) && (!decimal.TryParse(_conversion.Text, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0))
-        {
-            MessageBox.Show("人民币换算率留空或填写大于 0 的数字。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return false;
-        }
-        else if (!string.IsNullOrWhiteSpace(_conversion.Text)) conversion = decimal.Parse(_conversion.Text, CultureInfo.InvariantCulture);
-        uri = new Uri(uri.AbsoluteUri.TrimEnd('/') + "/");
-        var key = SiteConfigurationKey.Create(provider, type, uri, model, group);
-        site = new SiteConfiguration
-        {
-            ProviderId = provider,
-            DisplayName = _displayName.Text.Trim(),
-            ConfigurationApiAddress = configurationApiAddress,
-            BaseUrl = uri,
-            SiteType = type,
-            Enabled = _original?.Enabled ?? true,
-            Model = model,
-            CurrentGroup = group,
-            CurrentGroupRatio = ratio,
-            GroupRatioSource = "手动",
-            AuthenticationMode = (_adapterRegistry.Descriptors.FirstOrDefault(x => string.Equals(x.SiteType, type, StringComparison.Ordinal)) is { AuthenticationModes.Count: > 0 } descriptor ? descriptor.AuthenticationModes[0] : (_authentication.SelectedItem as string ?? "无需认证")),
-            Currency = _currency.Text.Trim(),
-            CnyConversionRate = conversion,
-            ConfigurationKey = key
-        };
-        return true;
-    }
-
-    private async Task ProbeAsync(Button button)
-    {
-        if (!TryBuild(out var draft, false)) return;
-        button.IsEnabled = false;
-        _save.IsEnabled = false;
-        _probeResult.Text = "正在查询…";
-        try
-        {
-            var result = await _pricingProbe.ExecuteAsync(draft, _settings.RequestTimeoutSeconds);
-            var prices = result.Prices;
-            _probeResult.Text = $"成功：模型 {draft.Model}；当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）；输入/缓存/输出单价 {prices.InputPerMillion:0.####} / {prices.CachedInputPerMillion:0.####} / {prices.OutputPerMillion:0.####}";
-        }
-        catch (OperationCanceledException)
-        {
-            _probeResult.Text = "已取消价格查询。";
-        }
-        catch (PricingAdapterException ex)
-        {
-            _probeResult.Text = UserErrorMessages.ForProbeFailure(ex.Failure);
-        }
-        catch (Exception)
-        {
-            _probeResult.Text = UserErrorMessages.Unexpected;
-        }
-        finally
-        {
-            UpdateCredentialStatus();
-            button.IsEnabled = true;
-            _save.IsEnabled = true;
-        }
-    }
-
-    private void Save()
-    {
-        if (!TryBuild(out var site)) return;
-        Site = site;
-        DialogResult = true;
+        if (_viewModel.ClearCredential()) { TokenBox.Clear(); CookieBox.Clear(); }
     }
 }
-
+public sealed class SiteEditorDialogFactory(Func<SiteConfiguration?, LocalAppSettings, SiteEditorViewModel> create) : ISiteEditorDialogFactory
+{
+    public SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner) => new(create(original, settings), owner);
+}

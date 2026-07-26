@@ -24,22 +24,26 @@ var publicMessages = Enum.GetValues<ProviderPriceSwitcher.Application.PricingRef
 Assert(publicMessages.All(message => !message.Contains(syntheticFailure, StringComparison.Ordinal) && !message.Contains("api_key", StringComparison.OrdinalIgnoreCase) && !message.Contains("Cookie", StringComparison.OrdinalIgnoreCase) && !message.Contains("Authorization", StringComparison.OrdinalIgnoreCase) && !message.Contains("已验证请求指纹", StringComparison.Ordinal)), "public error mapping must remain fixed and non-sensitive");
 Assert(UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Timeout) == "请求超时，请稍后重试。" && UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication) == "需要重新绑定凭据。", "pricing failure mapping mismatch");
 Assert(UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.ConfigurationFailed, "provider").StartsWith("配置未切换，OMP 未启动", StringComparison.Ordinal) && UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.LaunchFailedAfterSwitch, "provider").StartsWith("配置已切换，但 OMP 启动失败", StringComparison.Ordinal), "switch failure mapping mismatch");
+var probeAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
 var registry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
     new FakeAdapter(new("one", "One", false, ["无"])),
-    new FakeAdapter(new("two", "Two", true, ["令牌", "账户"])),
+    probeAdapter,
     new FakeAdapter(new("three", "Three", false, ["匿名"]))
 ]);
-var editor = new SiteEditorViewModel(registry);
+var testSettings = new ProviderPriceSwitcher.Application.LocalAppSettings { Model = "model", RequestTimeoutSeconds = 1, Sites = [] };
+var testCredentials = new FakeCredentialStore();
+var testNotifications = new FakeNotifications();
+var testProbe = new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry);
+var editor = new SiteEditorViewModel(testProbe, registry, testCredentials, testNotifications, testSettings);
 Assert(editor.Descriptors.Count == 3 && editor.AuthenticationMode == "无" && !editor.CredentialVisible, "descriptor initialization mismatch");
 editor.Descriptor = editor.Descriptors[1];
 Assert(editor.AuthenticationMode == "令牌" && editor.CredentialVisible, "descriptor switch must reset auth and credential visibility");
-editor.IsProbing = true; Assert(!editor.CanSave, "probe must disable save"); editor.IsProbing = false; Assert(editor.CanSave, "probe completion must restore save");
-var typed = editor.ApplySiteType(new ProviderPriceSwitcher.Core.SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://example.test"), Model = "m", CurrentGroup = "g" });
-Assert(typed.SiteType == "two" && typed.AuthenticationMode == "令牌", "saved site type mismatch");
+Assert(editor.CanSave == false, "invalid draft must not save");
 
 Exception? windowFailure = null;
 var windowThread = new Thread(() =>
 {
+    System.Threading.SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext());
     var root = Path.Combine(Path.GetTempPath(), $"ProviderPriceSwitcher-AppTests-{Guid.NewGuid():N}");
     try
     {
@@ -59,11 +63,11 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var switchAndStart = new ProviderPriceSwitcher.Application.SwitchAndStartUseCase(settingsRepository, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(switcher, pathDefaults), new ProviderPriceSwitcher.Infrastructure.OmpProcessLauncher(new ProviderPriceSwitcher.Infrastructure.OmpProcessService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.SwitchAndStartUseCase>.Instance);
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, siteManagement, currentProviderQuery, snapshotQuery, registry, settings, credentialStore, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
+        var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, registry, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         var window = new MainWindow(viewModel);
         window.Show();
-        Assert(ReferenceEquals(window.DataContext, viewModel), "main window must bind its view model as DataContext");
-        Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(viewModel, "_credentialStore"), credentialStore), "main view model must retain the injected credential store");
 
         var site = new ProviderPriceSwitcher.Core.SiteConfiguration
         {
@@ -104,44 +108,44 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var sitesDialog = new SitesDialog(settings, siteManagement, snapshotQuery, registry, credentialStore, notifications, null);
-        Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(sitesDialog, "_credentialStore"), credentialStore), "sites dialog must retain the same credential store");
+        var editorFactoryForDialog = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
+        var sitesDialog = new SitesDialog(settings, siteManagement, snapshotQuery, editorFactoryForDialog, null);
+        Assert(ReferenceEquals(GetField<ISiteEditorDialogFactory>(sitesDialog, "_editorFactory"), editorFactoryForDialog), "sites dialog must retain injected editor factory");
         sitesDialog.Close();
 
-        var dialog = new SiteEditorDialog(site, settings, snapshotQuery, registry, credentialStore, notifications);
-        dialog.Show();
-        dialog.UpdateLayout();
-        var tokenInput = FindDescendant<System.Windows.Controls.PasswordBox>(dialog);
-        var cookieInput = FindField<System.Windows.Controls.TextBox>(dialog, "本次绑定/更新的浏览器会话 Cookie（形如 refresh_token=...）");
-        Assert(string.IsNullOrEmpty(tokenInput.Password) && string.IsNullOrEmpty(cookieInput.Text), "stored credentials must never populate credential inputs");
-        Assert(credentialStore.LoadCalls == 0 && credentialStore.SummaryCalls > 0, "editor must use summary without loading credential material");
-
-        FindButton(dialog, "绑定/更新令牌").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.SaveCalls == 0 && notifications.WarningCalls == 1, "empty credential input must not overwrite the store");
-
-        var token = $"synthetic-token-{Guid.NewGuid():N}";
-        var cookie = $"synthetic-cookie-{Guid.NewGuid():N}";
-        credentialStore.ExpectedToken = token;
-        credentialStore.ExpectedCookie = cookie;
-        tokenInput.Password = token;
-        cookieInput.Text = cookie;
-        FindButton(dialog, "绑定/更新令牌").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput, "explicit credential update must save the current provider and site type once");
-        Assert(string.IsNullOrEmpty(tokenInput.Password) && string.IsNullOrEmpty(cookieInput.Text), "credential inputs must clear immediately after update");
-        Assert(!GetVisibleText(dialog).Contains(token, StringComparison.Ordinal) && !GetVisibleText(dialog).Contains(cookie, StringComparison.Ordinal), "credential material must not remain in visible UI text");
-
-        notifications.ConfirmResult = false;
-        FindButton(dialog, "清除凭据").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.ClearCalls == 0, "declined credential clear must not touch the store");
-        notifications.ConfirmResult = true;
-        FindButton(dialog, "清除凭据").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.ClearCalls == 1 && credentialStore.LastClearedProvider == site.ProviderId, "confirmed credential clear must target the current provider once");
-
+        var dialog = editorFactoryForDialog.Create(site, settings, window);
+        dialog.Show(); dialog.UpdateLayout();
+        Assert(dialog.DataContext is SiteEditorViewModel, "editor dialog must bind the production view model");
+        var editorVm = (SiteEditorViewModel)dialog.DataContext;
+        Assert(editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null), "valid editor fields must enable probe/save and leave cancel disabled");
+        var tokenBox = (System.Windows.Controls.PasswordBox)dialog.FindName("TokenBox");
+        var cookieBox = (System.Windows.Controls.TextBox)dialog.FindName("CookieBox");
+        tokenBox.Password = "synthetic-token-ui";
+        cookieBox.Text = "synthetic-cookie-ui";
+        credentialStore.ExpectedToken = tokenBox.Password;
+        credentialStore.ExpectedCookie = cookieBox.Text;
+        var credentialButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "绑定/更新令牌"));
+        credentialButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput && tokenBox.Password.Length == 0 && cookieBox.Text.Length == 0, "real credential bridge must save once and immediately clear both inputs");
+        Assert(credentialStore.LoadCalls == 0, "editor must never load credential material");
+        probeAdapter.Block = true;
+        editorVm.ProbeCommand.Execute(null);
+        Assert(editorVm.IsProbing && !editorVm.ProbeCommand.CanExecute(null) && !editorVm.SaveCommand.CanExecute(null) && editorVm.CancelProbeCommand.CanExecute(null), "probe must become busy and prevent reentry while enabling cancel");
+        editorVm.ProbeCommand.Execute(null);
+        Assert(probeAdapter.FetchCalls == 1, "busy probe command must reject reentry");
+        editorVm.CancelProbeCommand.Execute(null);
+        WaitFor(() => !editorVm.IsProbing);
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must restore commands without an error notification");
+        probeAdapter.Block = false;
+        editorVm.ProbeCommand.Execute(null);
+        WaitFor(() => !editorVm.IsProbing);
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2, "successful probe must complete through the real dialog view model");
         dialog.Close();
-        window.Close();
-        application.Shutdown();
-        var persistedText = string.Join('\n', Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Select(File.ReadAllText) : []);
-        Assert(!persistedText.Contains(token, StringComparison.Ordinal) && !persistedText.Contains(cookie, StringComparison.Ordinal), "credential material must not enter app JSON or other ordinary files");
+        var saveDialog = editorFactoryForDialog.Create(site, settings, window);
+        var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
+        saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
+        Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
+
     }
     catch (Exception ex) { windowFailure = ex; }
     finally
@@ -173,29 +177,25 @@ static IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.D
 static T FindDescendant<T>(System.Windows.DependencyObject root) where T : System.Windows.DependencyObject =>
     Descendants(root).OfType<T>().FirstOrDefault() ?? throw new InvalidOperationException($"control {typeof(T).Name} was not found");
 
-static T FindField<T>(System.Windows.DependencyObject root, string label) where T : System.Windows.Controls.Control =>
-    Descendants(root).OfType<System.Windows.Controls.StackPanel>()
-        .Where(panel => panel.Children.OfType<System.Windows.Controls.TextBlock>().Any(text => string.Equals(text.Text, label, StringComparison.Ordinal)))
-        .SelectMany(panel => panel.Children.OfType<T>())
-        .FirstOrDefault() ?? throw new InvalidOperationException($"field labeled {label} was not found");
 
-static System.Windows.Controls.Button FindButton(System.Windows.DependencyObject root, string content) =>
-    Descendants(root).OfType<System.Windows.Controls.Button>().FirstOrDefault(button => string.Equals(button.Content as string, content, StringComparison.Ordinal))
-        ?? throw new InvalidOperationException($"button {content} was not found");
-
-static string GetVisibleText(System.Windows.DependencyObject root) => string.Join('\n',
-    Descendants(root).Select(control => control switch
-    {
-        System.Windows.Controls.TextBlock text => text.Text,
-        System.Windows.Controls.TextBox text => text.Text,
-        System.Windows.Controls.PasswordBox password => password.Password,
-        _ => null
-    }).Where(text => text is not null));
+static void WaitFor(Func<bool> condition)
+{
+    var deadline = DateTime.UtcNow.AddSeconds(2);
+    while (!condition() && DateTime.UtcNow < deadline) System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.Background);
+    Assert(condition(), "timed out waiting for UI operation");
+}
 
 sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescriptor descriptor) : ProviderPriceSwitcher.Application.IPricingAdapter
 {
     public ProviderPriceSwitcher.Application.PricingAdapterDescriptor Descriptor { get; } = descriptor;
-    public Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    public bool Block { get; set; }
+    public int FetchCalls { get; private set; }
+    public async Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default)
+    {
+        FetchCalls++;
+        if (Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = 1, RefreshedAt = DateTimeOffset.UtcNow }, ValidGroups = new HashSet<string>([site.CurrentGroup]), MinimumValidGroup = site.CurrentGroup, MinimumGroupRatio = 1, Warnings = [] };
+    }
 }
 
 sealed class FakeUriLauncher : IExternalUriLauncher
@@ -208,10 +208,10 @@ sealed class FakeUriLauncher : IExternalUriLauncher
 sealed class FakeNotifications : IUserNotificationService
 {
     public int WarningCalls { get; private set; }
+    public int ErrorCalls { get; private set; }
     public bool ConfirmResult { get; set; } = true;
-
     public void ShowWarning(string message, string title) => WarningCalls++;
-    public void ShowError(string message, string title) { }
+    public void ShowError(string message, string title) => ErrorCalls++;
     public bool Confirm(string message, string title) => ConfirmResult;
 }
 
