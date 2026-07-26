@@ -8,7 +8,7 @@ globs: ["*.sln", "**/*.csproj", "eng/**"]
 ## 硬性规则
 
 - MUST 在仓库根目录执行命令。
-- MUST 使用 `$dotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'` 解析 SDK 入口；当前工作站得到 `C:\Users\breathi\.dotnet\dotnet.exe`，SDK 固定为 `8.0.423`（见 `global.json`）。
+- MUST 使用 `$dotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'` 解析 SDK 入口，SDK 固定为 `8.0.423`（见 `global.json`）；不得把某台机器的用户名或绝对用户目录写入仓库。
 - NEVER 使用裸 `dotnet` 或 `C:\Program Files\dotnet\dotnet.exe`；该入口只有 Runtime/Host，没有 SDK。
 - 测试项目是 console 契约运行器，不是 `Microsoft.NET.Test.Sdk` 项目。NEVER 用 `dotnet test` 代替测试；它只会 restore，不执行断言。
 - build、格式验收、contract runner 和 publish MUST 顺序执行；并行命令会争用共享的 `bin/obj` 文件。普通文档-only 不跑代码验证；局部任务只跑受影响 runner；完整八 runner 仅跨层、发布候选或用户明确要求。
@@ -24,7 +24,7 @@ $dotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
 & $dotnet --info
 ```
 
-成功判据：输出 SDK `8.0.423`，Base Path 位于当前用户目录的 `.dotnet\sdk\8.0.423\`；当前工作站对应 `C:\Users\breathi\.dotnet\sdk\8.0.423\`。
+成功判据：输出 SDK `8.0.423`，Base Path 位于当前用户目录的 `.dotnet\sdk\8.0.423\`。
 
 如需让当前 PowerShell 会话中的 `dotnet` 指向正确入口：
 
