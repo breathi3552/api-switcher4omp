@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install fixed .NET SDK
+        shell: powershell
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'dotnet-install.ps1'
+          Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile $installer
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Version 8.0.423 -InstallDir (Join-Path $env:USERPROFILE '.dotnet')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "DOTNET_ROOT=$env:USERPROFILE\.dotnet" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:USERPROFILE\.dotnet" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Verify
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners

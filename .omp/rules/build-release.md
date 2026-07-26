@@ -55,32 +55,19 @@ powershell -ExecutionPolicy Bypass -File eng/Initialize-Development.ps1
 3. **UI/副作用层**：WPF/OMP/外部副作用使用 fake/loopback 与临时 root 的隔离 smoke；仅受影响窗口/路径必须验证受影响路径，跨 UI 或发布候选才做完整 UI smoke。
 4. **publish 层**：独立于普通任务，仅发布任务或用户明确要求；完成适用 build/runner/smoke 后再生成并验收两个发布目录。
 
-跨层、发布候选或用户明确要求完整构建时：
+跨层、发布候选或用户明确要求完整验证时，MUST 调用 canonical 入口；runner 名称、项目路径和顺序的唯一清单是 `eng/verify-manifest.json`，依赖方向机器契约是 `eng/verify-dependency-matrix.json`：
 
 ```powershell
-& $dotnet build ProviderPriceSwitcher.sln
+powershell -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners
 ```
 
-格式验收必须另行执行：
+局部内部/行为变更必须显式选择 manifest 中的受影响 runner，例如：
 
 ```powershell
-& $dotnet format --verify-no-changes --no-restore
+powershell -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact Behavior -Runner App
 ```
 
-再顺序运行全部八个契约 runner：
-
-```powershell
-& $dotnet run --project ProviderPriceSwitcher.Core.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.Adapters.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.Application.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.Infrastructure.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.OmpConfig.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.OmpProcess.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.Refresh.Tests --no-build
-& $dotnet run --project ProviderPriceSwitcher.App.Tests --no-build
-```
-
-成功判据：适用的 build、格式验收和 runner 均退出码为 `0`；完整 build 为 `0` 个错误和 `0` 个警告；所运行的 runner 输出 `passed`。固定完整集合为上述八个 runner，局部任务只选受影响项。
+`Document` 只执行 manifest、solution 与依赖矩阵静态一致性检查，不调用 SDK/build/format/runner；`Internal`/`Behavior` 要求至少一个显式 `-Runner`；`CrossLayer` 必须使用 `-AllRunners`。成功判据：入口退出码为 `0`，完整 build 为 `0` 个错误和 `0` 个警告，所运行 runner 输出 `passed`。不得在规则、CI 或其他脚本复制 runner 清单。
 
 ## WPF 隔离烟测与行为验收
 

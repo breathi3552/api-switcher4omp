@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "runners": [
+    { "name": "Core", "project": "ProviderPriceSwitcher.Core.Tests/ProviderPriceSwitcher.Core.Tests.csproj", "layer": "Core", "minimumImpact": "Internal", "disabled": false, "sideEffects": ["none"] },
+    { "name": "Adapters", "project": "ProviderPriceSwitcher.Adapters.Tests/ProviderPriceSwitcher.Adapters.Tests.csproj", "layer": "Adapters", "minimumImpact": "Internal", "disabled": false, "sideEffects": ["none", "no-real-provider"] },
+    { "name": "Application", "project": "ProviderPriceSwitcher.Application.Tests/ProviderPriceSwitcher.Application.Tests.csproj", "layer": "Application", "minimumImpact": "Internal", "disabled": false, "sideEffects": ["none"] },
+    { "name": "Infrastructure", "project": "ProviderPriceSwitcher.Infrastructure.Tests/ProviderPriceSwitcher.Infrastructure.Tests.csproj", "layer": "Infrastructure", "minimumImpact": "Internal", "disabled": false, "sideEffects": ["isolated-data-root"] },
+    { "name": "OmpConfig", "project": "ProviderPriceSwitcher.OmpConfig.Tests/ProviderPriceSwitcher.OmpConfig.Tests.csproj", "layer": "Infrastructure", "minimumImpact": "Behavior", "disabled": false, "sideEffects": ["isolated-omp-root", "no-ui-write"] },
+    { "name": "OmpProcess", "project": "ProviderPriceSwitcher.OmpProcess.Tests/ProviderPriceSwitcher.OmpProcess.Tests.csproj", "layer": "Infrastructure", "minimumImpact": "Behavior", "disabled": false, "sideEffects": ["isolated-working-root", "no-ui-write"] },
+    { "name": "Refresh", "project": "ProviderPriceSwitcher.Refresh.Tests/ProviderPriceSwitcher.Refresh.Tests.csproj", "layer": "Application", "minimumImpact": "Behavior", "disabled": false, "sideEffects": ["loopback-only", "no-real-provider"] },
+    { "name": "App", "project": "ProviderPriceSwitcher.App.Tests/ProviderPriceSwitcher.App.Tests.csproj", "layer": "App", "minimumImpact": "Behavior", "disabled": false, "sideEffects": ["isolated-data-root", "no-ui-write"] }
+  ]
+}
