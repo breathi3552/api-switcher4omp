@@ -1,12 +1,13 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using ProviderPriceSwitcher.Core;
+using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Adapters;
 
 public sealed class PawsAiPricingAdapter : IPricingAdapter
 {
     private readonly HttpClient _httpClient;
-    public string SiteType => "pawsai";
+    public PricingAdapterDescriptor Descriptor { get; } = new("pawsai", "PawsAI", false, ["无需认证"]);
     public PawsAiPricingAdapter(HttpClient httpClient) => _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
     public async Task<SitePricingResult> FetchAsync(SiteConfiguration site, CancellationToken cancellationToken = default)
@@ -17,12 +18,15 @@ public sealed class PawsAiPricingAdapter : IPricingAdapter
         try
         {
             using var response = await _httpClient.GetAsync(endpoint, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                throw new PricingAdapterException(PricingAdapterFailure.Authentication, "Pricing request authentication failed.");
             if (!response.IsSuccessStatusCode)
                 throw new PricingAdapterException(PricingAdapterFailure.Request, $"Pricing request failed with HTTP {(int)response.StatusCode}.");
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (TaskCanceledException ex) { throw new PricingAdapterException(PricingAdapterFailure.Timeout, "Pricing request timed out.", ex); }
         catch (PricingAdapterException) { throw; }
         catch (JsonException ex) { throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "Pricing response is not valid JSON.", ex); }
         catch (HttpRequestException ex) { throw new PricingAdapterException(PricingAdapterFailure.Request, "Pricing request failed.", ex); }
@@ -43,8 +47,11 @@ public sealed class PawsAiPricingAdapter : IPricingAdapter
             return new SitePricingResult
             {
                 Snapshot = new PricingSnapshot { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, BasePrices = null, CurrentGroupRatio = current.Multiplier, GroupRatioSource = "公开价格", Prices = ReadPrices(current.Element), MinimumGroup = minimum.Name, MinimumGroupRatio = minimum.Multiplier, MinimumGroupPrices = ReadPrices(minimum.Element), RefreshedAt = DateTimeOffset.UtcNow },
-                ValidGroups = groups.Select(g => g.Name).ToHashSet(StringComparer.Ordinal), MinimumValidGroup = minimum.Name, MinimumGroupRatio = minimum.Multiplier,
-                BillingExpression = TryString(current.Element, "billing_expression") ?? TryString(current.Element, "billing_expr"), Warnings = []
+                ValidGroups = groups.Select(g => g.Name).ToHashSet(StringComparer.Ordinal),
+                MinimumValidGroup = minimum.Name,
+                MinimumGroupRatio = minimum.Multiplier,
+                BillingExpression = TryString(current.Element, "billing_expression") ?? TryString(current.Element, "billing_expr"),
+                Warnings = []
             };
         }
     }

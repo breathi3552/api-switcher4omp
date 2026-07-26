@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $dotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
 if (-not (Test-Path $dotnet)) {

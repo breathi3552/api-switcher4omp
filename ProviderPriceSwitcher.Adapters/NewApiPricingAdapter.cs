@@ -1,8 +1,9 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ProviderPriceSwitcher.Core;
+using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Adapters;
 
@@ -19,7 +20,7 @@ public sealed class NewApiPricingAdapter : IPricingAdapter
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private readonly HttpClient _httpClient;
-    public string SiteType => "new-api";
+    public PricingAdapterDescriptor Descriptor { get; } = new("new-api", "New API", false, ["无需认证"]);
 
     public NewApiPricingAdapter(HttpClient httpClient)
     {
@@ -32,8 +33,12 @@ public sealed class NewApiPricingAdapter : IPricingAdapter
         var endpoint = new Uri(site.BaseUrl.ToString().TrimEnd('/') + "/api/pricing");
         JsonDocument document;
         try { document = await _httpClient.GetFromJsonAsync<JsonDocument>(endpoint, cancellationToken) ?? throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "Empty pricing response."); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (PricingAdapterException) { throw; }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { throw new PricingAdapterException(PricingAdapterFailure.Request, "Pricing request failed.", ex); }
+        catch (TaskCanceledException ex) { throw new PricingAdapterException(PricingAdapterFailure.Timeout, "Pricing request timed out.", ex); }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized) { throw new PricingAdapterException(PricingAdapterFailure.Authentication, "Pricing request authentication failed.", ex); }
+        catch (HttpRequestException ex) { throw new PricingAdapterException(PricingAdapterFailure.Request, "Pricing request failed.", ex); }
+        catch (JsonException ex) { throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "Pricing response is not valid JSON.", ex); }
 
         using (document)
         {
@@ -110,7 +115,11 @@ public sealed class NewApiPricingAdapter : IPricingAdapter
                     MinimumGroupPrices = Scale(basePrices, minimumRatio),
                     RefreshedAt = DateTimeOffset.UtcNow
                 },
-                ValidGroups = groups, MinimumValidGroup = min, MinimumGroupRatio = minimumRatio, BillingExpression = expression, Warnings = warnings
+                ValidGroups = groups,
+                MinimumValidGroup = min,
+                MinimumGroupRatio = minimumRatio,
+                BillingExpression = expression,
+                Warnings = warnings
             };
         }
     }

@@ -1,4 +1,4 @@
-using ProviderPriceSwitcher.Core;
+﻿using ProviderPriceSwitcher.Core;
 
 static void Assert(bool condition, string message)
 {

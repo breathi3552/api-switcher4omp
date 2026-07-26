@@ -1,4 +1,4 @@
-namespace ProviderPriceSwitcher.Core;
+﻿namespace ProviderPriceSwitcher.Core;
 
 public sealed record SiteConfiguration
 {
@@ -50,7 +50,7 @@ public interface ISiteCredentialStore
     SiteCredentialRecord? LoadCredential(string providerId);
     void SaveCredential(SiteCredentialRecord credential);
     void ClearCredential(string providerId);
-    SiteCredentialSummary GetSummary(string providerId, string siteType);
+    SiteCredentialSummary GetSummary(string providerId);
 }
 
 public sealed record UsageProfile

@@ -1,15 +1,29 @@
-using ProviderPriceSwitcher.Core;
+﻿using ProviderPriceSwitcher.Core;
 
-namespace ProviderPriceSwitcher.Adapters;
+namespace ProviderPriceSwitcher.Application;
+
+public sealed record PricingAdapterDescriptor(
+    string SiteType,
+    string DisplayName,
+    bool RequiresCredential,
+    IReadOnlyList<string> AuthenticationModes);
+
+public interface IPricingAdapterRegistry
+{
+    IReadOnlyList<PricingAdapterDescriptor> Descriptors { get; }
+    bool TryGet(string siteType, out IPricingAdapter adapter);
+}
 
 public interface IPricingAdapter
 {
-    string SiteType { get; }
+    PricingAdapterDescriptor Descriptor { get; }
     Task<SitePricingResult> FetchAsync(SiteConfiguration site, CancellationToken cancellationToken = default);
 }
 
 public enum PricingAdapterFailure
 {
+    Authentication,
+    Timeout,
     Request,
     InvalidResponse,
     ModelNotFound,

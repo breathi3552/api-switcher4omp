@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ProviderPriceSwitcher.Core\ProviderPriceSwitcher.Core.csproj" />
+    <ProjectReference Include="..\ProviderPriceSwitcher.Application\ProviderPriceSwitcher.Application.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

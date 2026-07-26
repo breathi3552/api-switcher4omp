@@ -1,5 +1,6 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
+using ProviderPriceSwitcher.Application;
 using ProviderPriceSwitcher.Adapters;
 using ProviderPriceSwitcher.Core;
 
@@ -26,8 +27,12 @@ static async Task<(SitePricingResult Result, StubHandler Handler)> FetchPaws(str
     using var client = new HttpClient(handler);
     var result = await new PawsAiPricingAdapter(client).FetchAsync(new SiteConfiguration
     {
-        ProviderId = "pawsai", ConfigurationKey = "paws-key", BaseUrl = new Uri("https://example.test/root/"),
-        SiteType = "pawsai", Model = model, CurrentGroup = group
+        ProviderId = "pawsai",
+        ConfigurationKey = "paws-key",
+        BaseUrl = new Uri("https://example.test/root/"),
+        SiteType = "pawsai",
+        Model = model,
+        CurrentGroup = group
     });
     return (result, handler);
 }
@@ -99,7 +104,7 @@ var failedHandler = new StubHandler("{}", HttpStatusCode.Unauthorized);
 using (var failedClient = new HttpClient(failedHandler))
 {
     try { await new PawsAiPricingAdapter(failedClient).FetchAsync(new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://example.test"), SiteType = "pawsai", Model = "gpt-5.6-sol", CurrentGroup = "g" }); throw new InvalidOperationException("HTTP failure accepted"); }
-    catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Request) { }
+    catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Authentication) { }
 }
 
 var subUnauthorized = new StubHandler("{\"code\":\"INVALID_TOKEN\",\"message\":\"Invalid token\"}", HttpStatusCode.Unauthorized);
@@ -113,16 +118,58 @@ using (var unauthorizedClient = new HttpClient(subUnauthorized))
     {
         await new Sub2ApiPricingAdapter(unauthorizedClient, credentials).FetchAsync(new SiteConfiguration
         {
-            ProviderId = "sevnx", ConfigurationKey = "sub-key", BaseUrl = new Uri("https://example.test/"),
-            SiteType = "sub2api", Model = "gpt-5.6-sol", CurrentGroup = "default"
+            ProviderId = "sevnx",
+            ConfigurationKey = "sub-key",
+            BaseUrl = new Uri("https://example.test/"),
+            SiteType = "sub2api",
+            Model = "gpt-5.6-sol",
+            CurrentGroup = "default"
         });
         throw new InvalidOperationException("Sub2API unauthorized response was accepted");
     }
     catch (PricingAdapterException exception)
     {
-        Assert(exception.Failure == PricingAdapterFailure.Request, "Sub2API unauthorized failure kind mismatch");
+        Assert(exception.Failure == PricingAdapterFailure.Authentication, "Sub2API unauthorized failure kind mismatch");
         Assert(exception.Message.Contains("INVALID_TOKEN: Invalid token", StringComparison.Ordinal), "Sub2API unauthorized message mismatch");
     }
+}
+
+using (var missingCredentialClient = new HttpClient(new StubHandler("{}")))
+{
+    try
+    {
+        await new Sub2ApiPricingAdapter(missingCredentialClient, new MemoryCredentialStore()).FetchAsync(new SiteConfiguration
+        {
+            ProviderId = "missing",
+            ConfigurationKey = "sub-key",
+            BaseUrl = new Uri("https://example.test/"),
+            SiteType = "sub2api",
+            Model = "gpt-5.6-sol",
+            CurrentGroup = "default"
+        });
+        throw new InvalidOperationException("Missing Sub2API credential was accepted");
+    }
+    catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Authentication) { }
+}
+
+using (var timeoutClient = new HttpClient(new TimeoutHandler()))
+{
+    try
+    {
+        await new PawsAiPricingAdapter(timeoutClient).FetchAsync(new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://example.test"), SiteType = "pawsai", Model = "gpt-5.6-sol", CurrentGroup = "g" });
+        throw new InvalidOperationException("Timeout was accepted");
+    }
+    catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Timeout) { }
+}
+
+using (var requestClient = new HttpClient(new RequestFailureHandler()))
+{
+    try
+    {
+        await new NewApiPricingAdapter(requestClient).FetchAsync(new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://example.test"), SiteType = "new-api", Model = "gpt-5.6-sol", CurrentGroup = "g" });
+        throw new InvalidOperationException("Request failure was accepted");
+    }
+    catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Request) { }
 }
 
 using (var canceled = new CancellationTokenSource())
@@ -149,8 +196,12 @@ using (var subClient = new HttpClient(subHandler))
     };
     var result = await new Sub2ApiPricingAdapter(subClient, credentials).FetchAsync(new SiteConfiguration
     {
-        ProviderId = "sevnx", ConfigurationKey = "sub-ok", BaseUrl = new Uri("https://example.test/"),
-        SiteType = "sub2api", Model = "gpt-5.6-sol", CurrentGroup = "gpt-plus"
+        ProviderId = "sevnx",
+        ConfigurationKey = "sub-ok",
+        BaseUrl = new Uri("https://example.test/"),
+        SiteType = "sub2api",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "gpt-plus"
     });
     Assert(result.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "Sub2API base price conversion mismatch");
     Assert(result.Prices.InputPerMillion == 0.5m && result.Prices.CachedInputPerMillion == 0.05m && result.Prices.OutputPerMillion == 3m, "Sub2API group prices mismatch");
@@ -165,13 +216,34 @@ using (var subClient = new HttpClient(subHandler))
     Assert(subHandler.Referrer == "https://example.test/model-pricing", "Sub2API referrer mismatch");
 }
 
+var registry = new PricingAdapterRegistry([
+    new NewApiPricingAdapter(new HttpClient(new StubHandler(simpleJson))),
+    new PawsAiPricingAdapter(new HttpClient(new StubHandler(pawsJson))),
+    new Sub2ApiPricingAdapter(new HttpClient(new StubHandler("{}")), new MemoryCredentialStore())
+]);
+Assert(registry.Descriptors.Select(x => x.SiteType).SequenceEqual(["new-api", "pawsai", "sub2api"]), "Registry order mismatch");
+Assert(registry.Descriptors.Select(x => x.DisplayName).SequenceEqual(["New API", "PawsAI", "Sub2API"]), "Descriptor display names mismatch");
+Assert(!registry.Descriptors[0].RequiresCredential && registry.Descriptors[2].RequiresCredential, "Descriptor credential capability mismatch");
+Assert(registry.TryGet("new-api", out var registered) && registered.Descriptor.SiteType == "new-api", "Registry lookup failed");
+Assert(!registry.TryGet("NEW-API", out _) && !registry.TryGet("missing", out _), "Registry lookup must be Ordinal");
+var emptyRejected = false;
+try { _ = new PricingAdapterRegistry([new DescriptorAdapter(new PricingAdapterDescriptor("", "Empty", false, []))]); } catch (ArgumentException) { emptyRejected = true; }
+Assert(emptyRejected, "Empty site type accepted");
+var duplicateRejected = false;
+try { _ = new PricingAdapterRegistry([new DescriptorAdapter(new PricingAdapterDescriptor("same", "One", false, [])), new DescriptorAdapter(new PricingAdapterDescriptor("same", "Two", false, []))]); } catch (ArgumentException) { duplicateRejected = true; }
+Assert(duplicateRejected, "Duplicate site type accepted");
+
 if (args.Contains("--live-pawsai", StringComparer.Ordinal))
 {
     using var liveClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     var live = await new PawsAiPricingAdapter(liveClient).FetchAsync(new SiteConfiguration
     {
-        ProviderId = "pawsai", ConfigurationKey = "live", BaseUrl = new Uri("https://ai.furry.edu.gr"),
-        SiteType = "pawsai", Model = "gpt-5.6-sol", CurrentGroup = "GPT混合池（GPT5.4卡顿）"
+        ProviderId = "pawsai",
+        ConfigurationKey = "live",
+        BaseUrl = new Uri("https://ai.furry.edu.gr"),
+        SiteType = "pawsai",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "GPT混合池（GPT5.4卡顿）"
     });
     Assert(live.Prices.InputPerMillion == 0.2m && live.Prices.CachedInputPerMillion == 0.02m && live.Prices.OutputPerMillion == 1.2m, "Live PawsAI prices mismatch");
     Assert(live.MinimumValidGroup == "GPT混合池（GPT5.4卡顿）" && live.MinimumGroupRatio == 0.04m, "Live PawsAI minimum mismatch");
@@ -179,6 +251,12 @@ if (args.Contains("--live-pawsai", StringComparer.Ordinal))
 }
 
 Console.WriteLine("Adapter contract runner passed.");
+
+sealed class DescriptorAdapter(PricingAdapterDescriptor descriptor) : IPricingAdapter
+{
+    public PricingAdapterDescriptor Descriptor { get; } = descriptor;
+    public Task<SitePricingResult> FetchAsync(SiteConfiguration site, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+}
 
 sealed class StubHandler(string body, HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
 {
@@ -235,7 +313,19 @@ sealed class MemoryCredentialStore : ISiteCredentialStore
     public SiteCredentialRecord? LoadCredential(string providerId) => Credential;
     public void SaveCredential(SiteCredentialRecord credential) => Credential = credential;
     public void ClearCredential(string providerId) => Credential = null;
-    public SiteCredentialSummary GetSummary(string providerId, string siteType) => new() { ProviderId = providerId, Status = SiteCredentialStatus.Available };
+    public SiteCredentialSummary GetSummary(string providerId) => new() { ProviderId = providerId, Status = SiteCredentialStatus.Available };
+}
+
+sealed class TimeoutHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromException<HttpResponseMessage>(new TaskCanceledException("timeout"));
+}
+
+sealed class RequestFailureHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromException<HttpResponseMessage>(new HttpRequestException("offline"));
 }
 
 sealed class CancelHandler : HttpMessageHandler

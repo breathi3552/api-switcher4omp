@@ -2,10 +2,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ProviderPriceSwitcher.Core\ProviderPriceSwitcher.Core.csproj" />
-    <ProjectReference Include="..\ProviderPriceSwitcher.Adapters\ProviderPriceSwitcher.Adapters.csproj" />
+    <ProjectReference Include="..\ProviderPriceSwitcher.Application\ProviderPriceSwitcher.Application.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
   </ItemGroup>
 
   <PropertyGroup>

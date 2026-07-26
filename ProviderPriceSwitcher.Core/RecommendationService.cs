@@ -1,4 +1,4 @@
-namespace ProviderPriceSwitcher.Core;
+﻿namespace ProviderPriceSwitcher.Core;
 
 public sealed class RecommendationService
 {

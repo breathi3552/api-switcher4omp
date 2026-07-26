@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 
@@ -34,9 +34,10 @@ public sealed class RelayCommand : ICommand
 public sealed class AsyncCommand : ICommand
 {
     private readonly Func<Task> _execute;
+    private readonly Action<Exception> _onError;
     private readonly Func<bool>? _canExecute;
     private bool _executing;
-    public AsyncCommand(Func<Task> execute, Func<bool>? canExecute = null) { _execute = execute; _canExecute = canExecute; }
+    public AsyncCommand(Func<Task> execute, Action<Exception> onError, Func<bool>? canExecute = null) { _execute = execute; _onError = onError; _canExecute = canExecute; }
     public event EventHandler? CanExecuteChanged;
     public bool CanExecute(object? parameter) => !_executing && (_canExecute?.Invoke() ?? true);
     public async void Execute(object? parameter)
@@ -45,6 +46,7 @@ public sealed class AsyncCommand : ICommand
         _executing = true;
         RaiseCanExecuteChanged();
         try { await _execute(); }
+        catch (Exception ex) { _onError(ex); }
         finally { _executing = false; RaiseCanExecuteChanged(); }
     }
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);

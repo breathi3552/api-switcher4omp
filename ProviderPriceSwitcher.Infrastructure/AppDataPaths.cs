@@ -1,4 +1,4 @@
-namespace ProviderPriceSwitcher.Infrastructure;
+﻿namespace ProviderPriceSwitcher.Infrastructure;
 
 public static class AppDataPaths
 {
