@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "projects": {
+    "ProviderPriceSwitcher.Core": [],
+    "ProviderPriceSwitcher.Application": ["ProviderPriceSwitcher.Core"],
+    "ProviderPriceSwitcher.Adapters": ["ProviderPriceSwitcher.Application", "ProviderPriceSwitcher.Core"],
+    "ProviderPriceSwitcher.Infrastructure": ["ProviderPriceSwitcher.Application", "ProviderPriceSwitcher.Core"],
+    "ProviderPriceSwitcher.App": ["ProviderPriceSwitcher.Application", "ProviderPriceSwitcher.Adapters", "ProviderPriceSwitcher.Infrastructure", "ProviderPriceSwitcher.Core"]
+  }
+}
