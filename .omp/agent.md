@@ -7,7 +7,7 @@ Windows WPF/.NET 8 工具：查询供应商价格，按用量模板推荐最低�
 - 当前功能、已知问题和 TODO：`.omp/context/PROJECT-STATUS.md`
 - 业务规则：`.omp/context/Business-Implementation-Plan.md`
 - 原始方案：`.omp/context/OMP-Provider-Price-Switcher-Plan.md`
-- 凡涉及 `.NET` 编译、测试、发布、SDK 路径、publish profile，先读：`.omp/context/Build-and-Publish-Guide.md`
+- 凡涉及 `.NET` 编译、测试、启动、发布、SDK 路径或 publish profile，MUST 先读并严格遵循 `.omp/context/Build-and-Publish-Guide.md`；NEVER 使用裸 `dotnet`。
 
 ## 代码入口
 

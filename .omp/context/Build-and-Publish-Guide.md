@@ -1,84 +1,84 @@
-# Build and Publish Guide
+# .NET 构建、测试与发布规则
 
-## 结论
+## 硬性规则
 
-本项目的标准 .NET 入口不是系统 `dotnet`，而是用户目录下的 `C:\Users\breathi\.dotnet\dotnet.exe`。
+- MUST 在仓库根目录执行命令。
+- MUST 使用 `C:\Users\breathi\.dotnet\dotnet.exe`，SDK 固定为 `8.0.423`（见 `global.json`）。
+- NEVER 使用裸 `dotnet` 或 `C:\Program Files\dotnet\dotnet.exe`；该入口只有 Runtime/Host，没有 SDK。
+- 测试项目是 console 契约运行器，不是 `Microsoft.NET.Test.Sdk` 项目。NEVER 用 `dotnet test` 代替测试；它只会 restore，不执行断言。
+- build、测试和 publish MUST 顺序执行。并行命令会争用共享的 `bin/obj` 文件。
+- WPF 行为变更 MUST 实际启动应用烟测；仅 build 或测试通过不等于应用能启动。
+- NEVER 为解决文件占用强删产物。先停止正在运行的 `ProviderPriceSwitcher.App.exe`，再重试。
 
-- 固定 SDK：`8.0.423`
-- `global.json` 已锁定该版本。
-- 历史脚本 `eng/Initialize-Development.ps1` 与 `eng/Publish.ps1` 都显式使用 `C:\Users\breathi\.dotnet\dotnet.exe`。
+## 环境检查
 
-## 编译前检查
+```powershell
+& 'C:\Users\breathi\.dotnet\dotnet.exe' --info
+```
 
-1. 确认以下路径存在：
-   - `C:\Users\breathi\.dotnet\dotnet.exe`
-   - `C:\Users\breathi\.dotnet\sdk\8.0.423\`
-2. 不要优先使用 `C:\Program Files\dotnet\dotnet.exe`；该路径在本机可能只有 host/runtime，没有 SDK。
-3. 如需初始化环境，先运行：
+成功判据：输出 SDK `8.0.423`，Base Path 位于 `C:\Users\breathi\.dotnet\sdk\8.0.423\`。
+
+如需让当前 PowerShell 会话中的 `dotnet` 指向正确入口：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File eng/Initialize-Development.ps1
 ```
 
-该脚本会：
-- 设置 `DOTNET_ROOT`
-- 把 `C:\Users\breathi\.dotnet` 放到 `PATH` 前面
-- 验证 SDK 版本
+自动化和代理仍 SHOULD 使用上述绝对路径，避免依赖会话级 `PATH`。
 
-## 标准编译命令
+## 固定验证链
 
-在仓库根目录执行：
+先构建解决方案：
 
 ```powershell
-C:\Users\breathi\.dotnet\dotnet.exe build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' build ProviderPriceSwitcher.sln
 ```
 
-## 标准测试命令
-
-本仓库当前至少验证以下契约测试：
+再顺序运行全部六个契约 runner：
 
 ```powershell
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Adapters.Tests
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Infrastructure.Tests
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Refresh.Tests
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.Core.Tests --no-build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.Adapters.Tests --no-build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.Infrastructure.Tests --no-build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.OmpConfig.Tests --no-build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.OmpProcess.Tests --no-build
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.Refresh.Tests --no-build
 ```
 
-如需更完整验证，可继续补跑其他 `ProviderPriceSwitcher.*.Tests` 项目。
+成功判据：build 为 `0` 个错误，六个 runner 均以退出码 `0` 输出 `passed`。
 
-## 标准发布命令
+WPF 变更还要启动应用并确认进程保持运行、主窗口出现且改动路径可操作：
 
-优先方式：
+```powershell
+& 'C:\Users\breathi\.dotnet\dotnet.exe' run --project ProviderPriceSwitcher.App --no-build
+```
+
+烟测完成后正常关闭窗口，不保留后台进程。
+
+## 发布
+
+只有固定验证链通过后才发布。优先顺序执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File eng/Publish.ps1
 ```
 
-该脚本会发布两套产物：
+产物：
+
 - `artifacts/publish/framework-dependent`
 - `artifacts/publish/self-contained`
 
-等价的手动命令：
+脚本失败时可顺序执行等价命令，NEVER 并行：
 
 ```powershell
-C:\Users\breathi\.dotnet\dotnet.exe publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=FrameworkDependent --output artifacts/publish/framework-dependent
-C:\Users\breathi\.dotnet\dotnet.exe publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=SelfContained --output artifacts/publish/self-contained
+& 'C:\Users\breathi\.dotnet\dotnet.exe' publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=FrameworkDependent --output artifacts/publish/framework-dependent
+& 'C:\Users\breathi\.dotnet\dotnet.exe' publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=SelfContained --output artifacts/publish/self-contained
 ```
 
-## 已知注意事项
+发布成功判据：两个目录均生成 `ProviderPriceSwitcher.App.exe`，命令退出码均为 `0`。
 
-1. `framework-dependent` 与 `self-contained` 发布不要并行写入同一 `obj/Release`/输出目录；会出现文件占用。
-2. 若 `self-contained\ProviderPriceSwitcher.App.exe` 被占用，先释放占用后再重跑，不要在未确认的情况下强删用户正在使用的产物。
-3. 遇到“系统 dotnet 无 SDK”时，先检查是否误用了 `C:\Program Files\dotnet\dotnet.exe`。
+## 故障定位
 
-## 本次已验证结果
-
-本次修改已使用以下命令成功验证：
-
-```powershell
-C:\Users\breathi\.dotnet\dotnet.exe build
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Adapters.Tests
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Infrastructure.Tests
-C:\Users\breathi\.dotnet\dotnet.exe run --project ProviderPriceSwitcher.Refresh.Tests
-C:\Users\breathi\.dotnet\dotnet.exe publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=FrameworkDependent --output artifacts/publish/framework-dependent
-C:\Users\breathi\.dotnet\dotnet.exe publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=SelfContained --output artifacts/publish/self-contained
-```
+- `A compatible .NET SDK was not found`：命中了系统 Runtime；改用用户目录绝对路径。
+- `CS2012`、`MSB3021`、`MSB3027` 或文件占用：停止并行构建/测试/发布及运行中的应用，然后顺序重跑。
+- `dotnet test` 只有 restore 输出：命令用错；改跑上述六个 console runner。
