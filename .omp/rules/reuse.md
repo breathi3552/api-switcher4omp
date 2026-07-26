@@ -101,14 +101,14 @@ Application 只依赖 `ISettingsRepository` 与 `IPricingSnapshotRepository`。I
 
 Core 的 `ISiteCredentialStore` 提供 `LoadCredential`、`SaveCredential`、`ClearCredential`、`GetSummary(providerId)`。Windows 实现 `WindowsSiteCredentialStore` 使用当前用户 DPAPI 保护，按 provider id 的 SHA-256 文件名保存到 credentials 子目录；摘要只返回状态和中性文案。凭据 MUST 不进入 `LocalAppSettings`、`PricingSnapshot`、普通 JSON、日志、错误消息或 OMP 配置。凭据绑定/保存只建立 ProviderId 到安全存储的关联并校验站点类型，不代表供应商已验证；真实认证结果仅在价格探测时由 adapter 反映。`App.xaml.cs` 创建遵守 `--data-root` 的唯一生产 store，并将同一实例注入 `Sub2ApiPricingAdapter` 与 `MainViewModel → SitesDialog → SiteEditorDialog`；编辑器只读取 `GetSummary`，不得调用 `LoadCredential` 或回填 token/Cookie 原文。
 
-烟测和隔离运行 MUST 使用 fake/loopback、临时 data root 与合成凭据；不得打开含真实凭据的站点、截图或记录该界面。凭据更新/清除仅可在任务明确要求且隔离边界可证明时使用 synthetic secret 执行；否则记录人工验收点。验证按 [build-release.md](build-release.md) 的影响分级矩阵选择受影响 runner。
+烟测和隔离运行 MUST 使用 fake/loopback、临时 data root 与合成凭据；不得打开含真实凭据的站点或记录该界面。WPF 行为优先由 STA runner/Dispatcher 直接读取 DataContext、控件和 ViewModel 状态；独立进程 smoke 使用固定命令、隔离 root、日志/文件断言、退出码、Win32 窗口关闭及残留进程检查。凭据更新/清除仅可在任务明确要求且隔离边界可证明时使用 synthetic secret 执行；否则记录未执行原因与对应债务。验证按 [build-release.md](build-release.md) 的影响分级矩阵选择受影响 runner。
 ***
 
 ## 4. 日志、通知与命令
 
 ### ILogger/RollingFileLoggerProvider
 
-Application 和 Infrastructure 业务服务 MUST 依赖 `Microsoft.Extensions.Logging.ILogger<T>`，使用结构化、有限字段日志；日志实现由 `RollingFileLoggerProvider` 提供。它按日写入 `app-YYYYMMDD.log`，超过 `MaxFileBytes` 滚动并保留既有 retention 规则；允许的结构化字段是 `Operation`、`ProviderId`、`SiteType`、`FailureKind`、`ElapsedMilliseconds`。provider 会对 Authorization、Cookie、access_token、refresh_token、Bearer 等内容脱敏，日志失败不应使主流程崩溃。
+- Application 和 Infrastructure 业务服务 MUST 依赖 `Microsoft.Extensions.Logging.ILogger<T>`，使用结构化、有限字段日志；日志实现由 `RollingFileLoggerProvider` 提供。它按日写入 `app-YYYYMMDD.log`，超过 `MaxFileBytes` 滚动并保留既有 retention 规则；允许写入的 state 白名单字段是 `Operation`、`ProviderId`、`SiteType`、`FailureKind`、`ElapsedMilliseconds`。provider 的 `exception` 字段只存异常类型名，不序列化 exception message、Data 或 stack；并对 Authorization、Cookie、access_token、refresh_token、Bearer 等内容脱敏，日志失败不应使主流程崩溃。
 
 MUST NOT 记录完整 settings、credential、Authorization/Cookie header、响应 body 或把秘密拼到异常文本。若日志目录需要隔离，必须使用 `AppDataPaths.GetRoot(dataRoot)` 下的 logs。
 

@@ -12,6 +12,15 @@ var canceled = new AsyncCommand(() => Task.FromCanceled(new CancellationToken(tr
 canceled.Execute(null);
 await Task.Delay(100);
 Assert(errors.Count == 0 && canceled.CanExecute(null), "cancellation must not notify and must restore CanExecute");
+const string syntheticFailure = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
+var publicMessages = Enum.GetValues<ProviderPriceSwitcher.Application.PricingRefreshFailureKind>().Select(kind => UserErrorMessages.ForPricingFailure(kind))
+    .Concat(Enum.GetValues<ProviderPriceSwitcher.Application.SwitchAndStartStatus>().Select(status => UserErrorMessages.ForSwitchStatus(status, "provider")))
+    .Concat(Enum.GetValues<ProviderPriceSwitcher.Application.PricingAdapterFailure>().Select(UserErrorMessages.ForProbeFailure))
+    .Append(UserErrorMessages.Unexpected)
+    .ToArray();
+Assert(publicMessages.All(message => !message.Contains(syntheticFailure, StringComparison.Ordinal) && !message.Contains("api_key", StringComparison.OrdinalIgnoreCase) && !message.Contains("Cookie", StringComparison.OrdinalIgnoreCase) && !message.Contains("Authorization", StringComparison.OrdinalIgnoreCase) && !message.Contains("已验证请求指纹", StringComparison.Ordinal)), "public error mapping must remain fixed and non-sensitive");
+Assert(UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Timeout) == "请求超时，请稍后重试。" && UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication) == "需要重新绑定凭据。", "pricing failure mapping mismatch");
+Assert(UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.ConfigurationFailed, "provider").StartsWith("配置未切换，OMP 未启动", StringComparison.Ordinal) && UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.LaunchFailedAfterSwitch, "provider").StartsWith("配置已切换，但 OMP 启动失败", StringComparison.Ordinal), "switch failure mapping mismatch");
 var registry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
     new FakeAdapter(new("one", "One", false, ["无"])),
     new FakeAdapter(new("two", "Two", true, ["令牌", "账户"])),
@@ -39,7 +48,7 @@ var windowThread = new Thread(() =>
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
         var settings = settingsRepository.Load();
-        var viewModel = new MainViewModel(settingsRepository, refresh, registry, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(), new ProviderPriceSwitcher.Infrastructure.OmpProcessService(), settings, credentialStore, notifications);
+        var viewModel = new MainViewModel(settingsRepository, refresh, registry, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(), new ProviderPriceSwitcher.Infrastructure.OmpProcessService(), settings, credentialStore, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         var window = new MainWindow(viewModel);
         window.Show();
         Assert(ReferenceEquals(window.DataContext, viewModel), "main window must bind its view model as DataContext");

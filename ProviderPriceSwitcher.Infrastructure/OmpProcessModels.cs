@@ -14,15 +14,25 @@ public sealed record OmpExistingProcessHint(int Count)
     public bool Exists => Count > 0;
 }
 
+public enum OmpProcessFailureKind
+{
+    InvalidRequest,
+    WorkingDirectoryUnavailable,
+    ExecutableUnavailable,
+    AccessDenied,
+    StartFailed,
+    Unexpected
+}
+
 public sealed record OmpProcessStartResult(
     bool Succeeded,
     int? ProcessId,
     DateTimeOffset? StartTime,
     OmpExistingProcessHint ExistingProcess,
-    string? ErrorMessage)
+    OmpProcessFailureKind? FailureKind)
 {
-    public static OmpProcessStartResult Failure(OmpExistingProcessHint existingProcess, string errorMessage) =>
-        new(false, null, null, existingProcess, errorMessage);
+    public static OmpProcessStartResult Failure(OmpExistingProcessHint existingProcess, OmpProcessFailureKind failureKind) =>
+        new(false, null, null, existingProcess, failureKind);
 
     public static OmpProcessStartResult Success(
         OmpExistingProcessHint existingProcess,

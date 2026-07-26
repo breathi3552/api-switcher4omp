@@ -39,23 +39,35 @@ public sealed class OmpProcessService
             {
                 return OmpProcessStartResult.Failure(
                     existingProcess,
-                    "OMP process could not be started: the process gateway returned no process.");
+                    OmpProcessFailureKind.StartFailed);
             }
 
             var startTime = process.StartTime.ToUniversalTime();
             return OmpProcessStartResult.Success(existingProcess, process.Id, new DateTimeOffset(startTime));
         }
-        catch (Exception exception) when (exception is ArgumentException or DirectoryNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (DirectoryNotFoundException)
         {
-            return OmpProcessStartResult.Failure(
-                existingProcess,
-                $"OMP process could not be started: {exception.Message}");
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.WorkingDirectoryUnavailable);
         }
-        catch (Exception exception)
+        catch (FileNotFoundException)
         {
-            return OmpProcessStartResult.Failure(
-                existingProcess,
-                $"OMP process could not be started: {exception.Message}");
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.ExecutableUnavailable);
+        }
+        catch (ArgumentException)
+        {
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.InvalidRequest);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.AccessDenied);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.StartFailed);
+        }
+        catch (Exception)
+        {
+            return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.Unexpected);
         }
     }
 

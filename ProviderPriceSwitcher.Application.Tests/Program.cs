@@ -59,20 +59,20 @@ Assert(normalized.OmpWorkingDirectories.SequenceEqual(["C:\\Work", "D:\\Other"])
 
 settingsRepo.SaveCount = 0;
 var configuration = new FakeConfiguration(true);
-var launcher = new FakeLauncher(new OmpLaunchResult(true, false, null));
+var launcher = new FakeLauncher(new OmpLaunchResult(true, false));
 var switchUseCase = new SwitchAndStartUseCase(settingsRepo, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance);
 var switchSettings = new LocalAppSettings { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] };
 var started = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
 Assert(started.Status == SwitchAndStartStatus.Started && settingsRepo.SaveCount == 1 && launcher.Calls == 1 && started.Settings.LastOmpWorkingDirectory == "C:\\Two", "started outcome/order mismatch");
-configuration.Result = new OmpConfigurationOperationResult(false, "invalid");
+configuration.Result = new OmpConfigurationOperationResult(false);
 settingsRepo.SaveCount = 0; launcher.Calls = 0;
 var configurationFailed = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
 Assert(configurationFailed.Status == SwitchAndStartStatus.ConfigurationFailed && settingsRepo.SaveCount == 0 && launcher.Calls == 0, "configuration failure must stop pipeline");
-configuration.Result = new OmpConfigurationOperationResult(true, null);
-launcher.Result = new OmpLaunchResult(true, true, null);
+configuration.Result = new OmpConfigurationOperationResult(true);
+launcher.Result = new OmpLaunchResult(true, true);
 var existing = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
 Assert(existing.Status == SwitchAndStartStatus.StartedWithExistingProcess, "existing process outcome mismatch");
-launcher.Result = new OmpLaunchResult(false, false, "boom");
+launcher.Result = new OmpLaunchResult(false, false);
 settingsRepo.SaveCount = 0;
 var launchFailed = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
 Assert(launchFailed.Status == SwitchAndStartStatus.LaunchFailedAfterSwitch && settingsRepo.SaveCount == 1 && configuration.Calls == 4, "launch failure must preserve switched settings without rollback");
@@ -101,7 +101,7 @@ sealed class MemorySnapshots : IPricingSnapshotRepository
 }
 sealed class FakeConfiguration(bool succeeded) : IOmpConfigurationService
 {
-    public OmpConfigurationOperationResult Result { get; set; } = new(succeeded, succeeded ? null : "failed");
+    public OmpConfigurationOperationResult Result { get; set; } = new(succeeded);
     public int Calls { get; private set; }
     public Task<OmpConfigurationOperationResult> SwitchAsync(string ompRootDirectory, string providerId, CancellationToken cancellationToken = default) { Calls++; return Task.FromResult(Result); }
 }

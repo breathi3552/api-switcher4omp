@@ -9,6 +9,41 @@ public interface IUserNotificationService
     bool Confirm(string message, string title);
 }
 
+public static class UserErrorMessages
+{
+    public const string Unexpected = "操作失败，请查看日志或稍后重试。";
+    public const string ConfigurationReadFailed = "暂时无法读取 OMP 配置，请检查配置后重试。";
+    public const string ApplicationStartupFailed = "应用启动失败：无法加载本地设置或初始化服务。";
+    public const string Unhandled = "发生未处理错误，请查看日志或重新启动应用。";
+
+    public static string ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind? kind) => kind switch
+    {
+        ProviderPriceSwitcher.Application.PricingRefreshFailureKind.UnknownSiteType => "当前站点类型不受支持。",
+        ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Timeout => "请求超时，请稍后重试。",
+        ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication => "需要重新绑定凭据。",
+        ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Adapter => "价格服务返回无效结果，请稍后重试。",
+        ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Unexpected => Unexpected,
+        _ => Unexpected
+    };
+
+    public static string ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus status, string providerId) => status switch
+    {
+        ProviderPriceSwitcher.Application.SwitchAndStartStatus.ConfigurationFailed => "配置未切换，OMP 未启动，请检查配置。",
+        ProviderPriceSwitcher.Application.SwitchAndStartStatus.Started => $"已切换到 {providerId} 并启动 OMP。",
+        ProviderPriceSwitcher.Application.SwitchAndStartStatus.StartedWithExistingProcess => $"已切换到 {providerId} 并启动新 OMP；检测到已有 OMP 进程，请确认是否需要保留两个实例。",
+        ProviderPriceSwitcher.Application.SwitchAndStartStatus.LaunchFailedAfterSwitch => "配置已切换，但 OMP 启动失败，请检查工作目录。",
+        _ => Unexpected
+    };
+
+    public static string ForProbeFailure(ProviderPriceSwitcher.Application.PricingAdapterFailure failure) => failure switch
+    {
+        ProviderPriceSwitcher.Application.PricingAdapterFailure.Request => "网络请求失败，请稍后重试。",
+        ProviderPriceSwitcher.Application.PricingAdapterFailure.Timeout => "请求超时，请稍后重试。",
+        ProviderPriceSwitcher.Application.PricingAdapterFailure.InvalidResponse => "价格服务返回无效结果，请检查站点配置。",
+        _ => Unexpected
+    };
+}
+
 public sealed class WpfUserNotificationService : IUserNotificationService
 {
     public void ShowWarning(string message, string title) =>

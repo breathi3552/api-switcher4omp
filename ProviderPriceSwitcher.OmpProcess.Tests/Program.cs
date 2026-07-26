@@ -14,10 +14,10 @@ try
     var service = new OmpProcessService(gateway);
 
     var missingDirectory = service.Start(new OmpProcessStartRequest(Path.Combine(tempDirectory, "missing")));
-    Assert(!missingDirectory.Succeeded && missingDirectory.ErrorMessage!.Contains("Working directory", StringComparison.OrdinalIgnoreCase), "Missing directory must fail clearly.");
+    Assert(!missingDirectory.Succeeded && missingDirectory.FailureKind == OmpProcessFailureKind.WorkingDirectoryUnavailable, "Missing directory must return a stable failure kind.");
 
     var missingExecutable = service.Start(new OmpProcessStartRequest(tempDirectory, Path.Combine(tempDirectory, "missing.exe"), UseWindowsTerminal: false));
-    Assert(!missingExecutable.Succeeded && missingExecutable.ErrorMessage!.Contains("executable", StringComparison.OrdinalIgnoreCase), "Missing absolute executable must fail clearly.");
+    Assert(!missingExecutable.Succeeded && missingExecutable.FailureKind == OmpProcessFailureKind.ExecutableUnavailable, "Missing absolute executable must return a stable failure kind.");
 
     var bareCommand = service.Start(new OmpProcessStartRequest(tempDirectory, "dotnet", ["--version"], UseWindowsTerminal: false));
     Assert(bareCommand.Succeeded, "Bare commands must be allowed through PATH.");
@@ -31,9 +31,10 @@ try
     Assert(gateway.LastStartInfo!.FileName == "wt.exe", "Windows Terminal must be the launched executable.");
     Assert(gateway.LastStartInfo.ArgumentList.SequenceEqual(["-w", "new", "new-tab", "--startingDirectory", Path.GetFullPath(tempDirectory), "omp", "--help"]), "Windows Terminal arguments must preserve working directory and OMP arguments.");
 
-    gateway.StartException = new InvalidOperationException("stub launch failure");
+    const string syntheticSecret = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
+    gateway.StartException = new InvalidOperationException(syntheticSecret);
     var failedLaunch = service.Start(new OmpProcessStartRequest(tempDirectory, "dotnet", UseWindowsTerminal: false));
-    Assert(!failedLaunch.Succeeded && failedLaunch.ErrorMessage!.Contains("stub launch failure", StringComparison.Ordinal), "Launch exceptions must become explicit failure results.");
+    Assert(!failedLaunch.Succeeded && failedLaunch.FailureKind == OmpProcessFailureKind.StartFailed && !failedLaunch.ToString().Contains(syntheticSecret, StringComparison.Ordinal), "Launch exceptions must become a stable, non-leaking failure result.");
 
     Console.WriteLine("OmpProcess contract tests passed.");
 }

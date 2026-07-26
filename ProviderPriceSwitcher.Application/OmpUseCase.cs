@@ -2,8 +2,8 @@
 
 namespace ProviderPriceSwitcher.Application;
 
-public sealed record OmpConfigurationOperationResult(bool Succeeded, string? Error);
-public sealed record OmpLaunchResult(bool Succeeded, bool ExistingProcess, string? Error);
+public sealed record OmpConfigurationOperationResult(bool Succeeded);
+public sealed record OmpLaunchResult(bool Succeeded, bool ExistingProcess);
 
 public interface IOmpConfigurationService
 {
@@ -23,7 +23,7 @@ public enum SwitchAndStartStatus
     LaunchFailedAfterSwitch
 }
 
-public sealed record SwitchAndStartOutcome(SwitchAndStartStatus Status, LocalAppSettings Settings, string? Error);
+public sealed record SwitchAndStartOutcome(SwitchAndStartStatus Status, LocalAppSettings Settings);
 
 public sealed class SwitchAndStartUseCase(
     ISettingsRepository settingsRepository,
@@ -31,8 +31,8 @@ public sealed class SwitchAndStartUseCase(
     IOmpProcessLauncher processLauncher,
     ILogger<SwitchAndStartUseCase> logger)
 {
-    private static readonly Action<ILogger, string?, Exception?> LogLaunchFailure =
-        LoggerMessage.Define<string?>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed after configuration switch: {Error}");
+    private static readonly Action<ILogger, string, Exception?> LogLaunchFailure =
+        LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed after configuration switch: {FailureKind}");
 
     public async Task<SwitchAndStartOutcome> ExecuteAsync(
         LocalAppSettings settings,
@@ -42,7 +42,7 @@ public sealed class SwitchAndStartUseCase(
     {
         var configuration = await configurationService.SwitchAsync(settings.OmpRootDirectory, providerId, cancellationToken).ConfigureAwait(false);
         if (!configuration.Succeeded)
-            return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings, configuration.Error);
+            return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
 
         var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var updated = settings with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory };
@@ -51,13 +51,12 @@ public sealed class SwitchAndStartUseCase(
         var launch = processLauncher.Launch(workingDirectory);
         if (!launch.Succeeded)
         {
-            LogLaunchFailure(logger, launch.Error, null);
-            return new SwitchAndStartOutcome(SwitchAndStartStatus.LaunchFailedAfterSwitch, updated, launch.Error);
+            LogLaunchFailure(logger, SwitchAndStartStatus.LaunchFailedAfterSwitch.ToString(), null);
+            return new SwitchAndStartOutcome(SwitchAndStartStatus.LaunchFailedAfterSwitch, updated);
         }
 
         return new SwitchAndStartOutcome(
             launch.ExistingProcess ? SwitchAndStartStatus.StartedWithExistingProcess : SwitchAndStartStatus.Started,
-            updated,
-            null);
+            updated);
     }
 }
