@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Provider Price Switcher</title>
+  <desc id="desc">Two price bars above opposing horizontal arrows on a blue rounded square.</desc>
+
+  <!-- Transparent canvas with the application brand surface. -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#1F6FEB"/>
+
+  <!-- Two deliberately different price levels communicate comparison. -->
+  <g id="price-comparison" fill="#FFFFFF">
+    <rect x="66" y="78" width="38" height="54" rx="8"/>
+    <rect x="118" y="44" width="38" height="88" rx="8"/>
+  </g>
+
+  <!-- Straight, opposing arrows communicate an explicit user-directed switch. -->
+  <g id="explicit-switch" fill="#FFFFFF">
+    <path d="M54 150H164V136L204 164L164 192V178H54Z"/>
+    <path d="M202 220H92V234L52 206L92 178V192H202Z"/>
+  </g>
+</svg>

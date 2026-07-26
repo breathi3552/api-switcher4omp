@@ -11,7 +11,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 目标平台为 Windows 11；主要交互是 WPF 桌面 GUI，不以命令行为主要入口。
 - 生产代码使用 .NET 8，解决方案由 Core、Application、Adapters、Infrastructure 和 App 五个项目组成；测试项目以各层 console runner 形式存在。
 - Core 保存价格、快照、成本和推荐所需的环境无关领域模型与计算；Application 编排价格检查、设置管理和 OMP 切换/启动用例；Adapters 封装供应商协议；Infrastructure 提供文件、Windows 凭据、OMP 配置和进程等外部能力；App 负责 WPF 装配与呈现。
-- 站点通过适配器注册表按 `SiteType` 接入。目前代码包含 New API、PawsAI 和需要认证的 Sub2API 价格适配器。适配器将认证失败、超时、请求错误、无效响应、模型/分组缺失和不支持的计费规则转换为结构化结果或失败。
+- 站点通过适配器注册表按 `SiteType` 接入。目前代码包含 New API、PawsAI、需要认证的 SevnX 和 AIHub 价格适配器。适配器将认证失败、超时、请求错误、无效响应、模型/分组缺失和不支持的计费规则转换为结构化结果或失败。
 - 本地设置和最后成功价格快照位于用户专用的应用数据根（测试可注入隔离 data root）；OMP 根目录和常用工作目录由用户维护。
 
 ## 核心实现目标与业务不变量
@@ -30,7 +30,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 
 - 首页启动时加载并展示已保存的最后成功价格、倍率、来源和检查时间；不会因为启动而发起网络检查。价格检查由用户点击触发，可取消，并设有逐请求超时。
 - 支持站点新增、编辑、删除、启用/禁用；保存站点设置、当前分组倍率、可配置的配置 API 地址（默认 `/keys`）及最后成功价格快照。当前首页展示当前分组和最低倍率分组；双击当前组行会用系统默认浏览器打开该站点的配置 API 页面，最低分组不触发导航。最低分组仅供用户手动选择，不参与自动推荐，也不声称账户已具备该分组权限。
-- New API 公开价格查询、PawsAI 价格文件解析和 Sub2API 鉴权价格查询已经接入；支持浏览器 access token/Cookie 的绑定、更新、清除和状态展示。绑定动作不会验证凭据；价格探测时才由 adapter 认证结果反映真实有效性。已处理真实计费表达式中的已知条件，并对无法可靠标准化的复杂条件拒绝猜测。
+- New API 公开价格查询、PawsAI 价格文件解析、SevnX 鉴权价格查询和 AIHub 鉴权分组查询已经接入；AIHub 对固定模型使用每百万 Token 输入 5、缓存输入 0.5、输出 30 的默认基础价格，并按账号分组倍率计算。支持浏览器 access token/Cookie 的绑定、更新、清除和状态展示。绑定动作不会验证凭据；价格探测时才由 adapter 认证结果反映真实有效性。已处理真实计费表达式中的已知条件，并对无法可靠标准化的复杂条件拒绝猜测。
 - 推荐和成本计算使用固定的“Codex 高缓存”默认用量：未缓存输入 200,000、缓存读取 800,000、输出 100,000 Token。站内计价单位与人民币统一换算尚未完成。
 - 可从 OMP `config.yml` 的 `modelRoles.default` 识别当前 Provider；切换服务统一处理 `modelRoles` 与 `task.agentModelOverrides` 下的直接 provider/model 标量引用，保留模型名，并通过与资源管理器右键菜单同源的 Windows Terminal/PowerShell 启动形态在选定目录启动 OMP。已检测到已有 OMP 进程时不会强杀旧会话。
 - Core、Adapters、Application、Infrastructure、OMP 配置、OMP 进程、Refresh 和 App 八个契约 runner 已通过；计划 07 的 settings 不可变性、刷新职责、JSON compatibility、调用方迁移和隔离 WPF smoke 证据，以 [`Quality-Debt-Register.md`](Quality-Debt-Register.md) 的矩阵和共享证据为唯一入口。

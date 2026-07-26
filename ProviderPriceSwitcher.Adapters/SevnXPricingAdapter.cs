@@ -6,14 +6,14 @@ using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Adapters;
 
-public sealed class Sub2ApiPricingAdapter : IPricingAdapter
+public sealed class SevnXPricingAdapter : IPricingAdapter
 {
     private readonly HttpClient _httpClient;
     private readonly ISiteCredentialStore _credentialStore;
 
-    public PricingAdapterDescriptor Descriptor { get; } = new("sub2api", "Sub2API", true, ["导入令牌"]);
+    public PricingAdapterDescriptor Descriptor { get; } = new("sevnx", "SevnX", true, ["导入令牌"]);
 
-    public Sub2ApiPricingAdapter(HttpClient httpClient, ISiteCredentialStore credentialStore)
+    public SevnXPricingAdapter(HttpClient httpClient, ISiteCredentialStore credentialStore)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _credentialStore = credentialStore ?? throw new ArgumentNullException(nameof(credentialStore));
@@ -44,15 +44,15 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
         }
         catch (HttpRequestException ex)
         {
-            throw new PricingAdapterException(PricingAdapterFailure.Request, "Sub2API 请求失败。", ex);
+            throw new PricingAdapterException(PricingAdapterFailure.Request, "SevnX 请求失败。", ex);
         }
         catch (TaskCanceledException ex)
         {
-            throw new PricingAdapterException(PricingAdapterFailure.Timeout, "Sub2API 请求超时。", ex);
+            throw new PricingAdapterException(PricingAdapterFailure.Timeout, "SevnX 请求超时。", ex);
         }
         catch (JsonException ex)
         {
-            throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "Sub2API 返回了无效 JSON。", ex);
+            throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "SevnX 返回了无效 JSON。", ex);
         }
     }
 
@@ -205,7 +205,7 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
     private static JsonElement Unwrap(JsonElement root)
     {
         if (root.ValueKind == JsonValueKind.Array) return root;
-        if (root.ValueKind != JsonValueKind.Object) throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "Sub2API response root must be object or array.");
+        if (root.ValueKind != JsonValueKind.Object) throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, "SevnX response root must be object or array.");
         if (root.TryGetProperty("data", out var data)) return data;
         return root;
     }
