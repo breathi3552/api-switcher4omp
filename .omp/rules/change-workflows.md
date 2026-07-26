@@ -110,7 +110,7 @@ globs: ["**/*.cs", "**/*.xaml", "**/*.csproj"]
 
 - MUST 确认变化属于展示、交互、绑定或窗口生命周期，并定位其对应 Application 用例；业务规则变化 MUST 先回到 Application 流程。
 - MUST 复用现有 AsyncCommand、通知和对话框边界，确认线程、取消、重复点击和关闭窗口时的行为。
-- MUST 明确真实用户设置、凭据和 OMP 配置不可用于测试：准备隔离 data root，在 `settings.json` 显式设置临时 `OmpRootDirectory`，并另设合法的临时 `OmpWorkingDirectories`/`LastOmpWorkingDirectory`。当前凭据编辑器尚未沿用 `--data-root`，迁移完成前烟测不得执行绑定、更新或清除凭据。
+- MUST 明确真实用户设置、凭据和 OMP 配置不可用于测试：准备隔离 data root，在 `settings.json` 显式设置临时 `OmpRootDirectory`，并另设合法的临时 `OmpWorkingDirectories`/`LastOmpWorkingDirectory`。凭据编辑路径只使用注入的隔离 store；无法可靠自动化的更新/清除交互必须保留为人工验收点。
 
 ### 实施步骤
 
@@ -122,7 +122,7 @@ globs: ["**/*.cs", "**/*.xaml", "**/*.csproj"]
 ### 必须验证
 
 - MUST 按 `rule://build-release` 的受影响级别执行验证；UI 变更实际启动应用完成受影响路径的隔离 WPF smoke，仅跨 UI 或发布候选执行完整 UI smoke。
-- MUST 操作主窗口和受影响对话框路径；凭据编辑器在隔离债务修复前只验证无写入路径；确认日志只写入隔离目录。
+- MUST 操作主窗口和受影响对话框路径；凭据更新/清除只在隔离边界可证明时使用 synthetic secret，否则记录具体人工验收步骤、期望与风险；确认日志只写入隔离目录。
 - 完成判据：目标交互在真实启动进程中可操作，异步状态和错误显示正确，无真实用户数据副作用且无后台进程残留；任何无法安全隔离的写操作必须明确跳过并记录对应债务，不得伪称已验证。
 
 

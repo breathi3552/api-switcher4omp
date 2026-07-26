@@ -5,7 +5,6 @@ using System.Windows;
 using System.Windows.Controls;
 using ProviderPriceSwitcher.Core;
 using ProviderPriceSwitcher.Application;
-using ProviderPriceSwitcher.Infrastructure;
 
 namespace ProviderPriceSwitcher.App;
 public sealed partial class SiteEditorDialog : Window
@@ -19,19 +18,22 @@ public sealed partial class SiteEditorDialog : Window
     private readonly PasswordBox _token = new();
     private readonly ComboBox _siteType = new() { IsReadOnly = true, DisplayMemberPath = nameof(PricingAdapterDescriptor.DisplayName) };
     private readonly ComboBox _authentication = new() { IsReadOnly = true };
-    private readonly WindowsSiteCredentialStore _credentialStore = new();
+    private readonly ISiteCredentialStore _credentialStore;
+    private readonly IUserNotificationService _notifications;
     private readonly TextBlock _credentialStatus = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
     private readonly TextBlock _probeResult = new() { TextWrapping = TextWrapping.Wrap, Foreground = System.Windows.Media.Brushes.DimGray };
     private readonly Button _save = new() { Content = "保存", IsDefault = true };
     public SiteConfiguration? Site { get; private set; }
 
-    public SiteEditorDialog(SiteConfiguration? original, LocalAppSettings settings, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry)
+    public SiteEditorDialog(SiteConfiguration? original, LocalAppSettings settings, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
     {
         InitializeComponent();
         _original = original;
         _settings = settings;
         _refreshService = refreshService;
         _adapterRegistry = adapterRegistry;
+        _credentialStore = credentialStore;
+        _notifications = notifications;
         _siteType.ItemsSource = adapterRegistry.Descriptors;
         _pricingProbe = new PricingProbeUseCase(adapterRegistry);
         Title = original is null ? "新增站点" : "编辑站点";
@@ -52,8 +54,6 @@ public sealed partial class SiteEditorDialog : Window
         _ratio.Text = (original?.CurrentGroupRatio ?? refreshService.LoadSnapshots().GetValueOrDefault(original?.ProviderId ?? string.Empty)?.CurrentGroupRatio)?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
         _currency.Text = original?.Currency ?? string.Empty;
         _conversion.Text = original?.CnyConversionRate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-        var existingCredential = string.IsNullOrWhiteSpace(original?.ProviderId) ? null : _credentialStore.LoadCredential(original.ProviderId);
-        _cookieHeader.Text = existingCredential?.CookieHeader ?? string.Empty;
 
         var form = new StackPanel { Margin = new Thickness(20) };
         form.Children.Add(Section("基本信息"));
@@ -64,8 +64,8 @@ public sealed partial class SiteEditorDialog : Window
         form.Children.Add(Field("Base URL", _url));
         form.Children.Add(Field("认证方式", _authentication));
         form.Children.Add(_credentialStatus);
-        form.Children.Add(Field("访问令牌", _token));
-        form.Children.Add(Field("浏览器会话 Cookie（形如 refresh_token=...）", _cookieHeader));
+        form.Children.Add(Field("本次绑定/更新的访问令牌", _token));
+        form.Children.Add(Field("本次绑定/更新的浏览器会话 Cookie（形如 refresh_token=...）", _cookieHeader));
         var credentialButtons = new StackPanel { Orientation = Orientation.Horizontal };
         var bindCredential = new Button { Content = "绑定/更新令牌" };
         bindCredential.Click += (_, _) => SaveCredential();
@@ -102,8 +102,9 @@ public sealed partial class SiteEditorDialog : Window
         var summary = string.IsNullOrWhiteSpace(provider)
             ? new SiteCredentialSummary { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured, StatusText = descriptor?.RequiresCredential == true ? "请先填写 ProviderId，再绑定令牌。" : "当前站点无需凭据。" }
             : _credentialStore.GetSummary(provider);
-        var suffix = summary.ExpiresAt is DateTimeOffset expiresAt ? $"；到期 {expiresAt.LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty;
-        _credentialStatus.Text = $"凭据状态：{summary.StatusText}{suffix}";
+        var expiry = summary.ExpiresAt is DateTimeOffset expiresAt ? $"；到期 {expiresAt.LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty;
+        var updated = summary.UpdatedAt is DateTimeOffset updatedAt ? $"；更新 {updatedAt.LocalDateTime:yyyy-MM-dd HH:mm}" : string.Empty;
+        _credentialStatus.Text = $"凭据状态：{summary.StatusText}{expiry}{updated}";
     }
 
     private void SaveCredential()
@@ -113,17 +114,17 @@ public sealed partial class SiteEditorDialog : Window
         var siteType = descriptor?.SiteType ?? string.Empty;
         if (string.IsNullOrWhiteSpace(provider) || descriptor?.RequiresCredential != true)
         {
-            MessageBox.Show("当前站点类型不支持绑定令牌，请先填写 ProviderId 并选择需要凭据的站点类型。", "无法绑定", MessageBoxButton.OK, MessageBoxImage.Information);
+            _notifications.ShowWarning("当前站点类型不支持绑定令牌，请先填写 ProviderId 并选择需要凭据的站点类型。", "无法绑定");
             return;
         }
         if (string.IsNullOrWhiteSpace(_token.Password))
         {
-            MessageBox.Show("访问令牌不能为空。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _notifications.ShowWarning("访问令牌不能为空。", "校验失败");
             return;
         }
         if (string.IsNullOrWhiteSpace(_cookieHeader.Text))
         {
-            MessageBox.Show("浏览器会话 Cookie 不能为空。请从成功的 SevnX 价格请求中复制 Cookie header。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _notifications.ShowWarning("浏览器会话 Cookie 不能为空。请从成功的价格请求中复制 Cookie header。", "校验失败");
             return;
         }
         _credentialStore.SaveCredential(new SiteCredentialRecord
@@ -137,13 +138,15 @@ public sealed partial class SiteEditorDialog : Window
         _token.Password = string.Empty;
         _cookieHeader.Text = string.Empty;
         UpdateCredentialStatus();
-        _probeResult.Text = "访问令牌与浏览器会话 Cookie 已保存；价格查询会使用已验证的浏览器请求指纹。";
+        _probeResult.Text = "凭据已更新。有效性将在价格查询时确认。";
     }
 
     private void ClearCredential()
     {
         var provider = _provider.Text.Trim();
-        if (string.IsNullOrWhiteSpace(provider)) return;
+        var descriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
+        if (string.IsNullOrWhiteSpace(provider) || descriptor?.RequiresCredential != true) return;
+        if (!_notifications.Confirm($"确定清除 Provider {provider} 的本地凭据吗？", "清除凭据")) return;
         _credentialStore.ClearCredential(provider);
         _token.Password = string.Empty;
         _cookieHeader.Text = string.Empty;

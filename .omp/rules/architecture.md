@@ -110,8 +110,7 @@ flowchart LR
 
 - `MainViewModel` 仍接收 `JsonSettingsRepository`、`OmpConfigurationSwitcher`、`OmpProcessService` 并在内部创建部分 Application 用例。
 - `SitesDialog` 仍接收具体 repository/refresh service 并在内部创建 `SiteManagementUseCase`。
-- `SiteEditorDialog` 仍在内部创建 `PricingProbeUseCase` 和 `WindowsSiteCredentialStore`；若继续改造该路径，SHOULD 优先改为从 composition root 注入契约。
-- `SiteEditorDialog` 当前会从默认凭据 root 读取凭据，并把 Cookie 原文回填到 TextBox；这是高风险债务。任何烟测 MUST 使用隔离数据且不得打开含真实凭据的站点、截图/记录该界面或执行凭据操作。
+- `SiteEditorDialog` 仍在内部创建 `PricingProbeUseCase`；credential store 已从 composition root 经 `MainViewModel`/`SitesDialog` 注入，不再创建具体 store 或读取凭据原文。
 - 三个对话框当前以 programmatic code-behind 构建大部分控件；新增界面不得把这种形态扩展为新的业务编排入口。
 
 触及上述代码时遵循“先不扩大、能够顺手收敛则收敛”的原则；若迁移公开构造契约，必须一次性更新全部调用者与 runner。

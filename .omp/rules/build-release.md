@@ -92,7 +92,7 @@ WPF 变更仅验证受影响窗口/路径，跨 UI 或发布候选才执行完�
 & $dotnet run --project ProviderPriceSwitcher.App --no-build -- --data-root '<临时 data 目录>'
 ```
 
-SiteEditorDialog 当前会从默认凭据 root 读取凭据并把 Cookie 原文回填 TextBox；这是高风险债务。烟测不得打开含真实凭据的站点、截图/记录该界面或执行绑定、更新、清除凭据操作；真实凭据不得输入。
+SiteEditorDialog 只使用 composition root 注入的隔离 credential store，并且不得调用 `LoadCredential` 或回填原文。烟测不得使用真实凭据或真实 Provider；凭据更新/清除仅在任务明确要求且临时 data root、合成站点及 synthetic secret 均可证明时执行，否则记录人工验收点。
 
 受影响路径的绑定成功 MUST 由可观察 UI 结果证明，不能只以进程存活判定；日志只写入隔离目录。烟测完成后正常关闭窗口，不保留后台进程。
 
