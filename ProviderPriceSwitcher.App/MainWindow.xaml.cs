@@ -30,6 +30,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly OmpProcessService _processService;
     private readonly IAppPathDefaults _pathDefaults = new AppPathDefaults();
     private readonly IUserNotificationService _notifications;
+    private readonly ISiteCredentialStore _credentialStore;
     private LocalAppSettings _settings;
     private CancellationTokenSource? _checkCancellation;
     private string _statusText = "准备就绪";
@@ -40,7 +41,7 @@ public sealed class MainViewModel : ObservableObject
     private string? _selectedWorkingDirectory;
     private PricingRefreshResult? _lastResult;
 
-    public MainViewModel(JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, OmpConfigurationSwitcher switcher, OmpProcessService processService, LocalAppSettings settings, IUserNotificationService notifications)
+    public MainViewModel(JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, OmpConfigurationSwitcher switcher, OmpProcessService processService, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
     {
         _settingsRepository = settingsRepository;
         _refreshService = refreshService;
@@ -52,6 +53,7 @@ public sealed class MainViewModel : ObservableObject
         _processService = processService;
         _settings = settings;
         _notifications = notifications;
+        _credentialStore = credentialStore;
         InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
         CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
         CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
@@ -190,7 +192,7 @@ public sealed class MainViewModel : ObservableObject
         catch (Exception ex) { StatusText = "执行切换时发生错误：" + ex.Message; }
     }
 
-    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _settingsRepository, _refreshService, _adapterRegistry, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
+    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _settingsRepository, _refreshService, _adapterRegistry, _credentialStore, _notifications, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
     private async Task EditSettingsAsync() { var dialog = new SettingsDialog(_settings); if (dialog.ShowDialog() == true) { _settings = _settingsUseCase.Save(dialog.Settings); SyncSettings(); await ReadCurrentProviderAsync(); LoadPersistedPrices(); } }
     private void HandleCommandError(Exception exception)
     {

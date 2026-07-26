@@ -13,6 +13,8 @@ public sealed partial class SitesDialog : Window
     private readonly JsonSettingsRepository _settingsRepository;
     private readonly PricingRefreshService _refreshService;
     private readonly IPricingAdapterRegistry _adapterRegistry;
+    private readonly ISiteCredentialStore _credentialStore;
+    private readonly IUserNotificationService _notifications;
     private readonly SiteManagementUseCase _siteManagement;
     private readonly string? _currentProvider;
     private readonly DataGrid _grid = new() { AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false, SelectionMode = DataGridSelectionMode.Single };
@@ -22,13 +24,15 @@ public sealed partial class SitesDialog : Window
 
     public LocalAppSettings Settings { get; private set; }
 
-    public SitesDialog(LocalAppSettings settings, JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, string? currentProvider)
+    public SitesDialog(LocalAppSettings settings, JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications, string? currentProvider)
     {
         InitializeComponent();
         Settings = settings;
         _settingsRepository = settingsRepository;
         _refreshService = refreshService;
         _adapterRegistry = adapterRegistry;
+        _credentialStore = credentialStore;
+        _notifications = notifications;
         _siteManagement = new SiteManagementUseCase(settingsRepository, refreshService.SnapshotRepository);
         _currentProvider = currentProvider;
         Title = "管理站点";
@@ -95,7 +99,7 @@ public sealed partial class SitesDialog : Window
 
     private void AddSite()
     {
-        var dialog = new SiteEditorDialog(null, Settings, _refreshService, _adapterRegistry) { Owner = this };
+        var dialog = new SiteEditorDialog(null, Settings, _refreshService, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Site is null) return;
         SaveSite(dialog.Site, null);
     }
@@ -105,7 +109,7 @@ public sealed partial class SitesDialog : Window
         var selected = Selected;
         if (selected is null) return;
         var original = Settings.Sites.First(x => string.Equals(x.ProviderId, selected.ProviderId, StringComparison.Ordinal));
-        var dialog = new SiteEditorDialog(original, Settings, _refreshService, _adapterRegistry) { Owner = this };
+        var dialog = new SiteEditorDialog(original, Settings, _refreshService, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Site is null) return;
         SaveSite(dialog.Site, original.ProviderId);
     }

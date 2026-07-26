@@ -68,9 +68,9 @@ globs: ["**/*.cs", "**/*.xaml"]
 ## 凭据安全
 
 - 凭据 MUST 使用 Windows 安全存储（当前 `ISiteCredentialStore` 实现）保存；MUST NOT 写入站点设置 JSON、价格快照、备份、日志、错误消息、UI 快照或仓库。
-- 新代码中 Token、Cookie 和 Authorization 信息 MUST 只在需要的凭据输入或 adapter 调用边界短暂存在，不得复制到 ViewModel、快照、诊断对象或可序列化模型；UI 只能显示凭据状态、过期时间等摘要。当前违反该目标的已知债务见下一条。
+- 新代码中 Token、Cookie 和 Authorization 信息 MUST 只在需要的凭据输入或 adapter 调用边界短暂存在，不得复制到 ViewModel、快照、诊断对象或可序列化模型；UI 只能显示凭据状态、过期时间等摘要。
 - 凭据的绑定、保存和清除只负责按 ProviderId 存取并校验站点类型，不等同于供应商验证；绑定动作 MUST NOT 声称凭据有效。真实有效性只在价格探测/适配器调用期间由供应商认证结果反映，并 MUST 映射为结构化认证状态。
-- 当前 `SiteEditorDialog` 会从默认凭据 root 读取凭据，并把 Cookie 原文回填到 TextBox；这是高风险现状债务，MUST NOT 复制为新 UI 模板或扩大暴露面。烟测不得打开含真实凭据的站点、截图或记录该界面，也不得执行凭据绑定、更新、清除等操作。
+- `SiteEditorDialog` MUST 只使用注入的 `ISiteCredentialStore.GetSummary` 展示中性状态；MUST NOT 调用 `LoadCredential` 或把 token/Cookie 原文回填到控件。更新成功后必须立即清空一次性输入，清除必须经明确确认。烟测不得使用真实凭据、真实 Provider 或真实用户 data root。
 - 凭据传输 MUST 使用 HTTPS/TLS 端点；不得把令牌拼进日志、异常文本、URL 查询字符串或进程命令行。测试 MUST 使用合成凭据，并断言其不出现在持久化和日志输出中。
 - 审查标准：搜索序列化模型和日志调用的凭据字段；验证凭据 store 是唯一持久化入口；区分绑定/保存与供应商认证；检查异常、备份和临时文件内容均无敏感值。
 

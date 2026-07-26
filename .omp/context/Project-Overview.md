@@ -31,8 +31,8 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - New API 公开价格查询、PawsAI 价格文件解析和 Sub2API 鉴权价格查询已经接入；支持浏览器 access token/Cookie 的绑定、更新、清除和状态展示。绑定动作不会验证凭据；价格探测时才由 adapter 认证结果反映真实有效性。已处理真实计费表达式中的已知条件，并对无法可靠标准化的复杂条件拒绝猜测。
 - 推荐和成本计算使用固定的“Codex 高缓存”默认用量：未缓存输入 200,000、缓存读取 800,000、输出 100,000 Token。站内计价单位与人民币统一换算尚未完成。
 - 可从 OMP `config.yml` 的 `modelRoles.default` 识别当前 Provider；切换服务统一处理 `modelRoles` 与 `task.agentModelOverrides` 下的直接 provider/model 标量引用，保留模型名，并通过 Windows Terminal 在选定目录启动 OMP。已检测到已有 OMP 进程时不会强杀旧会话。
-- 已有 Core、Adapters、Infrastructure、Application、OMP 配置和 OMP 进程相关契约 runner，覆盖成本边界、同价选择、刷新失败、适配器解析、持久化、备份原子写入、配置切换和进程边界等行为。
-- `SiteEditorDialog` 当前仍从默认凭据 root 创建无参 `WindowsSiteCredentialStore`，加载凭据时会将 Cookie 原文回填到 TextBox；该 UI 路径尚未隔离，是已知高风险债务。烟测不得打开含真实凭据的站点、截图或记录该界面，也不得执行凭据绑定、更新或清除操作。
+- 已有 Core、Adapters、Application、Infrastructure、OMP 配置、OMP 进程、Refresh 和 App 八个契约 runner，覆盖成本边界、同价选择、刷新失败、适配器解析、持久化、备份原子写入、配置切换、进程边界，以及凭据编辑 UI 的注入和一次性输入安全契约。
+- `App.xaml.cs` 从 `--data-root` 创建唯一的 `WindowsSiteCredentialStore`，同一实例注入 Sub2API adapter 与 `MainViewModel → SitesDialog → SiteEditorDialog`。编辑器只读取凭据摘要，不调用 `LoadCredential` 或回填 token/Cookie；更新后立即清空一次性输入，清除前要求明确确认。
 
 ## 明确非目标与安全边界
 

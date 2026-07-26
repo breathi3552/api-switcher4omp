@@ -28,22 +28,79 @@ Assert(typed.SiteType == "two" && typed.AuthenticationMode == "令牌", "saved s
 Exception? windowFailure = null;
 var windowThread = new Thread(() =>
 {
+    var root = Path.Combine(Path.GetTempPath(), $"ProviderPriceSwitcher-AppTests-{Guid.NewGuid():N}");
     try
     {
         var application = new System.Windows.Application();
         application.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary { Source = new Uri("/ProviderPriceSwitcher.App;component/Styles.xaml", UriKind.Relative) });
-        var root = Path.Combine(Path.GetTempPath(), $"ProviderPriceSwitcher-AppTests-{Guid.NewGuid():N}");
         var settingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(root);
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, snapshots, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var viewModel = new MainViewModel(settingsRepository, refresh, registry, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(), new ProviderPriceSwitcher.Infrastructure.OmpProcessService(), settingsRepository.Load(), new FakeNotifications());
+        var credentialStore = new FakeCredentialStore();
+        var notifications = new FakeNotifications();
+        var settings = settingsRepository.Load();
+        var viewModel = new MainViewModel(settingsRepository, refresh, registry, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(), new ProviderPriceSwitcher.Infrastructure.OmpProcessService(), settings, credentialStore, notifications);
         var window = new MainWindow(viewModel);
+        window.Show();
         Assert(ReferenceEquals(window.DataContext, viewModel), "main window must bind its view model as DataContext");
+        Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(viewModel, "_credentialStore"), credentialStore), "main view model must retain the injected credential store");
+
+        var site = new ProviderPriceSwitcher.Core.SiteConfiguration
+        {
+            ProviderId = "synthetic-provider",
+            ConfigurationKey = "synthetic-key",
+            BaseUrl = new Uri("https://example.test"),
+            SiteType = "two",
+            Model = "model",
+            CurrentGroup = "group",
+            CurrentGroupRatio = 1m,
+            AuthenticationMode = "令牌"
+        };
+        settings = settings with { Sites = [site] };
+        var sitesDialog = new SitesDialog(settings, settingsRepository, refresh, registry, credentialStore, notifications, null);
+        Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(sitesDialog, "_credentialStore"), credentialStore), "sites dialog must retain the same credential store");
+        sitesDialog.Close();
+
+        var dialog = new SiteEditorDialog(site, settings, refresh, registry, credentialStore, notifications);
+        dialog.Show();
+        dialog.UpdateLayout();
+        var tokenInput = FindDescendant<System.Windows.Controls.PasswordBox>(dialog);
+        var cookieInput = FindField<System.Windows.Controls.TextBox>(dialog, "本次绑定/更新的浏览器会话 Cookie（形如 refresh_token=...）");
+        Assert(string.IsNullOrEmpty(tokenInput.Password) && string.IsNullOrEmpty(cookieInput.Text), "stored credentials must never populate credential inputs");
+        Assert(credentialStore.LoadCalls == 0 && credentialStore.SummaryCalls > 0, "editor must use summary without loading credential material");
+
+        FindButton(dialog, "绑定/更新令牌").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.SaveCalls == 0 && notifications.WarningCalls == 1, "empty credential input must not overwrite the store");
+
+        var token = $"synthetic-token-{Guid.NewGuid():N}";
+        var cookie = $"synthetic-cookie-{Guid.NewGuid():N}";
+        credentialStore.ExpectedToken = token;
+        credentialStore.ExpectedCookie = cookie;
+        tokenInput.Password = token;
+        cookieInput.Text = cookie;
+        FindButton(dialog, "绑定/更新令牌").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput, "explicit credential update must save the current provider and site type once");
+        Assert(string.IsNullOrEmpty(tokenInput.Password) && string.IsNullOrEmpty(cookieInput.Text), "credential inputs must clear immediately after update");
+        Assert(!GetVisibleText(dialog).Contains(token, StringComparison.Ordinal) && !GetVisibleText(dialog).Contains(cookie, StringComparison.Ordinal), "credential material must not remain in visible UI text");
+
+        notifications.ConfirmResult = false;
+        FindButton(dialog, "清除凭据").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.ClearCalls == 0, "declined credential clear must not touch the store");
+        notifications.ConfirmResult = true;
+        FindButton(dialog, "清除凭据").RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.ClearCalls == 1 && credentialStore.LastClearedProvider == site.ProviderId, "confirmed credential clear must target the current provider once");
+
+        dialog.Close();
         window.Close();
         application.Shutdown();
-        if (Directory.Exists(root)) Directory.Delete(root, true);
+        var persistedText = string.Join('\n', Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Select(File.ReadAllText) : []);
+        Assert(!persistedText.Contains(token, StringComparison.Ordinal) && !persistedText.Contains(cookie, StringComparison.Ordinal), "credential material must not enter app JSON or other ordinary files");
     }
     catch (Exception ex) { windowFailure = ex; }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+    }
 });
 windowThread.SetApartmentState(ApartmentState.STA);
 windowThread.Start();
@@ -51,6 +108,42 @@ windowThread.Join();
 if (windowFailure is not null) throw windowFailure;
 
 Console.WriteLine("App contract tests passed.");
+
+static T GetField<T>(object instance, string name) where T : class =>
+    (T)(instance.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?.GetValue(instance)
+        ?? throw new InvalidOperationException($"field {name} was not found"));
+
+static IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject root)
+{
+    for (var index = 0; index < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); index++)
+    {
+        var child = System.Windows.Media.VisualTreeHelper.GetChild(root, index);
+        yield return child;
+        foreach (var descendant in Descendants(child)) yield return descendant;
+    }
+}
+
+static T FindDescendant<T>(System.Windows.DependencyObject root) where T : System.Windows.DependencyObject =>
+    Descendants(root).OfType<T>().FirstOrDefault() ?? throw new InvalidOperationException($"control {typeof(T).Name} was not found");
+
+static T FindField<T>(System.Windows.DependencyObject root, string label) where T : System.Windows.Controls.Control =>
+    Descendants(root).OfType<System.Windows.Controls.StackPanel>()
+        .Where(panel => panel.Children.OfType<System.Windows.Controls.TextBlock>().Any(text => string.Equals(text.Text, label, StringComparison.Ordinal)))
+        .SelectMany(panel => panel.Children.OfType<T>())
+        .FirstOrDefault() ?? throw new InvalidOperationException($"field labeled {label} was not found");
+
+static System.Windows.Controls.Button FindButton(System.Windows.DependencyObject root, string content) =>
+    Descendants(root).OfType<System.Windows.Controls.Button>().FirstOrDefault(button => string.Equals(button.Content as string, content, StringComparison.Ordinal))
+        ?? throw new InvalidOperationException($"button {content} was not found");
+
+static string GetVisibleText(System.Windows.DependencyObject root) => string.Join('\n',
+    Descendants(root).Select(control => control switch
+    {
+        System.Windows.Controls.TextBlock text => text.Text,
+        System.Windows.Controls.TextBox text => text.Text,
+        System.Windows.Controls.PasswordBox password => password.Password,
+        _ => null
+    }).Where(text => text is not null));
 
 sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescriptor descriptor) : ProviderPriceSwitcher.Application.IPricingAdapter
 {
@@ -60,7 +153,55 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
 
 sealed class FakeNotifications : IUserNotificationService
 {
-    public void ShowWarning(string message, string title) { }
+    public int WarningCalls { get; private set; }
+    public bool ConfirmResult { get; set; } = true;
+
+    public void ShowWarning(string message, string title) => WarningCalls++;
     public void ShowError(string message, string title) { }
-    public bool Confirm(string message, string title) => true;
+    public bool Confirm(string message, string title) => ConfirmResult;
+}
+
+sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteCredentialStore
+{
+    public int LoadCalls { get; private set; }
+    public int SaveCalls { get; private set; }
+    public int ClearCalls { get; private set; }
+    public int SummaryCalls { get; private set; }
+    public string? ExpectedToken { get; set; }
+    public string? ExpectedCookie { get; set; }
+    public bool LastSaveMatchedExpectedInput { get; private set; }
+    public string? LastClearedProvider { get; private set; }
+
+    public ProviderPriceSwitcher.Core.SiteCredentialRecord? LoadCredential(string providerId)
+    {
+        LoadCalls++;
+        throw new InvalidOperationException("credential material must not be loaded by the UI");
+    }
+
+    public void SaveCredential(ProviderPriceSwitcher.Core.SiteCredentialRecord credential)
+    {
+        SaveCalls++;
+        LastSaveMatchedExpectedInput = credential.ProviderId == "synthetic-provider"
+            && credential.SiteType == "two"
+            && credential.AccessToken == ExpectedToken
+            && credential.CookieHeader == ExpectedCookie;
+    }
+
+    public void ClearCredential(string providerId)
+    {
+        ClearCalls++;
+        LastClearedProvider = providerId;
+    }
+
+    public ProviderPriceSwitcher.Core.SiteCredentialSummary GetSummary(string providerId)
+    {
+        SummaryCalls++;
+        return new ProviderPriceSwitcher.Core.SiteCredentialSummary
+        {
+            ProviderId = providerId,
+            Status = ClearCalls == 0 ? ProviderPriceSwitcher.Core.SiteCredentialStatus.Available : ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured,
+            StatusText = ClearCalls == 0 ? "已配置" : "未配置",
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+    }
 }

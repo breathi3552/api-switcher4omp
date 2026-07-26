@@ -99,9 +99,9 @@ Application 只依赖 `ISettingsRepository` 与 `IPricingSnapshotRepository`。I
 
 ### credential store
 
-Core 的 `ISiteCredentialStore` 提供 `LoadCredential`、`SaveCredential`、`ClearCredential`、`GetSummary(providerId)`。Windows 实现 `WindowsSiteCredentialStore` 使用当前用户 DPAPI 保护，按 provider id 的 SHA-256 文件名保存到 credentials 子目录；摘要只返回状态和中性文案。凭据 MUST 不进入 `LocalAppSettings`、`PricingSnapshot`、普通 JSON、日志、错误消息或 OMP 配置。凭据绑定/保存只建立 ProviderId 到安全存储的关联并校验站点类型，不代表供应商已验证；真实认证结果仅在价格探测时由 adapter 反映。新增或改造编辑 UI SHOULD 从 composition root 注入 `ISiteCredentialStore`；当前 `SiteEditorDialog` 内部直接创建 `WindowsSiteCredentialStore` 是已知待收敛债务，且会从默认 root 读取并将 Cookie 原文回填 TextBox，属于高风险现状，MUST NOT 复制到其他窗口或作为模板。
+Core 的 `ISiteCredentialStore` 提供 `LoadCredential`、`SaveCredential`、`ClearCredential`、`GetSummary(providerId)`。Windows 实现 `WindowsSiteCredentialStore` 使用当前用户 DPAPI 保护，按 provider id 的 SHA-256 文件名保存到 credentials 子目录；摘要只返回状态和中性文案。凭据 MUST 不进入 `LocalAppSettings`、`PricingSnapshot`、普通 JSON、日志、错误消息或 OMP 配置。凭据绑定/保存只建立 ProviderId 到安全存储的关联并校验站点类型，不代表供应商已验证；真实认证结果仅在价格探测时由 adapter 反映。`App.xaml.cs` 创建遵守 `--data-root` 的唯一生产 store，并将同一实例注入 `Sub2ApiPricingAdapter` 与 `MainViewModel → SitesDialog → SiteEditorDialog`；编辑器只读取 `GetSummary`，不得调用 `LoadCredential` 或回填 token/Cookie 原文。
 
-烟测和隔离运行 MUST 使用 fake/loopback、临时 data root 与合成凭据；不得打开含真实凭据的站点、截图或记录该界面，也不得执行绑定、更新、清除等凭据操作。验证按 [build-release.md](build-release.md) 的影响分级矩阵选择受影响 runner。
+烟测和隔离运行 MUST 使用 fake/loopback、临时 data root 与合成凭据；不得打开含真实凭据的站点、截图或记录该界面。凭据更新/清除仅可在任务明确要求且隔离边界可证明时使用 synthetic secret 执行；否则记录人工验收点。验证按 [build-release.md](build-release.md) 的影响分级矩阵选择受影响 runner。
 ***
 
 ## 4. 日志、通知与命令
@@ -133,7 +133,7 @@ App 的 `IUserNotificationService` 只有 `ShowWarning`、`ShowError`、`Confirm
 
 `ProviderPriceSwitcher.App/Styles.xaml` 是应用级资源，由 `App.xaml` 合并。现有资源包括 Accent/Danger brushes、Button/TextBlock/DataGrid 默认样式、PrimaryButton、SecondaryButton、DangerButton、FormField、FormLabel、FormControl、SectionHeader 和 DialogActionPanel。新增窗口或字段 MUST 优先使用这些资源；只有确有不同语义才新增资源，并放在 Styles.xaml，不得在窗口内复制样式或建立平行控件框架。
 
-App 启动参数 `--data-root <path>` 由 `App.xaml.cs` 解析，并传递到 settings、snapshot 和 logger root；适配器使用的 credential store 也接收该 root，但当前 `SiteEditorDialog` 仍无参创建自己的 `WindowsSiteCredentialStore`，因此凭据编辑 UI 尚未隔离。所有隔离运行 MUST 传临时 data root，并显式准备合法的临时 OMP root/工作目录；在该对话框改为注入隔离 store 前，MUST NOT 在 smoke 中执行绑定、更新或清除凭据，也不得输入真实凭据。具体验证分级见 `rule://build-release`。
+App 启动参数 `--data-root <path>` 由 `App.xaml.cs` 解析，并传递到 settings、snapshot、logger 和唯一的 credential store root；同一 store 同时注入 adapter 与站点编辑 UI。所有隔离运行 MUST 传临时 data root，并显式准备合法的临时 OMP root/工作目录；不得输入真实凭据或访问真实 Provider。具体验证分级见 `rule://build-release`。
 ***
 
 ## 6. 允许新增实现的门槛

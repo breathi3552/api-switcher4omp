@@ -43,7 +43,7 @@ public partial class App : System.Windows.Application
                 new Sub2ApiPricingAdapter(_httpClient, credentialStore)
             ]);
             var refreshService = new PricingRefreshService(adapterRegistry, snapshotRepository, _loggerFactory.CreateLogger<PricingRefreshService>());
-            var viewModel = new MainViewModel(settingsRepository, refreshService, adapterRegistry, new OmpConfigurationSwitcher(), new OmpProcessService(), settings, _notifications);
+            var viewModel = new MainViewModel(settingsRepository, refreshService, adapterRegistry, new OmpConfigurationSwitcher(), new OmpProcessService(), settings, credentialStore, _notifications);
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }
