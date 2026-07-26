@@ -48,10 +48,18 @@ var windowThread = new Thread(() =>
         var settingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(root);
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, snapshots, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+        var pathDefaults = new ProviderPriceSwitcher.Infrastructure.AppPathDefaults();
+        var switcher = new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher();
+        var settings = settingsRepository.Load();
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
-        var settings = settingsRepository.Load();
-        var viewModel = new MainViewModel(settingsRepository, refresh, registry, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(), new ProviderPriceSwitcher.Infrastructure.OmpProcessService(), settings, credentialStore, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var snapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(snapshots);
+        var currentProviderQuery = new ProviderPriceSwitcher.Infrastructure.OmpCurrentProviderQuery(switcher, pathDefaults);
+        var siteManagement = new ProviderPriceSwitcher.Application.SiteManagementUseCase(settingsRepository, snapshots);
+        var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository);
+        var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
+        var switchAndStart = new ProviderPriceSwitcher.Application.SwitchAndStartUseCase(settingsRepository, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(switcher, pathDefaults), new ProviderPriceSwitcher.Infrastructure.OmpProcessLauncher(new ProviderPriceSwitcher.Infrastructure.OmpProcessService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.SwitchAndStartUseCase>.Instance);
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, siteManagement, currentProviderQuery, snapshotQuery, registry, settings, credentialStore, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         var window = new MainWindow(viewModel);
         window.Show();
         Assert(ReferenceEquals(window.DataContext, viewModel), "main window must bind its view model as DataContext");
@@ -96,11 +104,11 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var sitesDialog = new SitesDialog(settings, settingsRepository, refresh, registry, credentialStore, notifications, null);
+        var sitesDialog = new SitesDialog(settings, siteManagement, snapshotQuery, registry, credentialStore, notifications, null);
         Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(sitesDialog, "_credentialStore"), credentialStore), "sites dialog must retain the same credential store");
         sitesDialog.Close();
 
-        var dialog = new SiteEditorDialog(site, settings, refresh, registry, credentialStore, notifications);
+        var dialog = new SiteEditorDialog(site, settings, snapshotQuery, registry, credentialStore, notifications);
         dialog.Show();
         dialog.UpdateLayout();
         var tokenInput = FindDescendant<System.Windows.Controls.PasswordBox>(dialog);

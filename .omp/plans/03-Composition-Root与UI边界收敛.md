@@ -1,6 +1,17 @@
 # 闭环状态
 
-open
+closed
+
+（2026-07-26）已完成。背景问题已消除，全部目标达成，具备自主验证充分证据。
+
+## 闭环证据
+
+- **源码 clean cutover**：`App.xaml.cs` 统一创建 repositories、OMP gateway、adapter registry、`PricingCheckUseCase`、`SettingsUseCase`、`SwitchAndStartUseCase`、`SiteManagementUseCase`、`IOmpCurrentProviderQuery` 与 `IPricingSnapshotQuery`。`MainViewModel`/`SitesDialog` 不再持有或构造具体 Infrastructure 服务，不直接使用 `File`，所有生产与 App runner 构造调用方已迁移；静态搜索仅在 composition root/runner 装配处命中具体类型，无旧构造、shim 或 UI 内部 Application 用例装配。
+- **结构化查询边界**：OMP 查询表达 `Identified`、`ConfigurationFileMissing`、`Unrecognized`、`ReadFailed` 并传递取消令牌；快照查询以 `PricingSnapshotQueryResult` 区分成功与读取失败，UI 不把失败伪装为空成功。Infrastructure 唯一实现复用 `OmpConfigurationSwitcher`、`IAppPathDefaults` 与 `IPricingSnapshotRepository`。
+- **固定 SDK 验证**：在仓库根目录使用用户 `.dotnet/dotnet.exe`（SDK `8.0.423`）串行执行 solution build、format verify 与八个 console runner。build 为 `0` warning / `0` error；Core、Adapters、Application、Infrastructure、OmpConfig、OmpProcess、Refresh、App runner 均输出 `passed` 且退出码 `0`。
+- **WPF 行为与隔离 smoke**：App runner 在 STA 中显示 `MainWindow`/`SitesDialog` 并断言 DataContext、绑定、站点与凭据注入路径。独立进程使用临时 data root、临时 OMP root、合法临时 working root、禁用的合成站点和本地不可达 URL启动；Win32 枚举观察到窗口标题 `ProviderPriceSwitcher`，隔离日志记录启动，发送 `WM_CLOSE` 后进程退出码 `0`，临时目录删除。
+- **安全与未执行项**：未访问真实 Provider，未读取/写入真实凭据，未触碰真实用户 settings、OMP 配置或日志，未触发价格检查、凭据操作、OMP 切换/启动，未执行 publish。LSP 不可用（仓库未配置 language server），因此以全仓静态搜索、编译器调用图和全部 runner 构造成功完成调用方核验；不可自动验证的视觉布局未声称覆盖。
+- **三问结论**：背景问题已消除；目标 1—7 全部达成；静态边界、结构化契约、完整 build/format/八 runner、STA runner 与独立隔离 WPF 进程共同提供充分自主验证证据。
 
 # 背景
 

@@ -75,17 +75,15 @@ public partial class MainWindow : Window
 
 public sealed class MainViewModel : ObservableObject
 {
-    private readonly JsonSettingsRepository _settingsRepository;
-    private readonly PricingRefreshService _refreshService;
+    private readonly IPricingSnapshotQuery _snapshotQuery;
+    private readonly IOmpCurrentProviderQuery _currentProviderQuery;
     private readonly IPricingAdapterRegistry _adapterRegistry;
     private readonly PricingCheckUseCase _pricingCheck;
     private readonly SettingsUseCase _settingsUseCase;
     private readonly SwitchAndStartUseCase _switchAndStart;
-    private readonly OmpConfigurationSwitcher _switcher;
-    private readonly OmpProcessService _processService;
-    private readonly IAppPathDefaults _pathDefaults = new AppPathDefaults();
     private readonly IUserNotificationService _notifications;
     private readonly ISiteCredentialStore _credentialStore;
+    private readonly SiteManagementUseCase _siteManagement;
     private readonly ILogger<MainViewModel> _logger;
     private static readonly Action<ILogger, string, Exception?> LogUiFailure =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(200, "UiFailure"), "UI operation failed: {FailureKind}");
@@ -99,16 +97,15 @@ public sealed class MainViewModel : ObservableObject
     private string? _selectedWorkingDirectory;
     private PricingRefreshResult? _lastResult;
 
-    public MainViewModel(JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, OmpConfigurationSwitcher switcher, OmpProcessService processService, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications, ILogger<MainViewModel> logger)
+    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, SwitchAndStartUseCase switchAndStart, SiteManagementUseCase siteManagement, IOmpCurrentProviderQuery currentProviderQuery, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications, ILogger<MainViewModel> logger)
     {
-        _settingsRepository = settingsRepository;
-        _refreshService = refreshService;
-        _pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository);
-        _settingsUseCase = new SettingsUseCase(settingsRepository);
-        _switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(switcher, _pathDefaults), new OmpProcessLauncher(processService), Microsoft.Extensions.Logging.Abstractions.NullLogger<SwitchAndStartUseCase>.Instance);
+        _pricingCheck = pricingCheck;
+        _settingsUseCase = settingsUseCase;
+        _switchAndStart = switchAndStart;
+        _siteManagement = siteManagement;
+        _currentProviderQuery = currentProviderQuery;
+        _snapshotQuery = snapshotQuery;
         _adapterRegistry = adapterRegistry;
-        _switcher = switcher;
-        _processService = processService;
         _settings = settings;
         _notifications = notifications;
         _credentialStore = credentialStore;
@@ -147,16 +144,23 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task ReadCurrentProviderAsync()
     {
-        var configPath = _pathDefaults.OmpConfigPath(_settings.OmpRootDirectory);
         try
         {
-            if (File.Exists(configPath))
+            var result = await _currentProviderQuery.ReadAsync(_settings.OmpRootDirectory, _checkCancellation?.Token ?? CancellationToken.None);
+            CurrentProvider = result.Status switch
             {
-                var preview = _switcher.Preview(await File.ReadAllTextAsync(configPath), "temporary");
-                CurrentProvider = preview.CurrentProvider ?? "未识别";
+                OmpCurrentProviderStatus.Identified => result.ProviderId!,
+                OmpCurrentProviderStatus.ConfigurationFileMissing => "配置文件不存在",
+                OmpCurrentProviderStatus.Unrecognized => "未识别",
+                _ => "读取失败"
+            };
+            if (result.Status == OmpCurrentProviderStatus.ReadFailed)
+            {
+                StatusText = UserErrorMessages.ConfigurationReadFailed;
+                LogUiFailure(_logger, "ConfigurationReadFailed", null);
             }
-            else CurrentProvider = "配置文件不存在";
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception)
         {
             CurrentProvider = "读取失败";
@@ -201,7 +205,15 @@ public sealed class MainViewModel : ObservableObject
 
     private void LoadPersistedPrices(string? preferredProvider = null)
     {
-        var snapshots = _refreshService.LoadSnapshots();
+        var result = _snapshotQuery.Load();
+        if (!result.IsSuccess)
+        {
+            StatusText = "无法读取上次价格记录，请检查本地数据文件。";
+            LogUiFailure(_logger, "SnapshotReadFailed", null);
+            return;
+        }
+
+        var snapshots = result.Snapshots;
         var usage = LocalAppSettings.DefaultUsageProfile;
         Rows.Clear();
         DateTimeOffset? latest = null;
@@ -267,12 +279,11 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _settingsRepository, _refreshService, _adapterRegistry, _credentialStore, _notifications, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
+    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _siteManagement, _snapshotQuery, _adapterRegistry, _credentialStore, _notifications, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
     private async Task EditSettingsAsync() { var dialog = new SettingsDialog(_settings); if (dialog.ShowDialog() == true) { _settings = _settingsUseCase.Save(dialog.Settings); SyncSettings(); await ReadCurrentProviderAsync(); LoadPersistedPrices(); } }
     private void HandleCommandError(Exception exception)
     {
         if (exception is OperationCanceledException) return;
-        StatusText = UserErrorMessages.Unexpected;
         LogUiFailure(_logger, "CommandUnexpected", null);
         _notifications.ShowError(StatusText, "操作失败");
     }
