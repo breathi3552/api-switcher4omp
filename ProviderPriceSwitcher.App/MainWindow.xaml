@@ -27,7 +27,7 @@
                     <StackPanel Grid.Column="2"><TextBlock Text="最近检查" Foreground="#6B7280"/><TextBlock Text="{Binding LastCheckedText}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                 </Grid>
             </Border>
-            <DataGrid Grid.Row="1" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderBrush="#D9DEE7" BorderThickness="1" Background="White">
+            <DataGrid Grid.Row="1" MouseDoubleClick="PriceGrid_MouseDoubleClick" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderBrush="#D9DEE7" BorderThickness="1" Background="White">
                 <DataGrid.RowStyle>
                     <Style TargetType="DataGridRow">
                         <Style.Triggers>

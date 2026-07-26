@@ -2,6 +2,9 @@
 using System.Windows.Input;
 
 static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
+Assert(MainWindow.BuildKeysUri(new Uri("https://example.test/root///?old=query#old"), "/console/keys")?.AbsoluteUri == "https://example.test/root/console/keys", "config API URI must append configured path and clear query/fragment");
+Assert(MainWindow.BuildKeysUri(new Uri("https://example.test/root?old=query#old"), null)?.AbsoluteUri == "https://example.test/root/keys", "missing config API URI must default to /keys");
+Assert(MainWindow.BuildKeysUri(new Uri("ftp://example.test/root"), "/keys") is null, "non-http config API URI must not be launchable");
 var errors = new List<Exception>();
 var command = new AsyncCommand(() => throw new InvalidOperationException("boom"), errors.Add);
 command.Execute(null);
@@ -58,7 +61,8 @@ var windowThread = new Thread(() =>
         {
             ProviderId = "synthetic-provider",
             ConfigurationKey = "synthetic-key",
-            BaseUrl = new Uri("https://example.test"),
+            BaseUrl = new Uri("https://example.test/root///?old=query#old"),
+            ConfigurationApiAddress = "/console/keys",
             SiteType = "two",
             Model = "model",
             CurrentGroup = "group",
@@ -66,6 +70,32 @@ var windowThread = new Thread(() =>
             AuthenticationMode = "令牌"
         };
         settings = settings with { Sites = [site] };
+        var launcher = new FakeUriLauncher();
+        var navigationWindow = new MainWindow(viewModel, launcher);
+        navigationWindow.Show();
+        navigationWindow.UpdateLayout();
+        var grid = FindDescendant<System.Windows.Controls.DataGrid>(navigationWindow);
+        var firstRow = new PriceRow(site.ProviderId, "成功", "group", 1m, null, ProviderPriceSwitcher.Application.LocalAppSettings.DefaultUsageProfile, "—", "手动", null, string.Empty, false, false, true, site.BaseUrl, site.ConfigurationApiAddress);
+        grid.ItemsSource = new[] { firstRow };
+        grid.SelectedItem = firstRow;
+        grid.UpdateLayout();
+        var firstRowVisual = (System.Windows.Controls.DataGridRow?)grid.ItemContainerGenerator.ContainerFromItem(firstRow) ?? throw new InvalidOperationException("first row visual was not generated");
+        var launchHit = typeof(MainWindow).GetMethod("TryLaunchPriceRow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        Assert((bool)launchHit.Invoke(navigationWindow, [grid, firstRowVisual, System.Windows.Input.MouseButton.Left])!, "actual first site row left double-click must be handled");
+        Assert(launcher.Calls == 1 && launcher.Last?.AbsoluteUri == "https://example.test/root/console/keys", "actual first site row left double-click must launch configured same-origin keys URI exactly once");
+        Assert(!(bool)launchHit.Invoke(navigationWindow, [grid, grid, System.Windows.Input.MouseButton.Left])!, "header or blank double-click must not be handled");
+        Assert(launcher.Calls == 1, "header or blank double-click must not launch the previously selected row");
+        Assert(!(bool)launchHit.Invoke(navigationWindow, [grid, firstRowVisual, System.Windows.Input.MouseButton.Right])!, "right double-click must not be handled");
+        Assert(launcher.Calls == 1, "right double-click must not launch");
+        var minimumRow = new PriceRow(site.ProviderId, "成功", "minimum [最低]", 1m, null, ProviderPriceSwitcher.Application.LocalAppSettings.DefaultUsageProfile, "—", "自动", null, string.Empty, false, false);
+        grid.ItemsSource = new[] { minimumRow };
+        grid.SelectedItem = minimumRow;
+        grid.UpdateLayout();
+        var minimumRowVisual = (System.Windows.Controls.DataGridRow?)grid.ItemContainerGenerator.ContainerFromItem(minimumRow) ?? throw new InvalidOperationException("minimum row visual was not generated");
+        Assert(!(bool)launchHit.Invoke(navigationWindow, [grid, minimumRowVisual, System.Windows.Input.MouseButton.Left])!, "minimum group row double-click must not be handled");
+        Assert(launcher.Calls == 1, "minimum group row must not launch");
+        navigationWindow.Close();
+
         var sitesDialog = new SitesDialog(settings, settingsRepository, refresh, registry, credentialStore, notifications, null);
         Assert(ReferenceEquals(GetField<ProviderPriceSwitcher.Core.ISiteCredentialStore>(sitesDialog, "_credentialStore"), credentialStore), "sites dialog must retain the same credential store");
         sitesDialog.Close();
@@ -158,6 +188,13 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
 {
     public ProviderPriceSwitcher.Application.PricingAdapterDescriptor Descriptor { get; } = descriptor;
     public Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+}
+
+sealed class FakeUriLauncher : IExternalUriLauncher
+{
+    public int Calls { get; private set; }
+    public Uri? Last { get; private set; }
+    public void Launch(Uri uri) { Calls++; Last = uri; }
 }
 
 sealed class FakeNotifications : IUserNotificationService

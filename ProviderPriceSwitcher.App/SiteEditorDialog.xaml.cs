@@ -14,7 +14,7 @@ public sealed partial class SiteEditorDialog : Window
     private readonly PricingRefreshService _refreshService;
     private readonly IPricingAdapterRegistry _adapterRegistry;
     private readonly PricingProbeUseCase _pricingProbe;
-    private readonly TextBox _displayName = new(), _provider = new(), _url = new(), _model = new(), _group = new(), _ratio = new(), _currency = new(), _conversion = new(), _cookieHeader = new();
+    private readonly TextBox _displayName = new(), _provider = new(), _url = new(), _configurationApiAddress = new(), _model = new(), _group = new(), _ratio = new(), _currency = new(), _conversion = new(), _cookieHeader = new();
     private readonly PasswordBox _token = new();
     private readonly ComboBox _siteType = new() { IsReadOnly = true, DisplayMemberPath = nameof(PricingAdapterDescriptor.DisplayName) };
     private readonly ComboBox _authentication = new() { IsReadOnly = true };
@@ -46,6 +46,7 @@ public sealed partial class SiteEditorDialog : Window
         _provider.Text = original?.ProviderId ?? string.Empty;
         _siteType.SelectedItem = adapterRegistry.Descriptors.FirstOrDefault(x => string.Equals(x.SiteType, original?.SiteType, StringComparison.Ordinal)) ?? (adapterRegistry.Descriptors.Count > 0 ? adapterRegistry.Descriptors[0] : null);
         _url.Text = original?.BaseUrl.ToString() ?? string.Empty;
+        _configurationApiAddress.Text = original?.ConfigurationApiAddress ?? "/keys";
         var initialDescriptor = _siteType.SelectedItem as PricingAdapterDescriptor;
         _authentication.ItemsSource = initialDescriptor?.AuthenticationModes ?? [];
         _authentication.SelectedItem = original?.AuthenticationMode ?? (initialDescriptor?.AuthenticationModes.Count > 0 ? initialDescriptor.AuthenticationModes[0] : null);
@@ -62,6 +63,7 @@ public sealed partial class SiteEditorDialog : Window
         form.Children.Add(Field("站点类型", _siteType));
         form.Children.Add(Section("连接配置"));
         form.Children.Add(Field("Base URL", _url));
+        form.Children.Add(Field("配置 API 地址", _configurationApiAddress));
         form.Children.Add(Field("认证方式", _authentication));
         form.Children.Add(_credentialStatus);
         form.Children.Add(Field("本次绑定/更新的访问令牌", _token));
@@ -177,6 +179,15 @@ public sealed partial class SiteEditorDialog : Window
             MessageBox.Show("ProviderId、站点类型、有效的 http(s) Base URL、目标模型和当前分组均为必填项。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
+        var configurationApiAddress = _configurationApiAddress.Text.Trim();
+        if (configurationApiAddress.Length == 0) configurationApiAddress = "/keys";
+        else if (!configurationApiAddress.StartsWith('/') || configurationApiAddress.StartsWith("//", StringComparison.Ordinal) ||
+            configurationApiAddress.Contains('?') || configurationApiAddress.Contains('#') ||
+            !Uri.TryCreate(configurationApiAddress, UriKind.RelativeOrAbsolute, out var configurationUri) || configurationUri.IsAbsoluteUri)
+        {
+            MessageBox.Show("配置 API 地址必须是以 / 开头的相对路径，且不得包含 query 或 fragment。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
         if (validateDuplicate && _settings.Sites.Any(x => !ReferenceEquals(x, _original) && string.Equals(x.ProviderId, provider, StringComparison.Ordinal)))
         {
             MessageBox.Show("ProviderId 不能重复。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -200,6 +211,7 @@ public sealed partial class SiteEditorDialog : Window
         {
             ProviderId = provider,
             DisplayName = _displayName.Text.Trim(),
+            ConfigurationApiAddress = configurationApiAddress,
             BaseUrl = uri,
             SiteType = type,
             Enabled = _original?.Enabled ?? true,

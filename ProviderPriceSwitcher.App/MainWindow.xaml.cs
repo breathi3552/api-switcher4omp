@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using System.IO;
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -9,13 +10,66 @@ using ProviderPriceSwitcher.Infrastructure;
 
 namespace ProviderPriceSwitcher.App;
 
+public interface IExternalUriLauncher
+{
+    void Launch(Uri uri);
+}
+
+public sealed class ShellUriLauncher : IExternalUriLauncher
+{
+    public void Launch(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+    }
+}
+
 public partial class MainWindow : Window
 {
-    public MainWindow(MainViewModel viewModel)
+    private readonly IExternalUriLauncher _uriLauncher;
+
+    public MainWindow(MainViewModel viewModel, IExternalUriLauncher? uriLauncher = null)
     {
         InitializeComponent();
+        _uriLauncher = uriLauncher ?? new ShellUriLauncher();
         DataContext = viewModel;
         Loaded += (_, _) => viewModel.InitializeCommand.Execute(null);
+    }
+
+    private void PriceGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (sender is System.Windows.Controls.DataGrid grid)
+            TryLaunchPriceRow(grid, e.OriginalSource, e.ChangedButton);
+    }
+
+    internal bool TryLaunchPriceRow(System.Windows.Controls.DataGrid grid, object? originalSource, System.Windows.Input.MouseButton button)
+    {
+        if (button != System.Windows.Input.MouseButton.Left || !TryGetHitPriceRow(grid, originalSource, out var row) || row is not { IsSiteFirstRow: true, KeysUri: not null })
+            return false;
+
+        _uriLauncher.Launch(row.KeysUri);
+        return true;
+    }
+
+    internal static bool TryGetHitPriceRow(System.Windows.Controls.DataGrid grid, object? originalSource, out PriceRow? row)
+    {
+        row = null;
+        if (originalSource is not System.Windows.DependencyObject source)
+            return false;
+
+        var hitRow = System.Windows.Controls.ItemsControl.ContainerFromElement(grid, source) as System.Windows.Controls.DataGridRow;
+        row = hitRow?.DataContext as PriceRow;
+        return row is not null;
+    }
+
+    public static Uri? BuildKeysUri(Uri? baseUrl, string? configurationApiAddress)
+    {
+        if (baseUrl is null || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps)) return null;
+        var address = string.IsNullOrWhiteSpace(configurationApiAddress) ? "/keys" : configurationApiAddress;
+        if (!address.StartsWith('/') || address.StartsWith("//", StringComparison.Ordinal) || address.Contains('?') || address.Contains('#')) return null;
+        var builder = new UriBuilder(baseUrl) { Query = string.Empty, Fragment = string.Empty };
+        builder.Path = builder.Path.TrimEnd('/') + address;
+        return builder.Uri;
     }
 }
 
@@ -180,7 +234,7 @@ public sealed class MainViewModel : ObservableObject
             : warning ? "价格数据包含提示，请谨慎核对。" : string.Empty;
         if (snapshot is null)
         {
-            Rows.Add(new PriceRow(site.ProviderId, status, site.CurrentGroup + " [当前]", site.CurrentGroupRatio, null, usage, "—", site.GroupRatioSource, null, issue, stale, warning, true));
+            Rows.Add(new PriceRow(site.ProviderId, status, site.CurrentGroup + " [当前]", site.CurrentGroupRatio, null, usage, "—", site.GroupRatioSource, null, issue, stale, warning, true, site.BaseUrl, site.ConfigurationApiAddress));
             return;
         }
         var effective = site.CurrentGroupRatio is > 0
@@ -188,7 +242,7 @@ public sealed class MainViewModel : ObservableObject
             : snapshot;
         var minimumSame = string.Equals(effective.MinimumGroup, site.CurrentGroup, StringComparison.Ordinal);
         var currentLabel = site.CurrentGroup + (minimumSame ? " [当前][最低]" : " [当前]");
-        Rows.Add(new PriceRow(site.ProviderId, status, currentLabel, effective.CurrentGroupRatio ?? site.CurrentGroupRatio, effective.Prices, usage, "—", effective.GroupRatioSource, effective.RefreshedAt, issue, stale, warning, true));
+        Rows.Add(new PriceRow(site.ProviderId, status, currentLabel, effective.CurrentGroupRatio ?? site.CurrentGroupRatio, effective.Prices, usage, "—", effective.GroupRatioSource, effective.RefreshedAt, issue, stale, warning, true, site.BaseUrl, site.ConfigurationApiAddress));
         if (!minimumSame && !string.IsNullOrWhiteSpace(effective.MinimumGroup) && effective.MinimumGroupPrices is not null)
             Rows.Add(new PriceRow(site.ProviderId, status, effective.MinimumGroup + " [最低]", effective.MinimumGroupRatio, effective.MinimumGroupPrices, usage, "—", "自动", effective.RefreshedAt, state?.FailureKind == PricingRefreshFailureKind.Authentication ? "需先绑定或更新凭据" : "仅供手动选择，未参与自动推荐", stale, warning));
     }
@@ -238,8 +292,8 @@ public sealed class MainViewModel : ObservableObject
 public sealed record ProviderChoice(string ProviderId) { public string Display => ProviderId; }
 public sealed class PriceRow
 {
-    public PriceRow(string providerId, string status, string group, decimal? ratio, TokenPrices? prices, UsageProfile usage, string cacheHitRate, string ratioSource, DateTimeOffset? checkedAt, string issue, bool isStale, bool hasWarning, bool isSiteFirstRow = false)
-    { ProviderId = providerId; Status = status; Group = group; Ratio = ratio?.ToString("0.####", CultureInfo.InvariantCulture) ?? "—"; InputPrice = prices?.InputPerMillion.ToString("0.####") ?? "—"; CachedPrice = prices?.CachedInputPerMillion.ToString("0.####") ?? "—"; OutputPrice = prices?.OutputPerMillion.ToString("0.####") ?? "—"; EstimatedCost = prices is null ? "—" : PricingCalculator.Calculate(usage, prices).ToString("0.####"); CacheHitRate = cacheHitRate; RatioSource = string.IsNullOrWhiteSpace(ratioSource) ? "—" : ratioSource; UpdatedAt = checkedAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "—"; Issue = issue; IsStale = isStale; HasWarning = hasWarning; IsSiteFirstRow = isSiteFirstRow; }
+    public PriceRow(string providerId, string status, string group, decimal? ratio, TokenPrices? prices, UsageProfile usage, string cacheHitRate, string ratioSource, DateTimeOffset? checkedAt, string issue, bool isStale, bool hasWarning, bool isSiteFirstRow = false, Uri? baseUrl = null, string? configurationApiAddress = null)
+    { ProviderId = providerId; Status = status; Group = group; Ratio = ratio?.ToString("0.####", CultureInfo.InvariantCulture) ?? "—"; InputPrice = prices?.InputPerMillion.ToString("0.####") ?? "—"; CachedPrice = prices?.CachedInputPerMillion.ToString("0.####") ?? "—"; OutputPrice = prices?.OutputPerMillion.ToString("0.####") ?? "—"; EstimatedCost = prices is null ? "—" : PricingCalculator.Calculate(usage, prices).ToString("0.####"); CacheHitRate = cacheHitRate; RatioSource = string.IsNullOrWhiteSpace(ratioSource) ? "—" : ratioSource; UpdatedAt = checkedAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "—"; Issue = issue; IsStale = isStale; HasWarning = hasWarning; IsSiteFirstRow = isSiteFirstRow; KeysUri = isSiteFirstRow ? MainWindow.BuildKeysUri(baseUrl, configurationApiAddress) : null; }
     public string ProviderId { get; }
     public string Status { get; }
     public string Group { get; }
@@ -255,4 +309,5 @@ public sealed class PriceRow
     public bool IsStale { get; }
     public bool HasWarning { get; }
     public bool IsSiteFirstRow { get; }
+    public Uri? KeysUri { get; }
 }

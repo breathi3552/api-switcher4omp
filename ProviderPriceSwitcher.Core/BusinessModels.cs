@@ -3,6 +3,7 @@
 public sealed record SiteConfiguration
 {
     public required string ProviderId { get; init; }
+    public string ConfigurationApiAddress { get; init; } = "/keys";
     public string DisplayName { get; init; } = string.Empty;
     public required string ConfigurationKey { get; init; }
     public required Uri BaseUrl { get; init; }

@@ -27,10 +27,10 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 ## 当前已实现能力
 
 - 首页启动时加载并展示已保存的最后成功价格、倍率、来源和检查时间；不会因为启动而发起网络检查。价格检查由用户点击触发，可取消，并设有逐请求超时。
-- 支持站点新增、编辑、删除、启用/禁用；保存站点设置、当前分组倍率及最后成功价格快照。当前首页展示当前分组和最低倍率分组；最低分组仅供用户手动选择，不参与自动推荐，也不声称账户已具备该分组权限。
+- 支持站点新增、编辑、删除、启用/禁用；保存站点设置、当前分组倍率、可配置的配置 API 地址（默认 `/keys`）及最后成功价格快照。当前首页展示当前分组和最低倍率分组；双击当前组行会用系统默认浏览器打开该站点的配置 API 页面，最低分组不触发导航。最低分组仅供用户手动选择，不参与自动推荐，也不声称账户已具备该分组权限。
 - New API 公开价格查询、PawsAI 价格文件解析和 Sub2API 鉴权价格查询已经接入；支持浏览器 access token/Cookie 的绑定、更新、清除和状态展示。绑定动作不会验证凭据；价格探测时才由 adapter 认证结果反映真实有效性。已处理真实计费表达式中的已知条件，并对无法可靠标准化的复杂条件拒绝猜测。
 - 推荐和成本计算使用固定的“Codex 高缓存”默认用量：未缓存输入 200,000、缓存读取 800,000、输出 100,000 Token。站内计价单位与人民币统一换算尚未完成。
-- 可从 OMP `config.yml` 的 `modelRoles.default` 识别当前 Provider；切换服务统一处理 `modelRoles` 与 `task.agentModelOverrides` 下的直接 provider/model 标量引用，保留模型名，并通过 Windows Terminal 在选定目录启动 OMP。已检测到已有 OMP 进程时不会强杀旧会话。
+- 可从 OMP `config.yml` 的 `modelRoles.default` 识别当前 Provider；切换服务统一处理 `modelRoles` 与 `task.agentModelOverrides` 下的直接 provider/model 标量引用，保留模型名，并通过与资源管理器右键菜单同源的 Windows Terminal/PowerShell 启动形态在选定目录启动 OMP。已检测到已有 OMP 进程时不会强杀旧会话。
 - 已有 Core、Adapters、Application、Infrastructure、OMP 配置、OMP 进程、Refresh 和 App 八个契约 runner，覆盖成本边界、同价选择、刷新失败、适配器解析、持久化、备份原子写入、配置切换、进程边界，以及凭据编辑 UI 的注入和一次性输入安全契约。
 - `App.xaml.cs` 从 `--data-root` 创建唯一的 `WindowsSiteCredentialStore`，同一实例注入 Sub2API adapter 与 `MainViewModel → SitesDialog → SiteEditorDialog`。编辑器只读取凭据摘要，不调用 `LoadCredential` 或回填 token/Cookie；更新后立即清空一次性输入，清除前要求明确确认。
 
