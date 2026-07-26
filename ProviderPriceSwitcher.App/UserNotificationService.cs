@@ -37,6 +37,7 @@ public static class UserErrorMessages
 
     public static string ForProbeFailure(ProviderPriceSwitcher.Application.PricingAdapterFailure failure) => failure switch
     {
+        ProviderPriceSwitcher.Application.PricingAdapterFailure.Authentication => "需要重新绑定凭据。",
         ProviderPriceSwitcher.Application.PricingAdapterFailure.Request => "网络请求失败，请稍后重试。",
         ProviderPriceSwitcher.Application.PricingAdapterFailure.Timeout => "请求超时，请稍后重试。",
         ProviderPriceSwitcher.Application.PricingAdapterFailure.InvalidResponse => "价格服务返回无效结果，请检查站点配置。",

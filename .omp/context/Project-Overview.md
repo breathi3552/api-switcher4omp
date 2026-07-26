@@ -34,6 +34,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 已有 Core、Adapters、Application、Infrastructure、OMP 配置、OMP 进程、Refresh 和 App 八个契约 runner，覆盖成本边界、同价选择、刷新失败、适配器解析、持久化、备份原子写入、配置切换、进程边界，以及凭据编辑 UI 的注入和一次性输入安全契约。
 - `App.xaml.cs` 从 `--data-root` 创建唯一的 `WindowsSiteCredentialStore`，同一实例注入 Sub2API adapter 与 `MainViewModel → SitesDialog → SiteEditorDialog`。编辑器只读取凭据摘要，不调用 `LoadCredential` 或回填 token/Cookie；更新后立即清空一次性输入，清除前要求明确确认。
 - `App.xaml.cs` 是唯一生产 composition root：集中创建 repositories、OMP gateway、adapter registry、Application 用例及 `IOmpCurrentProviderQuery`/`IPricingSnapshotQuery` 查询端口。`MainViewModel` 与 `SitesDialog` 只消费已构造用例和窄查询契约，不直接读取 OMP 文件或持有具体 Infrastructure 服务；查询失败以结构化状态呈现。
+- `SiteEditorDialog` 以 `SiteEditorViewModel` 为真实 `DataContext`，XAML 绑定现有 `AsyncCommand`/`RelayCommand` 管理探测、取消和保存；两级 dialog factory 在 composition root 装配。探测重入被拒绝，取消和关闭等待任务结束，结构化认证/超时失败映射为脱敏文案；token/Cookie 原文只经过 PasswordBox/code-behind 一次性桥接并在安全存储写入后立即清空。
 
 ## 明确非目标与安全边界
 

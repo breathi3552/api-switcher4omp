@@ -52,7 +52,9 @@ public partial class App : System.Windows.Application
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository);
             var settingsUseCase = new SettingsUseCase(settingsRepository);
             var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>());
-            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, siteManagement, currentProviderQuery, snapshotQuery, adapterRegistry, settings, credentialStore, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
+            var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original));
+            var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
+            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, adapterRegistry, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }
