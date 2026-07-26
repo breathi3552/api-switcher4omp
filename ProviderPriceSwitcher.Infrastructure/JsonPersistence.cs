@@ -1,8 +1,15 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using ProviderPriceSwitcher.Core;
+using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Infrastructure;
+
+public sealed class JsonDataException : IOException
+{
+    public JsonDataException(string path, Exception innerException)
+        : base($"The JSON data file '{path}' is invalid or corrupted.", innerException) { }
+}
 
 internal static class AtomicJsonFile
 {
@@ -51,14 +58,19 @@ internal static class AtomicJsonFile
     }
 }
 
-public sealed class JsonSettingsRepository
+public sealed class JsonSettingsRepository : ISettingsRepository
 {
     public string FilePath { get; }
-    public JsonSettingsRepository(string? rootDirectory = null) => FilePath = AppDataPaths.SettingsFile(rootDirectory);
+    private readonly IAppPathDefaults _pathDefaults;
+    public JsonSettingsRepository(string? rootDirectory = null, IAppPathDefaults? pathDefaults = null)
+    {
+        FilePath = AppDataPaths.SettingsFile(rootDirectory);
+        _pathDefaults = pathDefaults ?? new AppPathDefaults();
+    }
 
     public LocalAppSettings Load()
     {
-        var settings = AtomicJsonFile.Read(FilePath, new LocalAppSettings());
+        var settings = ApplyDefaults(AtomicJsonFile.Read(FilePath, new LocalAppSettings()));
         if (!File.Exists(FilePath)) return settings;
 
         try
@@ -121,6 +133,15 @@ public sealed class JsonSettingsRepository
             throw new JsonDataException(FilePath, ex);
         }
     }
+    private LocalAppSettings ApplyDefaults(LocalAppSettings settings)
+    {
+        var root = string.IsNullOrWhiteSpace(settings.OmpRootDirectory) ? _pathDefaults.OmpRootDirectory : settings.OmpRootDirectory;
+        var agent = _pathDefaults.OmpAgentDirectory(root);
+        var directories = settings.OmpWorkingDirectories.Count == 0 ? new List<string> { agent } : settings.OmpWorkingDirectories;
+        var last = string.IsNullOrWhiteSpace(settings.LastOmpWorkingDirectory) ? directories[0] : settings.LastOmpWorkingDirectory;
+        return settings with { OmpRootDirectory = root, OmpWorkingDirectories = directories, LastOmpWorkingDirectory = last };
+    }
+
     public void Save(LocalAppSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -128,7 +149,7 @@ public sealed class JsonSettingsRepository
     }
 }
 
-public sealed class JsonPricingSnapshotRepository
+public sealed class JsonPricingSnapshotRepository : IPricingSnapshotRepository
 {
     public string FilePath { get; }
     public JsonPricingSnapshotRepository(string? rootDirectory = null) => FilePath = AppDataPaths.SnapshotsFile(rootDirectory);

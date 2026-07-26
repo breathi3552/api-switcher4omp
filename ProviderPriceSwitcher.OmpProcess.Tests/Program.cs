@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using ProviderPriceSwitcher.Infrastructure;
 
 static void Assert(bool condition, string message)

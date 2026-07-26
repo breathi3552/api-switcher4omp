@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="..\ProviderPriceSwitcher.App\ProviderPriceSwitcher.App.csproj" /><ProjectReference Include="..\ProviderPriceSwitcher.Application\ProviderPriceSwitcher.Application.csproj" /></ItemGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+</Project>

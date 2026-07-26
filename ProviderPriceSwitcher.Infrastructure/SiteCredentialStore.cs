@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -11,6 +11,9 @@ namespace ProviderPriceSwitcher.Infrastructure;
 public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
 {
     private const string Purpose = "ProviderPriceSwitcher.SiteCredential";
+    private readonly string? _rootDirectory;
+
+    public WindowsSiteCredentialStore(string? rootDirectory = null) => _rootDirectory = rootDirectory;
 
     public SiteCredentialRecord? LoadCredential(string providerId)
     {
@@ -51,11 +54,11 @@ public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
         if (File.Exists(path)) File.Delete(path);
     }
 
-    public SiteCredentialSummary GetSummary(string providerId, string siteType)
+    public SiteCredentialSummary GetSummary(string providerId)
     {
         var credential = LoadCredential(providerId);
         if (credential is null)
-            return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.NotConfigured, StatusText = siteType == "sub2api" ? "未绑定令牌" : "无需凭据" };
+            return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.NotConfigured, StatusText = "未配置凭据" };
 
         var expired = credential.ExpiresAt is DateTimeOffset expiresAt && expiresAt <= DateTimeOffset.UtcNow;
         var cookieHint = !string.IsNullOrWhiteSpace(credential.CookieHeader) ? "；已保存浏览器会话 Cookie" : string.Empty;
@@ -69,10 +72,10 @@ public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
         };
     }
 
-    private static string FilePath(string providerId)
+    private string FilePath(string providerId)
     {
         var safe = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerId)));
-        return Path.Combine(AppDataPaths.GetRoot(), "credentials", safe + ".bin");
+        return Path.Combine(AppDataPaths.GetRoot(_rootDirectory), "credentials", safe + ".bin");
     }
 
     private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);

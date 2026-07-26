@@ -1,7 +1,7 @@
-using ProviderPriceSwitcher.Adapters;
+﻿using Microsoft.Extensions.Logging;
 using ProviderPriceSwitcher.Core;
 
-namespace ProviderPriceSwitcher.Infrastructure;
+namespace ProviderPriceSwitcher.Application;
 
 public enum PricingRefreshSiteStatus
 {
@@ -35,42 +35,34 @@ public sealed record PricingRefreshSiteResult
 public sealed record PricingRefreshResult
 {
     public required IReadOnlyList<PricingRefreshSiteResult> Sites { get; init; }
-    public IReadOnlyList<PricingRefreshSiteResult> SiteResults => Sites;
-    public IReadOnlyList<PricingRefreshSiteResult> States => Sites;
     public required IReadOnlyDictionary<string, SitePricingResult> SuccessfulResults { get; init; }
     public required IReadOnlyDictionary<string, PricingSnapshot> LatestSnapshots { get; init; }
     public required RecommendationDecision Recommendation { get; init; }
-    public RecommendationDecision RecommendationDecision => Recommendation;
     public required DateTimeOffset StartedAt { get; init; }
     public required DateTimeOffset CompletedAt { get; init; }
-    public DateTimeOffset StartTime => StartedAt;
-    public DateTimeOffset CompletionTime => CompletedAt;
 }
 
 public sealed class PricingRefreshService
 {
-    private readonly Dictionary<string, IPricingAdapter> _adapters;
-    private readonly JsonPricingSnapshotRepository _snapshots;
+    private readonly IPricingAdapterRegistry _adapterRegistry;
+    private readonly IPricingSnapshotRepository _snapshots;
     private readonly RecommendationService _recommendation;
+    private readonly ILogger<PricingRefreshService> _logger;
+    private static readonly Action<ILogger, string, string, Exception?> LogSiteFailure = LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(10, "PricingSiteFailure"), "Pricing refresh failed for {ProviderId}: {FailureKind}");
+    private static readonly Action<ILogger, int, long, Exception?> LogRefreshCompleted = LoggerMessage.Define<int, long>(LogLevel.Information, new EventId(11, "PricingRefreshCompleted"), "Pricing refresh completed with {SiteCount} sites in {ElapsedMilliseconds} ms");
 
     public PricingRefreshService(
-        IEnumerable<IPricingAdapter> adapters,
-        JsonPricingSnapshotRepository snapshots,
+        IPricingAdapterRegistry adapterRegistry,
+        IPricingSnapshotRepository snapshots,
+        ILogger<PricingRefreshService> logger,
         RecommendationService? recommendationService = null)
     {
-        ArgumentNullException.ThrowIfNull(adapters);
+        ArgumentNullException.ThrowIfNull(adapterRegistry);
         ArgumentNullException.ThrowIfNull(snapshots);
-        var map = new Dictionary<string, IPricingAdapter>(StringComparer.Ordinal);
-        foreach (var adapter in adapters)
-        {
-            ArgumentNullException.ThrowIfNull(adapter);
-            if (string.IsNullOrWhiteSpace(adapter.SiteType))
-                throw new ArgumentException("Pricing adapters must declare a site type.", nameof(adapters));
-            if (!map.TryAdd(adapter.SiteType, adapter))
-                throw new ArgumentException($"Duplicate pricing adapter site type '{adapter.SiteType}'.", nameof(adapters));
-        }
-        _adapters = map;
+        ArgumentNullException.ThrowIfNull(logger);
+        _adapterRegistry = adapterRegistry;
         _snapshots = snapshots;
+        _logger = logger;
         _recommendation = recommendationService ?? new RecommendationService();
     }
 
@@ -97,19 +89,9 @@ public sealed class PricingRefreshService
         return RefreshCoreAsync(sites, usage, currentProviderId, requestTimeoutSeconds, cancellationToken);
     }
     public IReadOnlyDictionary<string, PricingSnapshot> LoadSnapshots() => _snapshots.LoadAll();
-
+    public IPricingSnapshotRepository SnapshotRepository => _snapshots;
     public void DeleteSnapshot(string providerId) => _snapshots.Delete(providerId);
     public void SaveSnapshot(PricingSnapshot snapshot) => _snapshots.Save(snapshot);
-
-    public async Task<SitePricingResult> ProbeAsync(SiteConfiguration site, int requestTimeoutSeconds, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(site);
-        if (!_adapters.TryGetValue(site.SiteType, out var adapter))
-            throw new PricingAdapterException(PricingAdapterFailure.InvalidResponse, $"没有为站点类型 '{site.SiteType}' 注册价格适配器。");
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(requestTimeoutSeconds));
-        return await adapter.FetchAsync(site, timeout.Token).ConfigureAwait(false);
-    }
 
     private async Task<PricingRefreshResult> RefreshCoreAsync(
         IReadOnlyList<SiteConfiguration> sites,
@@ -157,6 +139,10 @@ public sealed class PricingRefreshService
                 FailureReason = x.FailureMessage
             }).ToArray();
         var decision = _recommendation.Decide(sites, latest, usage, new SiteRefreshResult { States = refreshStates }, currentProviderId, DateTimeOffset.UtcNow);
+        foreach (var failed in results.Where(x => x.Status == PricingRefreshSiteStatus.Failed))
+            LogSiteFailure(_logger, failed.ProviderId, failed.FailureKind?.ToString() ?? "Unknown", null);
+        var completed = DateTimeOffset.UtcNow;
+        LogRefreshCompleted(_logger, results.Count, (long)(completed - started).TotalMilliseconds, null);
         return new PricingRefreshResult
         {
             Sites = results,
@@ -164,7 +150,7 @@ public sealed class PricingRefreshService
             LatestSnapshots = latest,
             Recommendation = decision,
             StartedAt = started,
-            CompletedAt = DateTimeOffset.UtcNow
+            CompletedAt = completed
         };
     }
 
@@ -177,7 +163,7 @@ public sealed class PricingRefreshService
         if (!site.Enabled)
             return new PricingRefreshSiteResult { ProviderId = site.ProviderId, Status = PricingRefreshSiteStatus.Disabled, PreviousSnapshot = previous };
 
-        if (!_adapters.TryGetValue(site.SiteType, out var adapter))
+        if (!_adapterRegistry.TryGet(site.SiteType, out var adapter))
             return Failed(site, previous, PricingRefreshFailureKind.UnknownSiteType, $"No pricing adapter is registered for site type '{site.SiteType}'.");
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(roundCancellation);
@@ -203,9 +189,12 @@ public sealed class PricingRefreshService
         }
         catch (PricingAdapterException ex)
         {
-            var kind = ex.Message.Contains("绑定", StringComparison.Ordinal) || ex.Message.Contains("令牌", StringComparison.Ordinal) || ex.Message.Contains("认证", StringComparison.Ordinal)
-                ? PricingRefreshFailureKind.Authentication
-                : PricingRefreshFailureKind.Adapter;
+            var kind = ex.Failure switch
+            {
+                PricingAdapterFailure.Authentication => PricingRefreshFailureKind.Authentication,
+                PricingAdapterFailure.Timeout => PricingRefreshFailureKind.Timeout,
+                _ => PricingRefreshFailureKind.Adapter
+            };
             return Failed(site, previous, kind, ex.Message);
         }
         catch (Exception ex)

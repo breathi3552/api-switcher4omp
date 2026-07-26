@@ -1,7 +1,8 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using ProviderPriceSwitcher.Core;
+using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Adapters;
 
@@ -10,7 +11,7 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
     private readonly HttpClient _httpClient;
     private readonly ISiteCredentialStore _credentialStore;
 
-    public string SiteType => "sub2api";
+    public PricingAdapterDescriptor Descriptor { get; } = new("sub2api", "Sub2API", true, ["导入令牌"]);
 
     public Sub2ApiPricingAdapter(HttpClient httpClient, ISiteCredentialStore credentialStore)
     {
@@ -23,7 +24,7 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
         ArgumentNullException.ThrowIfNull(site);
         var credential = _credentialStore.LoadCredential(site.ProviderId);
         if (credential is null || string.IsNullOrWhiteSpace(credential.AccessToken))
-            throw new PricingAdapterException(PricingAdapterFailure.Request, "未绑定 SevnX 访问令牌。请先在站点管理中绑定凭据。");
+            throw new PricingAdapterException(PricingAdapterFailure.Authentication, "未绑定 SevnX 访问令牌。请先在站点管理中绑定凭据。");
 
         try
         {
@@ -33,13 +34,21 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
             await Task.WhenAll(pricingTask, groupsTask, ratesTask).ConfigureAwait(false);
             return Build(site, pricingTask.Result.RootElement, groupsTask.Result.RootElement, ratesTask.Result.RootElement);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (PricingAdapterException)
+        {
+            throw;
+        }
         catch (HttpRequestException ex)
         {
             throw new PricingAdapterException(PricingAdapterFailure.Request, "Sub2API 请求失败。", ex);
         }
         catch (TaskCanceledException ex)
         {
-            throw new PricingAdapterException(PricingAdapterFailure.Request, "Sub2API 请求超时。", ex);
+            throw new PricingAdapterException(PricingAdapterFailure.Timeout, "Sub2API 请求超时。", ex);
         }
         catch (JsonException ex)
         {
@@ -71,7 +80,7 @@ public sealed class Sub2ApiPricingAdapter : IPricingAdapter
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             var detail = AuthenticationFailureDetail(body);
-            throw new PricingAdapterException(PricingAdapterFailure.Request, $"SevnX 认证失败（{detail}）。请在浏览器确认价格接口返回 200 后，重新导入该请求使用的最新访问令牌。");
+            throw new PricingAdapterException(PricingAdapterFailure.Authentication, $"SevnX 认证失败（{detail}）。请在浏览器确认价格接口返回 200 后，重新导入该请求使用的最新访问令牌。");
         }
         response.EnsureSuccessStatusCode();
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);

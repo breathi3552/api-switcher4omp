@@ -1,4 +1,4 @@
-using ProviderPriceSwitcher.Infrastructure;
+﻿using ProviderPriceSwitcher.Infrastructure;
 
 static void Assert(bool condition, string message)
 {

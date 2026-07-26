@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Core", "ProviderPriceSwitcher.Core\ProviderPriceSwitcher.Core.csproj", "{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Application", "ProviderPriceSwitcher.Application\ProviderPriceSwitcher.Application.csproj", "{7C8D9E0F-1234-4567-89AB-CDEF01234567}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Adapters", "ProviderPriceSwitcher.Adapters\ProviderPriceSwitcher.Adapters.csproj", "{46F85142-F93F-4A24-81E5-B45BE89AC381}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Infrastructure", "ProviderPriceSwitcher.Infrastructure\ProviderPriceSwitcher.Infrastructure.csproj", "{0AB71054-BE37-4D34-9691-5D778E3CB5C4}"
@@ -22,6 +24,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpConfig.Tests", "ProviderPriceSwitcher.OmpConfig.Tests\ProviderPriceSwitcher.OmpConfig.Tests.csproj", "D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpProcess.Tests", "ProviderPriceSwitcher.OmpProcess.Tests\ProviderPriceSwitcher.OmpProcess.Tests.csproj", "{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Application.Tests", "ProviderPriceSwitcher.Application.Tests\ProviderPriceSwitcher.Application.Tests.csproj", "{8D9E0F10-2345-4678-9ABC-DEF012345678}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.App.Tests", "ProviderPriceSwitcher.App.Tests\ProviderPriceSwitcher.App.Tests.csproj", "{9E0F1021-3456-4789-ABCD-EF0123456789}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -72,5 +78,17 @@ Global
 		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Release|Any CPU.Build.0 = Release|Any CPU
 		{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C8D9E0F-1234-4567-89AB-CDEF01234567}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C8D9E0F-1234-4567-89AB-CDEF01234567}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C8D9E0F-1234-4567-89AB-CDEF01234567}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C8D9E0F-1234-4567-89AB-CDEF01234567}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8D9E0F10-2345-4678-9ABC-DEF012345678}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8D9E0F10-2345-4678-9ABC-DEF012345678}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8D9E0F10-2345-4678-9ABC-DEF012345678}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8D9E0F10-2345-4678-9ABC-DEF012345678}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9E0F1021-3456-4789-ABCD-EF0123456789}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9E0F1021-3456-4789-ABCD-EF0123456789}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9E0F1021-3456-4789-ABCD-EF0123456789}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9E0F1021-3456-4789-ABCD-EF0123456789}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
