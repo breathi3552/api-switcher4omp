@@ -18,7 +18,22 @@ try
     Assert(defaults.OmpRootDirectory == expectedRoot && new AppPathDefaults().OmpConfigPath(defaults.OmpRootDirectory) == Path.Combine(expectedRoot, "agent", "config.yml"), "OMP root defaults and derived config path");
 
     settingsRepo.Save(defaults with { Sites = [new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://p.example"), Model = defaults.Model, CurrentGroup = "g" }] });
-    Assert(settingsRepo.Load().Sites.Single().ProviderId == "p", "settings roundtrip");
+    Assert(settingsRepo.Load().Sites.Single().ProviderId == "p" && settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/keys", "settings roundtrip and default configuration API address");
+    File.WriteAllText(settingsRepo.FilePath, """
+        {
+          "model": "gpt-5.6-sol",
+          "sites": [{
+            "providerId": "legacy",
+            "configurationKey": "legacy-key",
+            "baseUrl": "https://legacy.example/",
+            "model": "gpt-5.6-sol",
+            "currentGroup": "g"
+          }]
+        }
+        """);
+    Assert(settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/keys", "legacy site missing configuration API address defaults");
+    settingsRepo.Save(defaults with { Sites = [new SiteConfiguration { ProviderId = "explicit", ConfigurationKey = "k", BaseUrl = new Uri("https://p.example"), Model = defaults.Model, CurrentGroup = "g", ConfigurationApiAddress = "/custom/config" }] });
+    Assert(settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/custom/config", "explicit configuration API address roundtrip");
     File.WriteAllText(settingsRepo.FilePath, """
         {
           "model": "gpt-5.6-sol",

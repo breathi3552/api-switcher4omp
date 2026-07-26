@@ -105,18 +105,28 @@ public sealed class OmpProcessService
             WorkingDirectory = workingDirectory,
             UseShellExecute = false
         };
-        info.ArgumentList.Add("-w");
-        info.ArgumentList.Add("new");
-        info.ArgumentList.Add("new-tab");
-        info.ArgumentList.Add("--startingDirectory");
+        info.ArgumentList.Add("-d");
         info.ArgumentList.Add(workingDirectory);
-        info.ArgumentList.Add(executable);
+        info.ArgumentList.Add("powershell.exe");
+        info.ArgumentList.Add("-NoExit");
+        info.ArgumentList.Add("-Command");
+
+        var invocation = new List<string> { "&", ToPowerShellLiteral(executable) };
         if (arguments is not null)
         {
-            foreach (var argument in arguments) info.ArgumentList.Add(argument);
+            invocation.AddRange(arguments.Select(ToPowerShellLiteral));
         }
+
+        info.ArgumentList.Add(string.Join(' ', invocation));
         return info;
     }
+
+    private static string ToPowerShellLiteral(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+    }
+
     private static string ValidateExecutable(string executable)
     {
         if (string.IsNullOrWhiteSpace(executable))

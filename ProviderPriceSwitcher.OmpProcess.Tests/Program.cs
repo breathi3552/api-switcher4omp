@@ -29,7 +29,16 @@ try
     var terminalLaunch = service.Start(new OmpProcessStartRequest(tempDirectory, "omp", ["--help"]));
     Assert(terminalLaunch.Succeeded, "Windows Terminal launch must succeed through the gateway.");
     Assert(gateway.LastStartInfo!.FileName == "wt.exe", "Windows Terminal must be the launched executable.");
-    Assert(gateway.LastStartInfo.ArgumentList.SequenceEqual(["-w", "new", "new-tab", "--startingDirectory", Path.GetFullPath(tempDirectory), "omp", "--help"]), "Windows Terminal arguments must preserve working directory and OMP arguments.");
+    Assert(gateway.LastStartInfo.ArgumentList.SequenceEqual(["-d", Path.GetFullPath(tempDirectory), "powershell.exe", "-NoExit", "-Command", "& 'omp' '--help'"]), "Windows Terminal must use one literal PowerShell invocation for the default omp shape.");
+    Assert(gateway.LastStartInfo.WorkingDirectory == Path.GetFullPath(tempDirectory), "Windows Terminal WorkingDirectory must be passed to ProcessStartInfo.");
+    Assert(gateway.LastStartInfo.UseShellExecute == false, "Windows Terminal shell execution must be disabled.");
+
+    var rootedExecutable = Path.Combine(tempDirectory, "omp tool's.exe");
+    File.WriteAllText(rootedExecutable, string.Empty);
+    var literalArguments = new[] { "value with spaces", "quote'and", "; $() & |", "--flag" };
+    var literalLaunch = service.Start(new OmpProcessStartRequest(tempDirectory, rootedExecutable, literalArguments));
+    Assert(literalLaunch.Succeeded, "Rooted executable launch must succeed through the gateway.");
+    Assert(gateway.LastStartInfo!.ArgumentList.SequenceEqual(["-d", Path.GetFullPath(tempDirectory), "powershell.exe", "-NoExit", "-Command", $"& '{rootedExecutable.Replace("'", "''", StringComparison.Ordinal)}' 'value with spaces' 'quote''and' '; $() & |' '--flag'"]), "Executable and arguments must be PowerShell single-quoted literals.");
 
     const string syntheticSecret = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
     gateway.StartException = new InvalidOperationException(syntheticSecret);
