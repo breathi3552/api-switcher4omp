@@ -1,0 +1,76 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Core", "ProviderPriceSwitcher.Core\ProviderPriceSwitcher.Core.csproj", "{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Adapters", "ProviderPriceSwitcher.Adapters\ProviderPriceSwitcher.Adapters.csproj", "{46F85142-F93F-4A24-81E5-B45BE89AC381}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Infrastructure", "ProviderPriceSwitcher.Infrastructure\ProviderPriceSwitcher.Infrastructure.csproj", "{0AB71054-BE37-4D34-9691-5D778E3CB5C4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.App", "ProviderPriceSwitcher.App\ProviderPriceSwitcher.App.csproj", "{4EFD055C-26AA-499A-A778-F3CCDD0A6ADC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Core.Tests", "ProviderPriceSwitcher.Core.Tests\ProviderPriceSwitcher.Core.Tests.csproj", "{A9C6D7E8-1234-4ABC-9DEF-0123456789AB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Adapters.Tests", "ProviderPriceSwitcher.Adapters.Tests\ProviderPriceSwitcher.Adapters.Tests.csproj", "{B8F2A9C5-1B1D-4A8B-91E2-7D07DDC2F5C2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Infrastructure.Tests", "ProviderPriceSwitcher.Infrastructure.Tests\ProviderPriceSwitcher.Infrastructure.Tests.csproj", "{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Refresh.Tests", "ProviderPriceSwitcher.Refresh.Tests\ProviderPriceSwitcher.Refresh.Tests.csproj", "E6A1B2C3-4567-4890-ABCD-1234567890EF"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpConfig.Tests", "ProviderPriceSwitcher.OmpConfig.Tests\ProviderPriceSwitcher.OmpConfig.Tests.csproj", "D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpProcess.Tests", "ProviderPriceSwitcher.OmpProcess.Tests\ProviderPriceSwitcher.OmpProcess.Tests.csproj", "{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3DC21A34-5F5F-4C54-9EAD-152B1BFEB87E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{46F85142-F93F-4A24-81E5-B45BE89AC381}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{46F85142-F93F-4A24-81E5-B45BE89AC381}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{46F85142-F93F-4A24-81E5-B45BE89AC381}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{46F85142-F93F-4A24-81E5-B45BE89AC381}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0AB71054-BE37-4D34-9691-5D778E3CB5C4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0AB71054-BE37-4D34-9691-5D778E3CB5C4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0AB71054-BE37-4D34-9691-5D778E3CB5C4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0AB71054-BE37-4D34-9691-5D778E3CB5C4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4EFD055C-26AA-499A-A778-F3CCDD0A6ADC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4EFD055C-26AA-499A-A778-F3CCDD0A6ADC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4EFD055C-26AA-499A-A778-F3CCDD0A6ADC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4EFD055C-26AA-499A-A778-F3CCDD0A6ADC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A9C6D7E8-1234-4ABC-9DEF-0123456789AB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A9C6D7E8-1234-4ABC-9DEF-0123456789AB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A9C6D7E8-1234-4ABC-9DEF-0123456789AB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A9C6D7E8-1234-4ABC-9DEF-0123456789AB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8F2A9C5-1B1D-4A8B-91E2-7D07DDC2F5C2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8F2A9C5-1B1D-4A8B-91E2-7D07DDC2F5C2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8F2A9C5-1B1D-4A8B-91E2-7D07DDC2F5C2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8F2A9C5-1B1D-4A8B-91E2-7D07DDC2F5C2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6A1B2C3-4567-4890-ABCD-1234567890EF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

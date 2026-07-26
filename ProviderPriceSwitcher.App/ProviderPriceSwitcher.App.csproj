@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProviderPriceSwitcher.Core\ProviderPriceSwitcher.Core.csproj" />
+    <ProjectReference Include="..\ProviderPriceSwitcher.Adapters\ProviderPriceSwitcher.Adapters.csproj" />
+    <ProjectReference Include="..\ProviderPriceSwitcher.Infrastructure\ProviderPriceSwitcher.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <NoWarn>$(NoWarn);CA1001;CA1305;CA1859;CA1861</NoWarn>
+  </PropertyGroup>
+
+</Project>
