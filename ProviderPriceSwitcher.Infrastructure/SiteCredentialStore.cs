@@ -1,0 +1,79 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Runtime.Versioning;
+using System.Text.Json;
+using ProviderPriceSwitcher.Core;
+
+namespace ProviderPriceSwitcher.Infrastructure;
+
+
+[SupportedOSPlatform("windows")]
+public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
+{
+    private const string Purpose = "ProviderPriceSwitcher.SiteCredential";
+
+    public SiteCredentialRecord? LoadCredential(string providerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        var path = FilePath(providerId);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var protectedBytes = File.ReadAllBytes(path);
+            var bytes = ProtectedData.Unprotect(protectedBytes, Entropy(providerId), DataProtectionScope.CurrentUser);
+            return JsonSerializer.Deserialize<SiteCredentialRecord>(bytes, AtomicJsonFile.Options);
+        }
+        catch (Exception ex) when (ex is IOException or CryptographicException or JsonException)
+        {
+            throw new JsonDataException(path, ex);
+        }
+    }
+
+    public void SaveCredential(SiteCredentialRecord credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential.ProviderId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential.SiteType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential.AuthorizationScheme);
+        ArgumentException.ThrowIfNullOrWhiteSpace(credential.AccessToken);
+        var path = FilePath(credential.ProviderId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(credential with { UpdatedAt = DateTimeOffset.UtcNow }, AtomicJsonFile.Options);
+        var protectedBytes = ProtectedData.Protect(payload, Entropy(credential.ProviderId), DataProtectionScope.CurrentUser);
+        File.WriteAllBytes(path, protectedBytes);
+    }
+
+    public void ClearCredential(string providerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        var path = FilePath(providerId);
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    public SiteCredentialSummary GetSummary(string providerId, string siteType)
+    {
+        var credential = LoadCredential(providerId);
+        if (credential is null)
+            return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.NotConfigured, StatusText = siteType == "sub2api" ? "未绑定令牌" : "无需凭据" };
+
+        var expired = credential.ExpiresAt is DateTimeOffset expiresAt && expiresAt <= DateTimeOffset.UtcNow;
+        var cookieHint = !string.IsNullOrWhiteSpace(credential.CookieHeader) ? "；已保存浏览器会话 Cookie" : string.Empty;
+        return new SiteCredentialSummary
+        {
+            ProviderId = providerId,
+            Status = expired ? SiteCredentialStatus.Expired : SiteCredentialStatus.Available,
+            StatusText = (expired ? "访问令牌已过期" : $"已绑定 {credential.AuthorizationScheme} 访问令牌") + cookieHint,
+            ExpiresAt = credential.ExpiresAt,
+            UpdatedAt = credential.UpdatedAt
+        };
+    }
+
+    private static string FilePath(string providerId)
+    {
+        var safe = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerId)));
+        return Path.Combine(AppDataPaths.GetRoot(), "credentials", safe + ".bin");
+    }
+
+    private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
+}
