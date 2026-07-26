@@ -10,8 +10,16 @@ var adapter = new FakeAdapter(new PricingAdapterDescriptor("fake", "Fake", false
 var registry = new PricingAdapterRegistry([adapter]);
 var snapshots = new MemorySnapshots();
 var settingsRepo = new MemorySettings();
-var refresh = new PricingRefreshService(registry, snapshots, NullLogger<PricingRefreshService>.Instance);
-var useCase = new PricingCheckUseCase(refresh, settingsRepo);
+var refresh = new PricingRefreshService(registry, NullLogger<PricingRefreshService>.Instance);
+var useCase = new PricingCheckUseCase(refresh, settingsRepo, snapshots);
+var sourceSites = new[] { Site(1) };
+var sourceDirectories = new[] { "C:\\One" };
+var immutableSettings = new LocalAppSettings { Sites = sourceSites, OmpWorkingDirectories = sourceDirectories };
+sourceSites[0] = Site(9);
+sourceDirectories[0] = "C:\\Mutated";
+Assert(immutableSettings.Sites.Single().CurrentGroupRatio == 1 && immutableSettings.OmpWorkingDirectories.Single() == "C:\\One", "settings collections must snapshot caller-owned arrays");
+var immutableUpdated = immutableSettings with { Sites = [Site(2)], OmpWorkingDirectories = ["C:\\Two"] };
+Assert(immutableSettings.Sites.Single().CurrentGroupRatio == 1 && immutableSettings.OmpWorkingDirectories.Single() == "C:\\One" && immutableUpdated.Sites.Single().CurrentGroupRatio == 2, "with update must not mutate original settings");
 var changed = await useCase.ExecuteAsync(new LocalAppSettings { Sites = [Site(1)] }, null);
 Assert(settingsRepo.SaveCount == 1 && changed.Settings.Sites.Single().CurrentGroupRatio == 2 && changed.Settings.Sites.Single().GroupRatioSource == "自动", "changed ratio must save once as automatic");
 settingsRepo.SaveCount = 0;
@@ -22,7 +30,7 @@ var cancelRegistry = new PricingAdapterRegistry([new FakeAdapter(new PricingAdap
 using (var cts = new CancellationTokenSource())
 {
     cts.Cancel();
-    try { await new PricingCheckUseCase(new PricingRefreshService(cancelRegistry, new MemorySnapshots(), NullLogger<PricingRefreshService>.Instance), settingsRepo).ExecuteAsync(new LocalAppSettings { Sites = [Site()] }, null, cts.Token); throw new InvalidOperationException("cancel swallowed"); } catch (OperationCanceledException) { }
+    try { await new PricingCheckUseCase(new PricingRefreshService(cancelRegistry, NullLogger<PricingRefreshService>.Instance), settingsRepo, new MemorySnapshots()).ExecuteAsync(new LocalAppSettings { Sites = [Site()] }, null, cts.Token); throw new InvalidOperationException("cancel swallowed"); } catch (OperationCanceledException) { }
 }
 Assert(settingsRepo.SaveCount == 0, "cancellation must not save");
 

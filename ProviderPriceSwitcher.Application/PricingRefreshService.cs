@@ -44,7 +44,6 @@ public sealed record PricingRefreshResult
 public sealed class PricingRefreshService
 {
     private readonly IPricingAdapterRegistry _adapterRegistry;
-    private readonly IPricingSnapshotRepository _snapshots;
     private readonly RecommendationService _recommendation;
     private readonly ILogger<PricingRefreshService> _logger;
     private static readonly Action<ILogger, string, string, Exception?> LogSiteFailure = LoggerMessage.Define<string, string>(LogLevel.Warning, new EventId(10, "PricingSiteFailure"), "Pricing refresh failed for {ProviderId}: {FailureKind}");
@@ -52,15 +51,12 @@ public sealed class PricingRefreshService
 
     public PricingRefreshService(
         IPricingAdapterRegistry adapterRegistry,
-        IPricingSnapshotRepository snapshots,
         ILogger<PricingRefreshService> logger,
         RecommendationService? recommendationService = null)
     {
         ArgumentNullException.ThrowIfNull(adapterRegistry);
-        ArgumentNullException.ThrowIfNull(snapshots);
         ArgumentNullException.ThrowIfNull(logger);
         _adapterRegistry = adapterRegistry;
-        _snapshots = snapshots;
         _logger = logger;
         _recommendation = recommendationService ?? new RecommendationService();
     }
@@ -69,10 +65,11 @@ public sealed class PricingRefreshService
         LocalAppSettings settings,
         UsageProfile usage,
         string? currentProviderId,
+        IReadOnlyDictionary<string, PricingSnapshot>? previousSnapshots = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return RefreshAsync(settings.Sites, usage, currentProviderId, settings.RequestTimeoutSeconds, cancellationToken);
+        return RefreshAsync(settings.Sites, usage, currentProviderId, settings.RequestTimeoutSeconds, previousSnapshots, cancellationToken);
     }
 
     public Task<PricingRefreshResult> RefreshAsync(
@@ -80,77 +77,45 @@ public sealed class PricingRefreshService
         UsageProfile usage,
         string? currentProviderId,
         int requestTimeoutSeconds,
+        IReadOnlyDictionary<string, PricingSnapshot>? previousSnapshots = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sites);
         ArgumentNullException.ThrowIfNull(usage);
         ArgumentOutOfRangeException.ThrowIfNegative(requestTimeoutSeconds);
-        return RefreshCoreAsync(sites, usage, currentProviderId, requestTimeoutSeconds, cancellationToken);
+        return RefreshCoreAsync(sites, usage, currentProviderId, requestTimeoutSeconds, previousSnapshots ?? new Dictionary<string, PricingSnapshot>(StringComparer.Ordinal), cancellationToken);
     }
-    public IReadOnlyDictionary<string, PricingSnapshot> LoadSnapshots() => _snapshots.LoadAll();
-    public IPricingSnapshotRepository SnapshotRepository => _snapshots;
-    public void DeleteSnapshot(string providerId) => _snapshots.Delete(providerId);
-    public void SaveSnapshot(PricingSnapshot snapshot) => _snapshots.Save(snapshot);
 
     private async Task<PricingRefreshResult> RefreshCoreAsync(
         IReadOnlyList<SiteConfiguration> sites,
         UsageProfile usage,
         string? currentProviderId,
         int requestTimeoutSeconds,
+        IReadOnlyDictionary<string, PricingSnapshot> previous,
         CancellationToken cancellationToken)
     {
         var started = DateTimeOffset.UtcNow;
-        var previous = _snapshots.LoadAll();
         using var roundCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var tasks = sites.Select(site => RefreshSiteAsync(site, previous.GetValueOrDefault(site.ProviderId), requestTimeoutSeconds, roundCancellation.Token)).ToArray();
 
         IReadOnlyList<PricingRefreshSiteResult> results;
-        try
-        {
-            results = await Task.WhenAll(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            roundCancellation.Cancel();
-            throw;
-        }
-
+        try { results = await Task.WhenAll(tasks).WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch { roundCancellation.Cancel(); throw; }
         cancellationToken.ThrowIfCancellationRequested();
-        var successful = results
-            .Where(x => x.Status == PricingRefreshSiteStatus.Succeeded && x.PricingResult is not null)
-            .ToDictionary(x => x.ProviderId, x => x.PricingResult!, StringComparer.Ordinal);
+        var successful = results.Where(x => x.Status == PricingRefreshSiteStatus.Succeeded && x.PricingResult is not null).ToDictionary(x => x.ProviderId, x => x.PricingResult!, StringComparer.Ordinal);
         var latest = new Dictionary<string, PricingSnapshot>(previous, StringComparer.Ordinal);
-        foreach (var result in successful.Values)
-            latest[result.Snapshot.ProviderId] = result.Snapshot;
-        if (successful.Count > 0)
-            _snapshots.SaveAll(latest.Values);
-
-        var refreshStates = results
-            .Where(x => x.Status != PricingRefreshSiteStatus.Disabled)
-            .Select(x => new SiteRefreshState
-            {
-                ProviderId = x.ProviderId,
-                Status = x.Status == PricingRefreshSiteStatus.Succeeded
-                    ? SiteRefreshStatus.Succeeded
-                    : x.FailureKind == PricingRefreshFailureKind.Authentication
-                        ? SiteRefreshStatus.AuthenticationRequired
-                        : SiteRefreshStatus.Failed,
-                FailureReason = x.FailureKind?.ToString()
-            }).ToArray();
+        foreach (var result in successful.Values) latest[result.Snapshot.ProviderId] = result.Snapshot;
+        var refreshStates = results.Where(x => x.Status != PricingRefreshSiteStatus.Disabled).Select(x => new SiteRefreshState
+        {
+            ProviderId = x.ProviderId,
+            Status = x.Status == PricingRefreshSiteStatus.Succeeded ? SiteRefreshStatus.Succeeded : x.FailureKind == PricingRefreshFailureKind.Authentication ? SiteRefreshStatus.AuthenticationRequired : SiteRefreshStatus.Failed,
+            FailureReason = x.FailureKind?.ToString()
+        }).ToArray();
         var decision = _recommendation.Decide(sites, latest, usage, new SiteRefreshResult { States = refreshStates }, currentProviderId, DateTimeOffset.UtcNow);
-        foreach (var failed in results.Where(x => x.Status == PricingRefreshSiteStatus.Failed))
-            LogSiteFailure(_logger, failed.ProviderId, failed.FailureKind?.ToString() ?? "Unknown", null);
+        foreach (var failed in results.Where(x => x.Status == PricingRefreshSiteStatus.Failed)) LogSiteFailure(_logger, failed.ProviderId, failed.FailureKind?.ToString() ?? "Unknown", null);
         var completed = DateTimeOffset.UtcNow;
         LogRefreshCompleted(_logger, results.Count, (long)(completed - started).TotalMilliseconds, null);
-        return new PricingRefreshResult
-        {
-            Sites = results,
-            SuccessfulResults = successful,
-            LatestSnapshots = latest,
-            Recommendation = decision,
-            StartedAt = started,
-            CompletedAt = completed
-        };
+        return new PricingRefreshResult { Sites = results, SuccessfulResults = successful, LatestSnapshots = latest, Recommendation = decision, StartedAt = started, CompletedAt = completed };
     }
 
     private async Task<PricingRefreshSiteResult> RefreshSiteAsync(

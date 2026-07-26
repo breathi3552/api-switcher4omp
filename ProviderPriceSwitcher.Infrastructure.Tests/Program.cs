@@ -1,4 +1,5 @@
-﻿using ProviderPriceSwitcher.Core;
+﻿using System.Text.Json;
+using ProviderPriceSwitcher.Core;
 using ProviderPriceSwitcher.Infrastructure;
 using ProviderPriceSwitcher.Application;
 
@@ -28,10 +29,20 @@ try
             "baseUrl": "https://legacy.example/",
             "model": "gpt-5.6-sol",
             "currentGroup": "g"
-          }]
+          }],
+          "ompWorkingDirectories": ["C:\\Legacy", "D:\\Second"],
+          "lastOmpWorkingDirectory": "C:\\Legacy",
+          "unknownFutureField": { "keptOnlyOnRead": true }
         }
         """);
-    Assert(settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/keys", "legacy site missing configuration API address defaults");
+    var legacySettings = settingsRepo.Load();
+    Assert(legacySettings.Sites.Single().ConfigurationApiAddress == "/keys" && legacySettings.OmpWorkingDirectories.SequenceEqual(["C:\\Legacy", "D:\\Second"]), "legacy settings arrays and defaults must load");
+    settingsRepo.Save(legacySettings);
+    using (var legacyRoundTrip = JsonDocument.Parse(File.ReadAllText(settingsRepo.FilePath)))
+    {
+        Assert(legacyRoundTrip.RootElement.GetProperty("sites").ValueKind == JsonValueKind.Array && legacyRoundTrip.RootElement.GetProperty("ompWorkingDirectories").EnumerateArray().Select(x => x.GetString()).SequenceEqual(["C:\\Legacy", "D:\\Second"]), "legacy settings arrays must retain JSON shape and order");
+        Assert(!legacyRoundTrip.RootElement.TryGetProperty("unknownFutureField", out _), "unknown settings fields must retain the existing ignore-on-save policy");
+    }
     settingsRepo.Save(defaults with { Sites = [new SiteConfiguration { ProviderId = "explicit", ConfigurationKey = "k", BaseUrl = new Uri("https://p.example"), Model = defaults.Model, CurrentGroup = "g", ConfigurationApiAddress = "/custom/config" }] });
     Assert(settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/custom/config", "explicit configuration API address roundtrip");
     File.WriteAllText(settingsRepo.FilePath, """

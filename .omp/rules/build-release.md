@@ -68,6 +68,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact Behav
 ```
 
 `Document` 只执行 manifest、solution 与依赖矩阵静态一致性检查，不调用 SDK/build/format/runner；`Internal`/`Behavior` 要求至少一个显式 `-Runner`；`CrossLayer` 必须使用 `-AllRunners`。成功判据：入口退出码为 `0`，完整 build 为 `0` 个错误和 `0` 个警告，所运行 runner 输出 `passed`。不得在规则、CI 或其他脚本复制 runner 清单。
+跨层验证的场景状态与未执行边界统一记录在唯一 [`Quality-Debt-Register.md`](../context/Quality-Debt-Register.md)；本指南不复制 runner 矩阵。
 
 ## WPF 隔离烟测与行为验收
 

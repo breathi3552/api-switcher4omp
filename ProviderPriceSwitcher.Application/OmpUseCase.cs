@@ -44,7 +44,7 @@ public sealed class SwitchAndStartUseCase(
         if (!configuration.Succeeded)
             return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
 
-        var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var updated = settings with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory };
         settingsRepository.Save(updated);
 

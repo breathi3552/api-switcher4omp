@@ -137,9 +137,9 @@ public sealed class JsonSettingsRepository : ISettingsRepository
     {
         var root = string.IsNullOrWhiteSpace(settings.OmpRootDirectory) ? _pathDefaults.OmpRootDirectory : settings.OmpRootDirectory;
         var agent = _pathDefaults.OmpAgentDirectory(root);
-        var directories = settings.OmpWorkingDirectories.Count == 0 ? new List<string> { agent } : settings.OmpWorkingDirectories;
+        var directories = settings.OmpWorkingDirectories.Count == 0 ? new[] { agent } : settings.OmpWorkingDirectories.ToArray();
         var last = string.IsNullOrWhiteSpace(settings.LastOmpWorkingDirectory) ? directories[0] : settings.LastOmpWorkingDirectory;
-        return settings with { OmpRootDirectory = root, OmpWorkingDirectories = directories, LastOmpWorkingDirectory = last };
+        return settings with { OmpRootDirectory = root, OmpWorkingDirectories = directories, LastOmpWorkingDirectory = last, Sites = settings.Sites.ToArray() };
     }
 
     public void Save(LocalAppSettings settings)
@@ -155,7 +155,7 @@ public sealed class JsonPricingSnapshotRepository : IPricingSnapshotRepository
     public JsonPricingSnapshotRepository(string? rootDirectory = null) => FilePath = AppDataPaths.SnapshotsFile(rootDirectory);
 
     public IReadOnlyDictionary<string, PricingSnapshot> LoadAll() =>
-        AtomicJsonFile.Read(FilePath, new Dictionary<string, PricingSnapshot>(StringComparer.Ordinal));
+        new Dictionary<string, PricingSnapshot>(AtomicJsonFile.Read(FilePath, new Dictionary<string, PricingSnapshot>(StringComparer.Ordinal)), StringComparer.Ordinal);
 
     public PricingSnapshot? Load(string providerId)
     {

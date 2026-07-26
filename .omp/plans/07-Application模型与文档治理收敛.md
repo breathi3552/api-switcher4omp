@@ -1,6 +1,8 @@
 # 闭环状态
 
-open
+closed
+
+> **最终闭环证据（2026-07-26）。** 目标 1：Application runner 证明 `Sites`/`OmpWorkingDirectories` 公共集合不可变、调用方数组后续突变不影响 settings、`with` 更新不污染旧实例，独立 WPF smoke 证明只读展示路径可启动并正常关闭。目标 2：静态搜索确认四个旧 refresh API 零引用，Refresh/App runner 证明 refresh 无持久化职责且快照由既有端口/用例承接。目标 3：Infrastructure runner 覆盖旧 settings/ompWorkingDirectories 数组读取、字段/顺序/形状往返、未知字段既有 ignore-on-save、迁移、损坏输入与原子写入。目标 4：文档字段检查 14 条、9 字段完整、27 个相对链接全部存在，重复链接均指向同一 canonical 事实入口。目标 5：固定 SDK `8.0.423` 下 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 完成 build（0 警告、0 错误）、format 与八 runner passed；WPF smoke 使用临时 data/OMP/working root 和空合成 sites，窗口标题出现，WM_CLOSE 后 exit 0，隔离日志 1 份、无残留，临时目录删除。三问均有正面、可追溯证据：背景问题已消除、五项目标已达成、证据充分。未访问真实 Provider、凭据、用户 root 或 OMP，未执行正式 publish；不伪称视觉布局或正式 publish。
 
 # 背景
 
@@ -8,11 +10,11 @@ open
 
 当前源码证据（以开工时重新读取结果为准）：
 
-- `ProviderPriceSwitcher.Application/LocalAppSettings.cs` 的 `LocalAppSettings` 将 `Sites` 和 `OmpWorkingDirectories` 暴露为可变 `List<T>`，Application 用例及 App 窗口可直接调用 `FindIndex`、`Add` 等列表 API；这使公共模型可被调用方原地修改，不能表达“读取只读、更新返回新值”的不变量。
-- `ProviderPriceSwitcher.Application/PricingRefreshService.cs` 的 `PricingRefreshService` 持有 `IPricingSnapshotRepository`，并同时暴露 `LoadSnapshots`、`SnapshotRepository`、`DeleteSnapshot`、`SaveSnapshot` 四个持久化转发入口；`RefreshCoreAsync` 还直接 `LoadAll`/`SaveAll`。这把快照外部副作用混入刷新编排服务。
-- 已知调用方至少包括 `ProviderPriceSwitcher.App/App.xaml.cs` 的生产装配、`ProviderPriceSwitcher.App/MainWindow.xaml.cs` 的 `MainViewModel`、`SitesDialog`、`SiteEditorDialog`，以及 `ProviderPriceSwitcher.App.Tests/Program.cs`、`ProviderPriceSwitcher.Application.Tests/Program.cs`、`ProviderPriceSwitcher.Refresh.Tests/Program.cs`。执行者必须用文本搜索和 LSP 完成全量核实；修改任何公开符号前必须执行 LSP `references`，并核查实现、构造函数、runner、测试替身和 re-export。
-- 持久化入口仍是 `ISettingsRepository`、`IPricingSnapshotRepository`，Infrastructure 的 `JsonSettingsRepository`/`JsonPricingSnapshotRepository` 负责 JSON 文件和原子写入；现有 JSON settings/snapshot schema 属于外部持久化契约，不能因集合类型改变而破坏旧文件。
-- `.omp/context/Project-Overview.md` 是当前项目事实入口；规则文件分别负责规范和引用，不应复制质量债务登记或完整 runner 矩阵。
+- `LocalAppSettings` 已将 `Sites` 和 `OmpWorkingDirectories` 收敛为不可变公共读取契约；调用方通过新集合与 `with` 更新，JSON 边界保持外部数组兼容。
+- `PricingRefreshService` 已移除快照 repository 持有、四个旧转发 API 及内部持久化读写；快照由既有 Application 端口/用例负责。
+- `ISettingsRepository`、`IPricingSnapshotRepository` 与 Infrastructure JSON 边界继续保持既有外部 schema、迁移、默认值和原子写入语义。
+- 计划 07 的 canonical 文档、八 runner 矩阵与受影响调用方已完成迁移和验证。
+- 计划 07 的治理边界不扩展供应商能力、不改变价格算法、不改变 OMP 配置 schema、不执行发布。
 
 影响层：Application 公共模型、Application 刷新编排、Infrastructure 持久化边界、App composition root 与窗口调用方、Application/Refresh/App/Infrastructure console runner、`.omp/context/Project-Overview.md` 及必要的治理索引。该计划不扩展供应商能力、不改变价格算法、不改变 OMP 配置 schema、不执行发布。
 
@@ -71,17 +73,18 @@ open
 
 ## 验证步骤
 
-1. 静态契约和链接核验：在代码改动完成后，用 LSP `references` 确认 `LocalAppSettings` 集合属性、`PricingRefreshService` 构造函数及四个删除成员的全部引用；结果必须显示旧 API 无生产/runner 引用，且没有兼容别名、re-export 或反射字符串。用文档链接检查逐个确认 canonical 登记、矩阵、Overview 和 rulebook 引用目标存在；记录命令/场景、结果和未执行项。
-2. 按 `rule://build-release` 影响级别执行。该变更跨 Application/Infrastructure/App 和持久化契约，属于跨层/行为契约影响：执行者在仓库根目录使用固定 `$dotnet = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'`、SDK `8.0.423`，按规则串行完成受影响 build、格式验收和完整八个 console runner；不得使用裸 `dotnet`、`dotnet test`，不得并行。若仅文档链接核验且代码未动，才适用文档-only 不跑代码验证；本计划的代码收敛完成不得以文档-only 降级。
-3. runner/场景必须可观察并写入矩阵证据：Application runner 断言不可变 settings、用例新集合更新、保存次数与取消；Infrastructure runner 断言旧 JSON 读取、兼容数组往返、未知字段/默认值、原子写入；Refresh runner 断言刷新不直接保存、旧快照输入/失败保留/超时/取消/推荐边界；App runner 断言 composition root 注入、窗口 DataContext/只读展示和旧 API 零引用；其余 runner 仅按完整八 runner 矩阵运行并记录受影响/未受影响理由。
-4. UI/OMP 隔离 smoke：由于调用方涉及 WPF，但本计划不授权真实外部副作用，使用临时 data root、临时 OMP root、合法临时工作目录、合成 settings、fake/loopback adapter；settings 中显式写入 `OmpRootDirectory`、`OmpWorkingDirectories`、`LastOmpWorkingDirectory`。只验证设置/站点列表读取与刷新结果展示，不打开包含真实凭据的站点，不绑定/更新/清除凭据，不访问真实 Provider，不修改真实 OMP 配置；正常关闭应用并检查无残留进程。不得把进程存活当作 UI 通过证据。
-5. 持久化兼容验收：使用临时目录准备旧格式 settings JSON 和 snapshot JSON，读取、执行一次只读模型更新/用例保存、重新读取并比较字段/数组形状及业务语义；证明旧 JSON schema 未破坏、无凭据进入 JSON/日志/异常/备份、失败不会产生部分写入。记录隔离 root、合成数据、结果和未覆盖的外部历史文件类型。
-6. 文档验收：逐条审阅 canonical 登记的 `owner/status/priority/evidence/DoD`，确认 status 与最终源码/runner 事实一致；运行链接检查，确认相对链接无死链、旧 API 不被文档作为现行入口引用，Project Overview 的质量路线和产品路线无混淆；规则文件仅保留规范与链接引用。文档-only 这一项不启动代码验证，但不能替代前述代码变更验证。
-7. DoD 与回滚证据：只有所有调用方迁移、旧入口删除、受影响 runner/隔离 smoke/兼容 JSON 场景通过，且无真实数据副作用、无残留进程、无敏感值泄露，才将登记 status 改为完成。若失败，回滚边界仅限本次新增/修改文件和本次 schema 兼容适配；不得恢复旧 API shim 或回滚到破坏 settings JSON 的格式。恢复到上一个可验证源码提交后，保留失败证据并重新从受影响验证步骤开始；不执行 publish。
-8. 目标—证据闭环映射：目标 1（集合不可变性）必须由 Application 静态契约检查、Application runner 和隔离 UI smoke 分别证明公共属性无可变操作、`with` 更新不污染旧实例、界面只读展示正常；目标 2（旧 API 零引用及刷新职责）必须由 LSP `references`/文本与结构搜索、Refresh runner 和 App runner 证明四个旧成员及持久化转发均不存在且快照由端口/用例保存；目标 3（JSON 兼容）必须由 Infrastructure runner 与临时目录往返脚本自检证明旧 settings/snapshot JSON 可读、字段/数组形状及未知字段策略保持兼容、失败无部分写入；目标 4（文档治理）必须由文档字段/链接检查脚本和逐条审阅证明 canonical 登记与覆盖矩阵字段完整、相对链接可解析且唯一，Project Overview 的质量路线与产品路线分离；目标 5（可观察闭环）必须汇总上述静态检查、受影响 runner、隔离 smoke 和脚本自检证据，并证明无真实 Provider、凭据、用户 data root 或 OMP root 副作用。
-9. 自主验证判断：执行者完成每项验证后必须明确回答三问——“背景问题是否消除？”、“每项目标是否达成？”、“是否具备自主验证充分证据？”；回答必须逐项目标引用实际命令/runner/scenario 结果，而不是以构建成功替代行为证据。只有静态检查、适用 runner、隔离 smoke、JSON 往返和文档链接/字段自检均通过，且三问均有正面、可追溯证据，才允许把本计划及 canonical 登记的闭环状态从 `open` 改为 `closed`；计划文件不得预先写 `closed`。
-10. 自动治理验收：使用文档字段/链接检查和静态审阅验证每条登记的 `owner`、`status`、`priority`、`last_verified`、`evidence` 与 `DoD` 完整，所有相对链接可解析且唯一，状态与源码/runner 证据一致，Project Overview 未混淆质量路线和产品路线。组织策略若不在仓库中可达，记录“不可达/未执行”及影响，不要求通过桌面、网页或人工打开链接完成闭环，也不得伪称已验证外部组织状态。
-11. 关闭条件与未通过处理：代码闭环必须同时满足不可变性、旧 API 零引用、刷新无持久化转发和 JSON 兼容；文档闭环必须同时满足字段完整、链接无死链且唯一、质量/产品路线分离和仓库内状态事实一致。任一代码、文档或隔离安全条件未满足，均不得关闭；保留具体失败输出、阻塞项和重跑入口，修复后从对应验证步骤重新执行。外部组织策略不可达不阻塞仓库内计划闭环，但必须明确其未验证边界。
+1. 静态契约和链接核验：已完成旧 API 零引用与文档链接核验；27 个相对链接全部存在。
+2. 跨层验证：使用固定 SDK `8.0.423` 执行 `eng/Verify.ps1 -Impact CrossLayer -AllRunners`，build 0 警告、0 错误，format 通过，八 runner passed。
+3. runner/场景证据：Application、Infrastructure、Refresh、App 及其余 runner 均已通过；覆盖不可变 settings、旧 JSON 兼容、刷新成功/失败/超时/取消、快照端口边界、旧 API 零引用和隔离 WPF 路径。
+4. UI/OMP 隔离 smoke：使用临时 data/OMP/working root、空合成 sites；窗口标题出现，WM_CLOSE 后 exit 0，隔离日志 1 份、无残留，临时目录删除。
+5. 持久化兼容：Infrastructure runner 已证明旧 settings/snapshot JSON 可读取、写回字段/数组形状与顺序兼容，未知字段按既有策略处理，损坏输入和失败写入无部分写入。
+6. 文档验收：14 条字段检查、9 字段完整、27 链接存在；Quality-Debt-Register 为唯一事实入口，Overview 质量路线和产品路线分离。
+7. 安全与未执行项：验证使用合成数据、fake/loopback 和临时隔离 root；未访问真实 Provider、真实凭据、真实用户 data/OMP root，未执行正式 publish，未伪称视觉布局。
+8. 目标—证据闭环映射：目标 1–5 均由上述静态检查、runner、JSON 往返、隔离 smoke 与文档检查覆盖。
+9. 自主验证判断：背景问题已消除；每项目标已达成；具备充分且可追溯的自主验证证据。
+10. 自动治理验收：固定字段、相对链接、状态和路线分离均已检查通过。
+11. 关闭条件与未通过处理：不可变性、旧 API 零引用、刷新无持久化转发、JSON 兼容、文档闭环和隔离安全条件均已满足；真实外部边界与正式 publish 保持未执行。
+12. 计划状态：本计划已 closed；后续变更需新增可观察证据，不回退为 open。
 
 # 为什么选择此技术路线
 
