@@ -50,7 +50,7 @@ try
         await release.Task.WaitAsync(ct);
         return Pricing(site.ProviderId, site.ProviderId == "one" ? 1 : 2);
     });
-    var service = new PricingRefreshService(new PricingAdapterRegistry([adapter]), new JsonPricingSnapshotRepository(root), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance, new RecommendationService());
+    var service = new PricingRefreshService(new PricingAdapterRegistry([adapter]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance, new RecommendationService());
     var run = service.RefreshAsync([Site("one"), Site("two")], usage, null, 5);
     await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
     Assert(adapter.Calls == 2, "enabled sites must fetch concurrently");
@@ -61,8 +61,8 @@ try
     var fallbackRoot = Path.Combine(root, "fallback");
     var fallbackRepo = new JsonPricingSnapshotRepository(fallbackRoot);
     fallbackRepo.Save(Snapshot("old", 9));
-    var fallbackService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Request, "offline"))]), fallbackRepo, Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
-    var fallback = await fallbackService.RefreshAsync([Site("old")], usage, null, 5);
+    var fallbackService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Request, "offline"))]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var fallback = await fallbackService.RefreshAsync([Site("old")], usage, null, 5, fallbackRepo.LoadAll());
     Assert(fallback.LatestSnapshots["old"].Prices.InputPerMillion == 9, "failure preserves old snapshot");
     Assert(fallback.Recommendation.EligibleCandidates.Count == 0 && fallback.Recommendation.ManualSelectionCandidates.Count == 1, "failed old site is manual only");
 
@@ -74,34 +74,34 @@ try
     {
         if (site.ProviderId == "slow") await Task.Delay(Timeout.InfiniteTimeSpan, ct);
         return Pricing(site.ProviderId, 3);
-    })]), new JsonPricingSnapshotRepository(Path.Combine(root, "timeout")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    })]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     var timeout = await timeoutService.RefreshAsync([Site("slow"), Site("fast")], usage, null, 1);
     Assert(timeout.Sites.Single(x => x.ProviderId == "slow").FailureKind == PricingRefreshFailureKind.Timeout && timeout.Sites.Single(x => x.ProviderId == "fast").Status == PricingRefreshSiteStatus.Succeeded, "single timeout isolation");
     var authRoot = Path.Combine(root, "auth");
     var authRepo = new JsonPricingSnapshotRepository(authRoot);
     authRepo.Save(Snapshot("auth", 7));
-    var authService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Authentication, "访问被拒绝"))]), authRepo, Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
-    var auth = await authService.RefreshAsync([Site("auth")], usage, null, 5);
+    var authService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Authentication, "访问被拒绝"))]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var auth = await authService.RefreshAsync([Site("auth")], usage, null, 5, authRepo.LoadAll());
     Assert(auth.Sites.Single().FailureKind == PricingRefreshFailureKind.Authentication, "structured auth failure kind");
     Assert(auth.Recommendation.ManualSelectionCandidates.Count == 1, "auth site with old snapshot stays manual");
 
-    var misleadingService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Request, "认证服务网络故障"))]), new JsonPricingSnapshotRepository(Path.Combine(root, "misleading")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var misleadingService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Request, "认证服务网络故障"))]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     var misleading = await misleadingService.RefreshAsync([Site("misleading")], usage, null, 5);
     Assert(misleading.Sites.Single().FailureKind == PricingRefreshFailureKind.Adapter, "message must not control failure kind");
 
-    var adapterTimeoutService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Timeout, "adapter deadline"))]), new JsonPricingSnapshotRepository(Path.Combine(root, "adapter-timeout")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var adapterTimeoutService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Timeout, "adapter deadline"))]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     var adapterTimeout = await adapterTimeoutService.RefreshAsync([Site("adapter-timeout")], usage, null, 5);
     Assert(adapterTimeout.Sites.Single().FailureKind == PricingRefreshFailureKind.Timeout, "structured adapter timeout kind");
     const string syntheticFailure = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
-    var unexpectedService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (_, _) => throw new InvalidOperationException(syntheticFailure))]), new JsonPricingSnapshotRepository(Path.Combine(root, "unexpected")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var unexpectedService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (_, _) => throw new InvalidOperationException(syntheticFailure))]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     var unexpected = await unexpectedService.RefreshAsync([Site("unexpected")], usage, null, 5);
     var unexpectedSite = unexpected.Sites.Single();
     Assert(unexpectedSite.FailureKind == PricingRefreshFailureKind.Unexpected && !unexpectedSite.ToString().Contains(syntheticFailure, StringComparison.Ordinal), "unexpected failures must be structured and non-leaking");
     Assert(unexpected.Recommendation.EligibleCandidates.Count == 0, "unexpected failure must not participate in automatic recommendation");
 
-    var cancelService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", async (_, ct) => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return Pricing("cancel", 1); })]), new JsonPricingSnapshotRepository(Path.Combine(root, "cancel")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var cancelService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", async (_, ct) => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return Pricing("cancel", 1); })]), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     using var userCancel = new CancellationTokenSource();
-    var canceledRun = cancelService.RefreshAsync([Site("cancel")], usage, null, 30, userCancel.Token);
+    var canceledRun = cancelService.RefreshAsync([Site("cancel")], usage, null, 30, cancellationToken: userCancel.Token);
     userCancel.Cancel();
     try { await canceledRun; throw new InvalidOperationException("user cancellation was swallowed"); } catch (OperationCanceledException) { }
 

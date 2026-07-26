@@ -45,11 +45,11 @@ public partial class App : System.Windows.Application
                 new PawsAiPricingAdapter(_httpClient),
                 new Sub2ApiPricingAdapter(_httpClient, credentialStore)
             ]);
-            var refreshService = new PricingRefreshService(adapterRegistry, snapshotRepository, _loggerFactory.CreateLogger<PricingRefreshService>());
+            var refreshService = new PricingRefreshService(adapterRegistry, _loggerFactory.CreateLogger<PricingRefreshService>());
             var currentProviderQuery = new OmpCurrentProviderQuery(new OmpConfigurationSwitcher(), new AppPathDefaults());
             var snapshotQuery = new PricingSnapshotQuery(snapshotRepository);
             var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository);
-            var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository);
+            var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
             var settingsUseCase = new SettingsUseCase(settingsRepository);
             var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>());
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original));

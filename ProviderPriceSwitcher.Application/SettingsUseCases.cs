@@ -22,7 +22,7 @@ public sealed class SiteManagementUseCase(ISettingsRepository settingsRepository
                 snapshotRepository.Delete(originalProviderId);
         }
 
-        var updated = settings with { Sites = sites };
+        var updated = settings with { Sites = sites.ToArray() };
         var snapshot = snapshotRepository.Load(site.ProviderId);
         if (snapshot is not null && snapshot.Matches(site) && site.CurrentGroupRatio is > 0)
             snapshotRepository.Save(snapshot.WithCurrentRatio(site.CurrentGroupRatio.Value, site.GroupRatioSource));
@@ -32,11 +32,11 @@ public sealed class SiteManagementUseCase(ISettingsRepository settingsRepository
 
     public LocalAppSettings SetEnabled(LocalAppSettings settings, string providerId, bool enabled)
     {
-        var index = settings.Sites.FindIndex(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));
+        var index = settings.Sites.ToList().FindIndex(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));
         if (index < 0) throw new InvalidOperationException($"站点 '{providerId}' 不存在。");
         var sites = settings.Sites.ToList();
         sites[index] = sites[index] with { Enabled = enabled };
-        var updated = settings with { Sites = sites };
+        var updated = settings with { Sites = sites.ToArray() };
         settingsRepository.Save(updated);
         return updated;
     }
@@ -45,7 +45,7 @@ public sealed class SiteManagementUseCase(ISettingsRepository settingsRepository
     {
         var sites = settings.Sites.Where(x => !string.Equals(x.ProviderId, providerId, StringComparison.Ordinal)).ToList();
         if (sites.Count == settings.Sites.Count) throw new InvalidOperationException($"站点 '{providerId}' 不存在。");
-        var updated = settings with { Sites = sites };
+        var updated = settings with { Sites = sites.ToArray() };
         settingsRepository.Save(updated);
         snapshotRepository.Delete(providerId);
         return updated;
@@ -59,7 +59,7 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
         ArgumentNullException.ThrowIfNull(settings);
         var directories = settings.OmpWorkingDirectories
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .ToArray();
         var defaultDirectory = directories.FirstOrDefault(x => string.Equals(x, settings.LastOmpWorkingDirectory, StringComparison.OrdinalIgnoreCase))
             ?? directories.FirstOrDefault();
         var normalized = settings with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = defaultDirectory };

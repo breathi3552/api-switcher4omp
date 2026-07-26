@@ -4,7 +4,7 @@ namespace ProviderPriceSwitcher.Application;
 
 public sealed record PricingCheckOutcome(LocalAppSettings Settings, PricingRefreshResult RefreshResult);
 
-public sealed class PricingCheckUseCase(PricingRefreshService refreshService, ISettingsRepository settingsRepository)
+public sealed class PricingCheckUseCase(PricingRefreshService refreshService, ISettingsRepository settingsRepository, IPricingSnapshotRepository snapshotRepository)
 {
     public async Task<PricingCheckOutcome> ExecuteAsync(
         LocalAppSettings settings,
@@ -12,11 +12,9 @@ public sealed class PricingCheckUseCase(PricingRefreshService refreshService, IS
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        var result = await refreshService.RefreshAsync(
-            settings,
-            LocalAppSettings.DefaultUsageProfile,
-            currentProviderId,
-            cancellationToken).ConfigureAwait(false);
+        var previous = snapshotRepository.LoadAll();
+        var result = await refreshService.RefreshAsync(settings, LocalAppSettings.DefaultUsageProfile, currentProviderId, previous, cancellationToken).ConfigureAwait(false);
+        if (result.SuccessfulResults.Count > 0) snapshotRepository.SaveAll(result.LatestSnapshots.Values);
 
         var changed = false;
         var sites = settings.Sites.Select(site =>

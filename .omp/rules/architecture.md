@@ -111,6 +111,7 @@ flowchart LR
 - `SitesDialog` 仍以 programmatic code-behind 构建大部分控件；新增界面不得把这种形态扩展为新的业务编排入口。
 
 触及上述代码时遵循“先不扩大、能够顺手收敛则收敛”的原则；若迁移公开构造契约，必须一次性更新全部调用者与 runner。
+质量债务与 runner 场景的唯一登记入口是 [`Quality-Debt-Register.md`](../context/Quality-Debt-Register.md)；本规则不复制其矩阵，状态以登记中的可观察证据为准。
 
 ## 5. Clean cutover 与契约演进
 

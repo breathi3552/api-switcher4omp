@@ -51,7 +51,7 @@ var windowThread = new Thread(() =>
         application.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary { Source = new Uri("/ProviderPriceSwitcher.App;component/Styles.xaml", UriKind.Relative) });
         var settingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(root);
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
-        var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, snapshots, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+        var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
         var pathDefaults = new ProviderPriceSwitcher.Infrastructure.AppPathDefaults();
         var switcher = new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher();
         var settings = settingsRepository.Load();
@@ -60,7 +60,7 @@ var windowThread = new Thread(() =>
         var snapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(snapshots);
         var currentProviderQuery = new ProviderPriceSwitcher.Infrastructure.OmpCurrentProviderQuery(switcher, pathDefaults);
         var siteManagement = new ProviderPriceSwitcher.Application.SiteManagementUseCase(settingsRepository, snapshots);
-        var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository);
+        var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var switchAndStart = new ProviderPriceSwitcher.Application.SwitchAndStartUseCase(settingsRepository, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(switcher, pathDefaults), new ProviderPriceSwitcher.Infrastructure.OmpProcessLauncher(new ProviderPriceSwitcher.Infrastructure.OmpProcessService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.SwitchAndStartUseCase>.Instance);
         var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
