@@ -92,9 +92,9 @@ WPF 变更仅验证受影响窗口/路径，跨 UI 或发布候选才执行完�
 & $dotnet run --project ProviderPriceSwitcher.App --no-build -- --data-root '<临时 data 目录>'
 ```
 
-SiteEditorDialog 只使用 composition root 注入的隔离 credential store，并且不得调用 `LoadCredential` 或回填原文。烟测不得使用真实凭据或真实 Provider；凭据更新/清除仅在任务明确要求且临时 data root、合成站点及 synthetic secret 均可证明时执行，否则记录人工验收点。
-
-受影响路径的绑定成功 MUST 由可观察 UI 结果证明，不能只以进程存活判定；日志只写入隔离目录。烟测完成后正常关闭窗口，不保留后台进程。
+- SiteEditorDialog 只使用 composition root 注入的隔离 credential store，并且不得调用 `LoadCredential` 或回填原文。烟测不得使用真实凭据或真实 Provider；凭据更新/清除仅在任务明确要求且临时 data root、合成站点及 synthetic secret 均可证明时执行。
+- WPF 验证 MUST 优先由 STA runner 直接驱动 `ICommand`/`Dispatcher`，读取 `DataContext`、控件绑定值和 ViewModel 状态；不得依赖 computer use、人工点击、截图或肉眼观察。需要独立进程 smoke 时，必须使用固定 dotnet 命令、隔离 data/OMP root、Win32 `EnumWindows`/`WM_CLOSE`、隔离日志、退出码和残留进程检查。
+- 受影响路径的绑定成功 MUST 由可观察 UI 状态和日志/文件断言证明，不能只以进程存活判定；烟测完成后正常关闭窗口，不保留后台进程。
 
 
 ## 发布

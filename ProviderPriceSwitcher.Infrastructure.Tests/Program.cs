@@ -122,11 +122,14 @@ try
     Assert(!Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any(), "atomic snapshot write");
 
     var logRoot = Path.Combine(root, "logs");
+    const string syntheticToken = "synthetic-token-DO-NOT-LOG";
+    const string syntheticQuery = "https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie";
+    const string syntheticPath = "C:\\Users\\Private\\Documents\\secret";
     using (var provider = new RollingFileLoggerProvider(new RollingFileLoggerOptions(logRoot, 1024, 7)))
     {
         var logger = provider.CreateLogger("Contract");
         for (var i = 0; i < 40; i++)
-            logger.Log(Microsoft.Extensions.Logging.LogLevel.Warning, new Microsoft.Extensions.Logging.EventId(7), new[] { new KeyValuePair<string, object?>("ProviderId", "p"), new KeyValuePair<string, object?>("Unknown", "drop"), new KeyValuePair<string, object?>("Operation", "Authorization: Bearer secret access_token=abc") }, new InvalidOperationException("Cookie=session refresh_token=rt"), (state, exception) => "Bearer secret Authorization=abc");
+            logger.Log(Microsoft.Extensions.Logging.LogLevel.Warning, new Microsoft.Extensions.Logging.EventId(7), new[] { new KeyValuePair<string, object?>("ProviderId", "p"), new KeyValuePair<string, object?>("Unknown", "drop"), new KeyValuePair<string, object?>("Operation", $"Authorization: Bearer {syntheticToken} {syntheticQuery} {syntheticPath}") }, new InvalidOperationException($"Cookie=session refresh_token=rt {syntheticToken} {syntheticQuery} {syntheticPath}"), (state, exception) => $"Bearer {syntheticToken} Authorization=abc {syntheticQuery} {syntheticPath}");
     }
     var logFiles = Directory.GetFiles(logRoot, "app-*.log*");
     Assert(logFiles.Any(x => x.EndsWith(".1", StringComparison.Ordinal)), "log rotation missing");
@@ -134,7 +137,8 @@ try
     {
         using var json = System.Text.Json.JsonDocument.Parse(line);
         Assert(json.RootElement.TryGetProperty("timestamp", out _) && json.RootElement.TryGetProperty("level", out _) && json.RootElement.TryGetProperty("message", out _), "log fields missing");
-        Assert(!line.Contains("secret", StringComparison.Ordinal) && !line.Contains("session", StringComparison.Ordinal) && !line.Contains("refresh_token=rt", StringComparison.Ordinal), "log secret leaked");
+        Assert(!line.Contains(syntheticToken, StringComparison.Ordinal) && !line.Contains("synthetic-query-secret", StringComparison.Ordinal) && !line.Contains("synthetic-cookie", StringComparison.Ordinal) && !line.Contains(syntheticPath, StringComparison.Ordinal) && !line.Contains("session", StringComparison.Ordinal) && !line.Contains("refresh_token=rt", StringComparison.Ordinal), "log secret leaked");
+        Assert(json.RootElement.GetProperty("exception").GetString() == typeof(InvalidOperationException).FullName, "log must retain only the exception type");
         Assert(!json.RootElement.TryGetProperty("Unknown", out _), "unknown state retained");
     }
     Console.WriteLine("Infrastructure persistence contract tests passed.");

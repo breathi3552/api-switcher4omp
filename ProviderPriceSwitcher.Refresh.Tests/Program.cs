@@ -92,6 +92,12 @@ try
     var adapterTimeoutService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (site, ct) => throw new PricingAdapterException(PricingAdapterFailure.Timeout, "adapter deadline"))]), new JsonPricingSnapshotRepository(Path.Combine(root, "adapter-timeout")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     var adapterTimeout = await adapterTimeoutService.RefreshAsync([Site("adapter-timeout")], usage, null, 5);
     Assert(adapterTimeout.Sites.Single().FailureKind == PricingRefreshFailureKind.Timeout, "structured adapter timeout kind");
+    const string syntheticFailure = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
+    var unexpectedService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", (_, _) => throw new InvalidOperationException(syntheticFailure))]), new JsonPricingSnapshotRepository(Path.Combine(root, "unexpected")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
+    var unexpected = await unexpectedService.RefreshAsync([Site("unexpected")], usage, null, 5);
+    var unexpectedSite = unexpected.Sites.Single();
+    Assert(unexpectedSite.FailureKind == PricingRefreshFailureKind.Unexpected && !unexpectedSite.ToString().Contains(syntheticFailure, StringComparison.Ordinal), "unexpected failures must be structured and non-leaking");
+    Assert(unexpected.Recommendation.EligibleCandidates.Count == 0, "unexpected failure must not participate in automatic recommendation");
 
     var cancelService = new PricingRefreshService(new PricingAdapterRegistry([new FakeAdapter("fake", async (_, ct) => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return Pricing("cancel", 1); })]), new JsonPricingSnapshotRepository(Path.Combine(root, "cancel")), Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance);
     using var userCancel = new CancellationTokenSource();

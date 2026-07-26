@@ -27,7 +27,6 @@ public sealed record PricingRefreshSiteResult
     public PricingSnapshot? PreviousSnapshot { get; init; }
     public bool PreviousSnapshotAvailable => PreviousSnapshot is not null;
     public PricingRefreshFailureKind? FailureKind { get; init; }
-    public string? FailureMessage { get; init; }
 
     public PricingSnapshot? Snapshot => PricingResult?.Snapshot;
 }
@@ -136,7 +135,7 @@ public sealed class PricingRefreshService
                     : x.FailureKind == PricingRefreshFailureKind.Authentication
                         ? SiteRefreshStatus.AuthenticationRequired
                         : SiteRefreshStatus.Failed,
-                FailureReason = x.FailureMessage
+                FailureReason = x.FailureKind?.ToString()
             }).ToArray();
         var decision = _recommendation.Decide(sites, latest, usage, new SiteRefreshResult { States = refreshStates }, currentProviderId, DateTimeOffset.UtcNow);
         foreach (var failed in results.Where(x => x.Status == PricingRefreshSiteStatus.Failed))
@@ -164,7 +163,7 @@ public sealed class PricingRefreshService
             return new PricingRefreshSiteResult { ProviderId = site.ProviderId, Status = PricingRefreshSiteStatus.Disabled, PreviousSnapshot = previous };
 
         if (!_adapterRegistry.TryGet(site.SiteType, out var adapter))
-            return Failed(site, previous, PricingRefreshFailureKind.UnknownSiteType, $"No pricing adapter is registered for site type '{site.SiteType}'.");
+            return Failed(site, previous, PricingRefreshFailureKind.UnknownSiteType);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(roundCancellation);
         timeout.CancelAfter(TimeSpan.FromSeconds(requestTimeoutSeconds));
@@ -181,7 +180,7 @@ public sealed class PricingRefreshService
         }
         catch (OperationCanceledException) when (!roundCancellation.IsCancellationRequested)
         {
-            return Failed(site, previous, PricingRefreshFailureKind.Timeout, $"Pricing request timed out after {requestTimeoutSeconds} seconds.");
+            return Failed(site, previous, PricingRefreshFailureKind.Timeout);
         }
         catch (OperationCanceledException)
         {
@@ -195,24 +194,22 @@ public sealed class PricingRefreshService
                 PricingAdapterFailure.Timeout => PricingRefreshFailureKind.Timeout,
                 _ => PricingRefreshFailureKind.Adapter
             };
-            return Failed(site, previous, kind, ex.Message);
+            return Failed(site, previous, kind);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Failed(site, previous, PricingRefreshFailureKind.Unexpected, ex.Message);
+            return Failed(site, previous, PricingRefreshFailureKind.Unexpected);
         }
     }
 
     private static PricingRefreshSiteResult Failed(
         SiteConfiguration site,
         PricingSnapshot? previous,
-        PricingRefreshFailureKind kind,
-        string message) => new()
+        PricingRefreshFailureKind kind) => new()
         {
             ProviderId = site.ProviderId,
             Status = PricingRefreshSiteStatus.Failed,
             PreviousSnapshot = previous,
-            FailureKind = kind,
-            FailureMessage = message
+            FailureKind = kind
         };
 }

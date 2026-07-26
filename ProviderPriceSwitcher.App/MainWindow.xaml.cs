@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using Microsoft.Extensions.Logging;
+using System.IO;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Windows;
@@ -31,6 +32,9 @@ public sealed class MainViewModel : ObservableObject
     private readonly IAppPathDefaults _pathDefaults = new AppPathDefaults();
     private readonly IUserNotificationService _notifications;
     private readonly ISiteCredentialStore _credentialStore;
+    private readonly ILogger<MainViewModel> _logger;
+    private static readonly Action<ILogger, string, Exception?> LogUiFailure =
+        LoggerMessage.Define<string>(LogLevel.Error, new EventId(200, "UiFailure"), "UI operation failed: {FailureKind}");
     private LocalAppSettings _settings;
     private CancellationTokenSource? _checkCancellation;
     private string _statusText = "准备就绪";
@@ -41,7 +45,7 @@ public sealed class MainViewModel : ObservableObject
     private string? _selectedWorkingDirectory;
     private PricingRefreshResult? _lastResult;
 
-    public MainViewModel(JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, OmpConfigurationSwitcher switcher, OmpProcessService processService, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
+    public MainViewModel(JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, OmpConfigurationSwitcher switcher, OmpProcessService processService, LocalAppSettings settings, ISiteCredentialStore credentialStore, IUserNotificationService notifications, ILogger<MainViewModel> logger)
     {
         _settingsRepository = settingsRepository;
         _refreshService = refreshService;
@@ -54,6 +58,7 @@ public sealed class MainViewModel : ObservableObject
         _settings = settings;
         _notifications = notifications;
         _credentialStore = credentialStore;
+        _logger = logger;
         InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
         CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
         CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
@@ -87,7 +92,24 @@ public sealed class MainViewModel : ObservableObject
     }
 
     private async Task ReadCurrentProviderAsync()
-    { var configPath = _pathDefaults.OmpConfigPath(_settings.OmpRootDirectory); try { if (File.Exists(configPath)) { var preview = _switcher.Preview(await File.ReadAllTextAsync(configPath), "temporary"); CurrentProvider = preview.CurrentProvider ?? "未识别"; } else CurrentProvider = "配置文件不存在"; } catch (Exception ex) { CurrentProvider = "读取失败"; StatusText = "无法读取 OMP 配置：" + ex.Message; } }
+    {
+        var configPath = _pathDefaults.OmpConfigPath(_settings.OmpRootDirectory);
+        try
+        {
+            if (File.Exists(configPath))
+            {
+                var preview = _switcher.Preview(await File.ReadAllTextAsync(configPath), "temporary");
+                CurrentProvider = preview.CurrentProvider ?? "未识别";
+            }
+            else CurrentProvider = "配置文件不存在";
+        }
+        catch (Exception)
+        {
+            CurrentProvider = "读取失败";
+            StatusText = UserErrorMessages.ConfigurationReadFailed;
+            LogUiFailure(_logger, "ConfigurationReadFailed", null);
+        }
+    }
 
     private async Task CheckAsync()
     {
@@ -153,7 +175,9 @@ public sealed class MainViewModel : ObservableObject
             : state.Status == PricingRefreshSiteStatus.Disabled ? "已禁用"
             : state.FailureKind == PricingRefreshFailureKind.Authentication ? "需认证"
             : "失败";
-        var issue = state?.FailureMessage ?? (warning ? string.Join("；", pricing!.Warnings) : string.Empty);
+        var issue = state?.Status == PricingRefreshSiteStatus.Failed
+            ? UserErrorMessages.ForPricingFailure(state.FailureKind)
+            : warning ? "价格数据包含提示，请谨慎核对。" : string.Empty;
         if (snapshot is null)
         {
             Rows.Add(new PriceRow(site.ProviderId, status, site.CurrentGroup + " [当前]", site.CurrentGroupRatio, null, usage, "—", site.GroupRatioSource, null, issue, stale, warning, true));
@@ -166,7 +190,7 @@ public sealed class MainViewModel : ObservableObject
         var currentLabel = site.CurrentGroup + (minimumSame ? " [当前][最低]" : " [当前]");
         Rows.Add(new PriceRow(site.ProviderId, status, currentLabel, effective.CurrentGroupRatio ?? site.CurrentGroupRatio, effective.Prices, usage, "—", effective.GroupRatioSource, effective.RefreshedAt, issue, stale, warning, true));
         if (!minimumSame && !string.IsNullOrWhiteSpace(effective.MinimumGroup) && effective.MinimumGroupPrices is not null)
-            Rows.Add(new PriceRow(site.ProviderId, status, effective.MinimumGroup + " [最低]", effective.MinimumGroupRatio, effective.MinimumGroupPrices, usage, "—", "自动", effective.RefreshedAt, state?.FailureKind == PricingRefreshFailureKind.Authentication ? "需先绑定或更新凭据" : "权限未验证", stale, warning));
+            Rows.Add(new PriceRow(site.ProviderId, status, effective.MinimumGroup + " [最低]", effective.MinimumGroupRatio, effective.MinimumGroupPrices, usage, "—", "自动", effective.RefreshedAt, state?.FailureKind == PricingRefreshFailureKind.Authentication ? "需先绑定或更新凭据" : "仅供手动选择，未参与自动推荐", stale, warning));
     }
 
 
@@ -180,16 +204,13 @@ public sealed class MainViewModel : ObservableObject
             var outcome = await _switchAndStart.ExecuteAsync(_settings, choice.ProviderId, SelectedWorkingDirectory);
             _settings = outcome.Settings;
             SyncSettings();
-            StatusText = outcome.Status switch
-            {
-                SwitchAndStartStatus.ConfigurationFailed => "配置切换失败，OMP 未启动：" + outcome.Error,
-                SwitchAndStartStatus.Started => $"已切换到 {choice.ProviderId} 并启动 OMP。",
-                SwitchAndStartStatus.StartedWithExistingProcess => $"已切换到 {choice.ProviderId} 并启动新 OMP；检测到已有 OMP 进程，请确认是否需要保留两个实例。",
-                SwitchAndStartStatus.LaunchFailedAfterSwitch => "配置已切换，但 OMP 启动失败：" + outcome.Error,
-                _ => throw new InvalidOperationException("未知切换结果。")
-            };
+            StatusText = UserErrorMessages.ForSwitchStatus(outcome.Status, choice.ProviderId);
         }
-        catch (Exception ex) { StatusText = "执行切换时发生错误：" + ex.Message; }
+        catch (Exception)
+        {
+            StatusText = UserErrorMessages.Unexpected;
+            LogUiFailure(_logger, "SwitchAndStartUnexpected", null);
+        }
     }
 
     private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = new SitesDialog(_settings, _settingsRepository, _refreshService, _adapterRegistry, _credentialStore, _notifications, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
@@ -197,7 +218,8 @@ public sealed class MainViewModel : ObservableObject
     private void HandleCommandError(Exception exception)
     {
         if (exception is OperationCanceledException) return;
-        StatusText = "操作失败：" + exception.Message;
+        StatusText = UserErrorMessages.Unexpected;
+        LogUiFailure(_logger, "CommandUnexpected", null);
         _notifications.ShowError(StatusText, "操作失败");
     }
 

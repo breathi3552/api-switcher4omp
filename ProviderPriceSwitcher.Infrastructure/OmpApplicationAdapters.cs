@@ -17,7 +17,7 @@ public sealed class OmpConfigurationService(
                 pathDefaults.OmpConfigPath(ompRootDirectory),
                 providerId,
                 cancellationToken).ConfigureAwait(false);
-            return new OmpConfigurationOperationResult(result.Succeeded, result.Error);
+            return new OmpConfigurationOperationResult(result.Succeeded);
         }
         catch (OperationCanceledException)
         {
@@ -31,6 +31,6 @@ public sealed class OmpProcessLauncher(OmpProcessService processService) : IOmpP
     public OmpLaunchResult Launch(string workingDirectory)
     {
         var result = processService.Start(new OmpProcessStartRequest(workingDirectory));
-        return new OmpLaunchResult(result.Succeeded, result.ExistingProcess.Exists, result.ErrorMessage);
+        return new OmpLaunchResult(result.Succeeded, result.ExistingProcess.Exists);
     }
 }

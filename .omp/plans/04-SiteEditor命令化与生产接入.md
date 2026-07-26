@@ -60,21 +60,13 @@ open
 
 1. 先以固定 SDK 入口检查环境：`$dotnet = Join-Path $env:USERPROFILE '.dotnet\\dotnet.exe'`，确认 SDK `8.0.423`；禁止裸 `dotnet`。
 2. 这是跨层行为/契约变更（App XAML/VM/dialog、composition、Application probe、凭据和错误边界）：先顺序执行受影响 build 与格式验收，再按规则顺序执行完整八个 console runner；不得用 `dotnet test` 替代。若计划03明确将其降为仅受影响 runner，仍至少执行 App、Application、Adapters、Infrastructure 中受影响 runner，并以计划03验收结论为依据记录范围。
-3. App runner 必须使用 fake/loopback probe 和合成凭据，断言：实际 `SiteEditorDialog.DataContext` 是目标 VM；初始 descriptor/认证模式正确；Probe 重复点击只有一次执行；Cancel 后不通知错误、不保存；内部 timeout 的结构化类别为 `Timeout` 且文案脱敏；认证失败分类稳定且不含 token/Cookie/响应；成功后结果可见、Save 恢复；失败/取消后可重试；关闭期间取消任务并正常返回、无后台任务。
-4. 执行受影响窗口的隔离 WPF smoke：使用临时 data root、显式临时 `OmpRootDirectory`、合法临时 `OmpWorkingDirectories`/`LastOmpWorkingDirectory` 和 fake/loopback，不触碰真实 `%USERPROFILE%\.omp`、真实 Provider 或凭据。实际操作 SitesDialog 新增/编辑路径，观察绑定、probe、取消、保存按钮和关闭行为；日志只能落在隔离目录，结束时正常关闭并确认无 `ProviderPriceSwitcher.App.exe` 残留。凭据交互仅使用 synthetic secret，并继续验证计划 01 的不回填、更新后清空和明确清除确认边界。
+3. App runner 必须使用 fake/loopback probe 和合成凭据，断言：实际 `SiteEditorDialog.DataContext` 是目标 VM；初始 descriptor/认证模式正确；Probe 重复触发只有一次执行；Cancel 后不通知错误、不保存；内部 timeout 的结构化类别为 `Timeout` 且文案脱敏；认证失败分类稳定且不含 token/Cookie/响应；成功后结果可见、Save 恢复；失败/取消后可重试；关闭期间取消任务并正常返回、无后台任务。
+4. 执行受影响窗口的隔离 smoke：使用临时 data root、显式临时 `OmpRootDirectory`、合法临时 `OmpWorkingDirectories`/`LastOmpWorkingDirectory` 和 fake/loopback，不触碰真实 `%USERPROFILE%\.omp`、真实 Provider 或凭据。WPF STA runner 直接构造 SitesDialog→SiteEditorDialog 真实生产路径，执行实际 `ICommand`，泵 Dispatcher，读取 DataContext、控件属性、绑定/ViewModel 状态、`AutomationPeer`、`KeyboardNavigation`/`FocusManager` 元数据、fake 调用次数和窗口结果；凭据交互仅使用 synthetic secret，并继续验证不回填、更新后清空和明确清除确认边界。独立进程 smoke 使用固定用户 `.dotnet\dotnet.exe` 与 `--data-root`，通过 Win32 `EnumWindows`/标题确认窗口创建，发送 `WM_CLOSE`，检查退出码、隔离日志/文件内容和无残留 App/OMP 子进程；不得仅以进程存活证明 UI 行为。
 5. 验收必须同时证明：生产装配没有窗口内部 `new` 具体 Infrastructure/adapter；Application 依赖方向未改变；所有公开符号调用方已迁移；旧 code-behind probe/save 路径和虚假 VM-only 覆盖无残留；不变量（不自动切换、取消不保存、错误脱敏、凭据不落盘）均有可观察证据。
 6. 回滚边界：若失败，只回滚本计划新增/迁移的 SiteEditor XAML/VM/dialog、SitesDialog 调用方、App composition 和 App runner 变更；不得回滚或覆盖已验收的计划01/03安全存储、错误边界或 composition 基础，也不得恢复旧的凭据泄露/窗口内部业务编排作为“临时兼容”。
-
-7. **按目标逐项闭环映射**：验证记录必须逐项关联本计划目标和证据，而不是只报告 VM 单元结果：
-   - DataContext/生产接入目标：从 `App` composition root 经 `SitesDialog` 新增/编辑打开真实 `SiteEditorDialog`，断言 DataContext、工厂注入和 DialogResult 均来自生产路径；静态检查确认窗口不再 `new` 具体 Infrastructure/adapter，App runner 与隔离 smoke 共同证明不是孤立 VM。
-   - Command/输入目标：静态检查 XAML binding 与 VM 命令属性，runner 通过实际 ICommand 观察输入校验、Probe/Cancel/Save 的 CanExecute 和结果绑定；隔离 smoke 点击实际按钮并记录 busy、结果和保存状态。
-   - 重入目标：runner 让 fake probe 阻塞并连续触发 Probe，断言底层执行次数为 1、第二次被拒绝，完成后状态恢复；隔离 smoke 确认按钮视觉禁用与恢复。
-   - 取消/关闭目标：runner 分别触发用户 Cancel 和窗口关闭，断言取消不通知、不保存、DialogResult 正确、任务有界结束且无后台任务；隔离 smoke 从 SitesDialog 新增/编辑真实路径关闭窗口并确认列表/设置无副作用。
-   - 超时/认证目标：fake/loopback 触发计划02定义的 timeout 与认证失败，runner 断言结构化类别、脱敏文案、无敏感值和可重试状态；静态/输出检查确认 token、Cookie、Authorization、完整响应和异常文本不进入日志、快照或设置。
-   - 保存与回归目标：runner 只通过生产装配的管理用例保存成功结果，隔离 smoke 断言新增/编辑后列表刷新；取消、失败、取消中的保存均不改变设置。
-8. **自主验证结论**：执行者完成上述静态检查、受影响 runner 和隔离 WPF smoke 后，必须明确回答：“背景问题是否消除、每项目标是否达成、是否具备自主验证充分证据”。只有实际 SitesDialog→SiteEditorDialog→生产 composition→用例的证据齐全，才可认为生产路径闭环；仅 VM/命令孤立测试不得将状态改为 `closed`。
-9. **人工验收边界**：自动化无法可靠覆盖的 WPF 键盘导航/快捷键、Tab 顺序、焦点回到首个错误输入、PasswordBox 焦点桥接，以及 Probe/Cancel/Save 在 busy、成功、失败和关闭时的按钮视觉状态，必须列为具体人工验收点：在隔离 root 打开 SitesDialog 的新增和编辑路径，使用键盘 Tab/Enter/Esc（含焦点在 PasswordBox 时）及鼠标逐项操作；期望焦点顺序和快捷键符合 XAML，错误输入获得焦点，按钮启用/禁用与 busy 状态一致且无残影；风险是 WPF 原生焦点、主题/渲染差异可能未被 runner 捕获，未验原因须记录。若当前隔离 smoke 已通过等价 UI 自动操作并有截图/可观察状态证据，则明确记录“无需人工验收”；否则在 `open` 状态下保留这些验收点，不能声称闭环或改为 `closed`。
-10. **闭环状态迁移规则**：本计划初始保持 `open`；仅当代码实现、适用验证全部完成，背景问题消除、每项目标达成、生产路径证据充分且人工验收点已完成或明确判定无需人工验收时，才把第一节改为 `closed`。任何阻塞、失败、未执行或未验事项都必须具体记录在验证结果中并保持 `open`。
+7. **按目标逐项闭环映射**：验证记录必须逐项关联本计划目标和证据，而不是只报告 VM 单元结果：DataContext/生产接入由真实生产装配和 STA runner 证明；Command/输入由实际 ICommand、控件属性、绑定状态和 Dispatcher 断言证明；重入由阻塞 fake 与执行次数证明；取消/关闭由任务、DialogResult、设置副作用、退出码和残留进程证明；超时/认证由结构化类别和脱敏文案证明；保存/回归由管理用例和文件状态证明。
+8. **自主验证结论**：执行者完成静态检查、受影响 runner、STA runner 和隔离进程 smoke 后，必须明确回答背景问题、每项目标、证据是否充分。仅 VM/命令孤立测试不得闭环；不可自动验证的视觉体验不阻塞源码计划，但不得声称覆盖未测视觉。
+9. **闭环状态迁移规则**：本计划初始保持 `open`；仅当代码实现、适用验证全部完成，背景问题消除、每项目标达成、生产路径证据充分时，才把第一节改为 `closed`。任何阻塞、失败、未执行或未验事项都必须具体记录并保持 `open`。
 
 # 为什么选择此技术路线
 

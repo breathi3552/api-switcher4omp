@@ -14,6 +14,7 @@ public partial class App : System.Windows.Application
     private IUserNotificationService? _notifications;
     private ILoggerFactory? _loggerFactory;
     private static readonly Action<ILogger, Exception?> LogApplicationStarted = LoggerMessage.Define(LogLevel.Information, new EventId(100, "ApplicationStarted"), "ProviderPriceSwitcher started");
+    private static readonly Action<ILogger, string, Exception?> LogApplicationFailure = LoggerMessage.Define<string>(LogLevel.Error, new EventId(101, "ApplicationFailure"), "Application failure: {FailureKind}");
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -21,7 +22,9 @@ public partial class App : System.Windows.Application
         _notifications = new WpfUserNotificationService();
         DispatcherUnhandledException += (_, args) =>
         {
-            _notifications.ShowError("发生未处理错误：" + args.Exception.Message, "ProviderPriceSwitcher");
+            var logger = _loggerFactory?.CreateLogger<App>();
+            if (logger is not null) LogApplicationFailure(logger, "Unhandled", null);
+            _notifications.ShowError(UserErrorMessages.Unhandled, "ProviderPriceSwitcher");
             args.Handled = true;
         };
         string? dataRoot = null;
@@ -43,13 +46,15 @@ public partial class App : System.Windows.Application
                 new Sub2ApiPricingAdapter(_httpClient, credentialStore)
             ]);
             var refreshService = new PricingRefreshService(adapterRegistry, snapshotRepository, _loggerFactory.CreateLogger<PricingRefreshService>());
-            var viewModel = new MainViewModel(settingsRepository, refreshService, adapterRegistry, new OmpConfigurationSwitcher(), new OmpProcessService(), settings, credentialStore, _notifications);
+            var viewModel = new MainViewModel(settingsRepository, refreshService, adapterRegistry, new OmpConfigurationSwitcher(), new OmpProcessService(), settings, credentialStore, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _notifications.ShowError("应用启动失败：无法加载本地设置或初始化服务。\n" + ex.Message, "ProviderPriceSwitcher");
+            var logger = _loggerFactory?.CreateLogger<App>();
+            if (logger is not null) LogApplicationFailure(logger, "Startup", null);
+            _notifications.ShowError(UserErrorMessages.ApplicationStartupFailed, "ProviderPriceSwitcher");
             Shutdown(-1);
         }
     }

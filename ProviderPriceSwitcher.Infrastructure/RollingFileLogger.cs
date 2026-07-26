@@ -8,7 +8,7 @@ public sealed record RollingFileLoggerOptions(string RootDirectory, long MaxFile
 
 public sealed class RollingFileLoggerProvider : ILoggerProvider
 {
-    private static readonly Regex Secret = new("(?i)(Authorization|Cookie|access_token|refresh_token)(?:\\s*[:=]\\s*|\\\"\\s*:\\s*\\\")(?:Bearer\\s+)?[^\\s,;\\\"}]+|(?i)Bearer\\s+[^\\s,;\\\"]+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex Secret = new("(?i)(Authorization|Cookie|api_key|token|access_token|refresh_token)(?:\\s*[:=]\\s*|\\\"\\s*:\\s*\\\")(?:Bearer\\s+)?[^\\s,;&\\\"}]+|(?i)Bearer\\s+[^\\s,;\\\"]+|(?i)(?:[A-Z]:\\\\Users\\\\)[^\\r\\n\\\"]+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly HashSet<string> AllowedState = new(["Operation", "ProviderId", "SiteType", "FailureKind", "ElapsedMilliseconds"], StringComparer.Ordinal);
     private readonly RollingFileLoggerOptions _options;
     private readonly object _gate = new();
@@ -42,7 +42,7 @@ public sealed class RollingFileLoggerProvider : ILoggerProvider
                     ["category"] = category,
                     ["eventId"] = eventId.Id,
                     ["message"] = Redact(message),
-                    ["exception"] = exception is null ? null : Redact(exception.ToString())
+                    ["exception"] = exception?.GetType().FullName
                 };
                 foreach (var item in state)
                     if (AllowedState.Contains(item.Key)) payload[item.Key] = Redact(item.Value?.ToString());

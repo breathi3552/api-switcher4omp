@@ -60,13 +60,10 @@ open
 
 1. **静态依赖边界与 clean cutover 核验。** 使用 LSP `references` 和 diagnostics 确认 Application 只依赖 Core，Infrastructure 只依赖 Application/Core，App 才依赖 Application/Adapters/Infrastructure/Core，且不存在 Infrastructure→Adapters 反向引用。逐一核对 `MainViewModel`、`SitesDialog`、所有公开构造函数和查询端口的实现与调用方；搜索 `ProviderPriceSwitcher.App`、App runner/UI 测试及其他 runner，确认旧构造签名、旧字段、`new SiteManagementUseCase`、`new SwitchAndStartUseCase`、`new OmpConfigurationService`、`new OmpProcessLauncher`、UI 内 `File.Read*`/具体 Infrastructure 类型和兼容 shim/别名均无残留。静态证据必须证明所有调用方已一次性迁移，而不是仅证明主启动路径可编译。
 
-2. **目标—证据映射与验证级别。** 执行者必须为每项目标建立可追溯记录：composition root 唯一性由静态调用图、App runner 和真实 WPF 启动路径共同证明；ViewModel/Dialog 无 Infrastructure/File 依赖由静态边界和构造调用检查证明；查询结果状态、取消、快照保留/失败语义由 Application/Infrastructure/App runner 的 deterministic fake/loopback 场景证明；Window/DataContext、当前 provider、价格快照、站点打开/刷新/关闭由隔离 WPF smoke 证明；所有调用方 clean cutover 由 LSP references、全仓源码搜索和 runner 构造成功共同证明。不得以“能编译”替代这些行为证据。
-
+2. **目标—证据映射与验证级别。** 执行者必须为每项目标建立可追溯记录：composition root 唯一性由静态调用图、App runner 和真实 WPF 启动路径共同证明；ViewModel/Dialog 无 Infrastructure/File 依赖由静态边界和构造调用检查证明；查询结果状态、取消、快照保留/失败语义由 Application/Infrastructure/App runner 的 deterministic fake/loopback 场景证明；Window/DataContext、当前 provider、价格快照、站点打开/刷新/关闭由 STA runner 直接构造窗口、执行命令、泵 Dispatcher 并读取控件/绑定/ViewModel 状态证明，独立进程 smoke 仅补充真实组合根、窗口标题、文件/日志、退出码和残留进程证据；所有调用方 clean cutover 由 LSP references、全仓源码搜索和 runner 构造成功共同证明。不得以“能编译”替代这些行为证据，也不得仅以进程存活证明 UI 行为。
 3. **跨层 runner 与契约场景。** 按 `rule://build-release` 的固定 SDK 和顺序执行受影响项目 build、格式验收及完整八个 runner（不得使用裸 `dotnet`，不得使用 `dotnet test`）；当前计划创建阶段不执行这些命令。实施验收时至少覆盖 Application、Infrastructure、App，并按跨层级别覆盖 Core、Adapters、OmpConfig、OmpProcess、Refresh runner，断言 OMP 配置成功识别、文件不存在、未识别、结构化失败、主动取消，以及快照成功、保留当前/最低组、读取失败结构化返回。所有 runner 使用 fake/loopback，禁止真实 Provider 网络和真实凭据。
-
-4. **隔离的真实 WPF 路径 smoke。** 按 `rule://build-release` 使用临时 data root、临时 OMP root、合法临时 working directory 和隔离日志目录；在隔离 `settings.json` 显式设置 `OmpRootDirectory`、`OmpWorkingDirectories`、`LastOmpWorkingDirectory` 及至少一个合成站点，并通过 `--data-root` 启动真实 App。将目标逐项映射到观察结果：`App.xaml.cs` 是唯一 composition root 且 `MainWindow.DataContext` 为注入的 ViewModel；主窗口显示结构化当前 provider/失败状态与价格快照；站点管理可打开、刷新、关闭且刷新不直接触碰 repository；设置路径来自隔离 root。不得打开含真实凭据的站点，不得绑定/更新/清除凭据，不得访问真实 Provider，不得执行真实 OMP 配置切换或启动；正常关闭后检查无残留 App/OMP 进程。
-
-5. **闭环判断、人工验收与状态迁移。** 执行者完成静态检查、runner 和隔离 smoke 后，必须明确回答：“背景问题是否消除？每项目标是否达成？是否具备自主验证充分证据？”并逐项记录命令/场景、退出码、关键 `passed`/UI 结果、data/OMP/log root、未触及真实数据与凭据、残留进程检查。若存在 agent 无法自主充分证明的交互（例如 WPF 视觉布局、键盘焦点/无障碍操作、真实用户对站点编辑流程的体验），在把状态从 `open` 改为 `closed` 前必须列出具体人工验收点、操作、期望结果、风险和未能自动验证的原因；不得写笼统的“请人工验证”。若自主验证已覆盖全部目标且无上述人工项，必须明确记录“无需人工验收”。只有代码实施完成、适用验证通过、背景问题消除、每项目标达成且证据充分时才可将本节状态改为 `closed`；否则保持 `open` 并记录具体阻塞/未通过项。除本计划明确范围外不执行 publish；只有单独发布任务或用户明确要求才按规则进入 publish 验收。
+4. **隔离的真实 WPF 路径 smoke。** 按 `rule://build-release` 使用临时 data root、临时 OMP root、合法临时 working directory 和隔离日志目录；在隔离 `settings.json` 显式设置 `OmpRootDirectory`、`OmpWorkingDirectories`、`LastOmpWorkingDirectory` 及至少一个合成站点，并通过固定用户 `.dotnet\dotnet.exe` 与 `--data-root` 启动真实 App。STA runner 直接构造并显示 `MainWindow`/`SitesDialog`，断言 DataContext、绑定、查询状态、站点打开/刷新/关闭和设置路径；独立进程 smoke 通过 Win32 `EnumWindows`/窗口标题确认窗口创建，发送 `WM_CLOSE`，检查退出码、隔离文件/日志和无残留 App/OMP 子进程。不得打开含真实凭据的站点，不得绑定/更新/清除凭据，不得访问真实 Provider，不得执行真实 OMP 配置切换或启动；不得仅以进程存活证明 UI 行为。
+5. **闭环判断与状态迁移。** 执行者完成静态检查、runner 和隔离 smoke 后，必须明确回答：“背景问题是否消除？每项目标是否达成？是否具备自主验证充分证据？”并逐项记录命令/场景、退出码、关键 `passed`/状态结果、data/OMP/log root、未触及真实数据与凭据、退出码和残留进程检查。不可自动验证的视觉布局、渲染体验或未覆盖的焦点感受不阻塞源码计划闭环，但不得声称已覆盖；可编程的命令、控件属性、`AutomationPeer`、`KeyboardNavigation`/`FocusManager` 元数据和 Dispatcher 状态必须纳入断言。只有代码实施完成、适用验证通过、背景问题消除、每项目标达成且证据充分时才可将本节状态改为 `closed`；否则保持 `open` 并记录具体阻塞/未通过项。除本计划明确范围外不执行 publish；只有单独发布任务或用户明确要求才按规则进入 publish 验收。
 
 # 为什么选择此技术路线
 
@@ -78,6 +75,6 @@ open
 - 不得把 `Application` 查询契约设计成 `IServiceProvider`、`object`、字符串错误或暴露 Infrastructure repository 的宽接口；结果必须是最小、可断言、无敏感信息的 Application 类型。
 - 不得让 `MainViewModel` 通过静态全局服务定位器、反射、默认构造函数或隐藏 factory 重新取得具体实现；所有依赖必须显式注入。
 - 不得改变“检查只推荐、不自动切换”、快照陈旧限制和 OMP 显式操作规则；查询失败不得清空或覆盖最后成功快照。
-- 不得把 token、Cookie、Authorization、密码、真实路径或完整异常写入日志、设置、快照、错误文本、runner 输出或 WPF 截图。
+- 不得把 token、Cookie、Authorization、密码、真实路径或完整异常写入日志、设置、快照、错误文本、runner 输出或窗口状态记录。
 - 不得运行真实 Provider、使用真实凭据、触碰真实用户 data/OMP root，或执行正式 publish；计划创建阶段严格不运行 formatter、build、runner、测试或 smoke。
 - 计划 04 负责 `SiteEditorDialog` probe Command；若实现本计划时发现需要改动 probe 或 credential editor，停止并移交计划 04/01，不在本计划留下半迁移 shim。

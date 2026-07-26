@@ -227,9 +227,17 @@ public sealed partial class SiteEditorDialog : Window
             var prices = result.Prices;
             _probeResult.Text = $"成功：模型 {draft.Model}；当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）；输入/缓存/输出单价 {prices.InputPerMillion:0.####} / {prices.CachedInputPerMillion:0.####} / {prices.OutputPerMillion:0.####}";
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            _probeResult.Text = "查询失败：" + ex.Message;
+            _probeResult.Text = "已取消价格查询。";
+        }
+        catch (PricingAdapterException ex)
+        {
+            _probeResult.Text = UserErrorMessages.ForProbeFailure(ex.Failure);
+        }
+        catch (Exception)
+        {
+            _probeResult.Text = UserErrorMessages.Unexpected;
         }
         finally
         {
