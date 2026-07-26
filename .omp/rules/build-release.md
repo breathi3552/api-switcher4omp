@@ -88,10 +88,10 @@ WPF 变更仅验证受影响窗口/路径，跨 UI 或发布候选才执行完�
 
 Publish 独立于普通验证，仅发布任务或用户明确要求才执行。开始前 MUST 完成适用影响级别的 build、runner 和 smoke；发布命令按顺序执行，NEVER 并行。
 
-首选脚本按顺序调用 framework-dependent 与 self-contained 两次 publish，但当前脚本未显式检查第一条 native command 的 `$LASTEXITCODE`；不得只凭脚本最终退出码判定两次发布都成功：
+`eng/Publish.ps1` 是唯一发布入口：顺序执行 framework-dependent 与 self-contained；每次 native publish 后立即捕获退出码，非零立即停止；每阶段开始移除旧 exe 证据，并要求本次生成的 `ProviderPriceSwitcher.App.exe` 存在、非空且时间不早于阶段开始，避免把陈旧产物误判为成功。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File eng/Publish.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1
 ```
 
 产物目录 MUST 保持不变：
@@ -99,14 +99,7 @@ powershell -ExecutionPolicy Bypass -File eng/Publish.ps1
 - `artifacts/publish/framework-dependent`
 - `artifacts/publish/self-contained`
 
-需要逐条可靠记录退出码，或脚本输出无法证明两次命令均成功时，应顺序执行以下等价命令，并在每条后检查 `$LASTEXITCODE`；NEVER 并行：
-
-```powershell
-& $dotnet publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=FrameworkDependent --output artifacts/publish/framework-dependent
-& $dotnet publish ProviderPriceSwitcher.App/ProviderPriceSwitcher.App.csproj --configuration Release --no-restore --property:PublishProfile=SelfContained --output artifacts/publish/self-contained
-```
-
-发布成功判据：两个目录均生成 `ProviderPriceSwitcher.App.exe`，两次 publish 均有退出码 `0` 的独立证据；应用已关闭、无残留进程，真实数据与凭据未触及。
+发布成功判据：脚本退出码为 `0`，两阶段各自输出退出码与非空新 exe 证据；应用已关闭、无残留进程，真实数据与凭据未触及。脚本的 `-SelfCheck`/自定义路径仅供隔离 fake 自检，普通发布调用不得覆盖 SDK 或输出根。
 ## 故障定位
 
 - `A compatible .NET SDK was not found`：命中了系统 Runtime；改用用户目录绝对路径。

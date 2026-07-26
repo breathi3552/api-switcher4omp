@@ -36,6 +36,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - `App.xaml.cs` 是唯一生产 composition root：集中创建 repositories、OMP gateway、adapter registry、Application 用例及 `IOmpCurrentProviderQuery`/`IPricingSnapshotQuery` 查询端口。`MainViewModel` 与 `SitesDialog` 只消费已构造用例和窄查询契约，不直接读取 OMP 文件或持有具体 Infrastructure 服务；查询失败以结构化状态呈现。
 - `SiteEditorDialog` 以 `SiteEditorViewModel` 为真实 `DataContext`，XAML 绑定现有 `AsyncCommand`/`RelayCommand` 管理探测、取消和保存；两级 dialog factory 在 composition root 装配。探测重入被拒绝，取消和关闭等待任务结束，结构化认证/超时失败映射为脱敏文案；token/Cookie 原文只经过 PasswordBox/code-behind 一次性桥接并在安全存储写入后立即清空。
 - 工程验证统一由 `eng/Verify.ps1` 编排；`eng/verify-manifest.json` 是八个 console runner 名称、路径和顺序的唯一清单，`eng/verify-dependency-matrix.json` 机器校验生产依赖方向。GitHub Actions 在 `windows-2022` 将 SDK `8.0.423` 安装到用户 `.dotnet` 后只调用该入口；中间 native 失败立即短路，不执行 publish。
+- `eng/Publish.ps1` 串行生成 framework-dependent/self-contained 两类固定目录产物，对每阶段独立检查 native 退出码及本次生成的非空 exe，首阶段失败即短路；隔离 fake self-check 覆盖首失败、陈旧产物和双成功。OmpConfig/OmpProcess runner 使用每次唯一临时 root、sentinel、fake/loopback 进程和 `finally` 精确清理。
 
 ## 明确非目标与安全边界
 
