@@ -46,7 +46,13 @@ public partial class App : System.Windows.Application
                 new Sub2ApiPricingAdapter(_httpClient, credentialStore)
             ]);
             var refreshService = new PricingRefreshService(adapterRegistry, snapshotRepository, _loggerFactory.CreateLogger<PricingRefreshService>());
-            var viewModel = new MainViewModel(settingsRepository, refreshService, adapterRegistry, new OmpConfigurationSwitcher(), new OmpProcessService(), settings, credentialStore, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
+            var currentProviderQuery = new OmpCurrentProviderQuery(new OmpConfigurationSwitcher(), new AppPathDefaults());
+            var snapshotQuery = new PricingSnapshotQuery(snapshotRepository);
+            var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository);
+            var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository);
+            var settingsUseCase = new SettingsUseCase(settingsRepository);
+            var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>());
+            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, siteManagement, currentProviderQuery, snapshotQuery, adapterRegistry, settings, credentialStore, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }

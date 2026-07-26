@@ -23,3 +23,39 @@ public interface IPricingSnapshotRepository
     void Save(PricingSnapshot snapshot);
     void Delete(string providerId);
 }
+
+public enum OmpCurrentProviderStatus
+{
+    Identified,
+    ConfigurationFileMissing,
+    Unrecognized,
+    ReadFailed
+}
+
+public sealed record OmpCurrentProviderResult(OmpCurrentProviderStatus Status, string? ProviderId = null)
+{
+    public bool IsIdentified => Status == OmpCurrentProviderStatus.Identified && !string.IsNullOrWhiteSpace(ProviderId);
+}
+
+public interface IOmpCurrentProviderQuery
+{
+    Task<OmpCurrentProviderResult> ReadAsync(string ompRootDirectory, CancellationToken cancellationToken = default);
+}
+
+public enum PricingSnapshotQueryStatus
+{
+    Succeeded,
+    ReadFailed
+}
+
+public sealed record PricingSnapshotQueryResult(
+    PricingSnapshotQueryStatus Status,
+    IReadOnlyDictionary<string, PricingSnapshot> Snapshots)
+{
+    public bool IsSuccess => Status == PricingSnapshotQueryStatus.Succeeded;
+}
+
+public interface IPricingSnapshotQuery
+{
+    PricingSnapshotQueryResult Load();
+}

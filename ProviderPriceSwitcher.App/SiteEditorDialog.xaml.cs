@@ -1,5 +1,4 @@
 ﻿using System.Globalization;
-using System.IO;
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,7 +10,6 @@ public sealed partial class SiteEditorDialog : Window
 {
     private readonly SiteConfiguration? _original;
     private readonly LocalAppSettings _settings;
-    private readonly PricingRefreshService _refreshService;
     private readonly IPricingAdapterRegistry _adapterRegistry;
     private readonly PricingProbeUseCase _pricingProbe;
     private readonly TextBox _displayName = new(), _provider = new(), _url = new(), _configurationApiAddress = new(), _model = new(), _group = new(), _ratio = new(), _currency = new(), _conversion = new(), _cookieHeader = new();
@@ -25,12 +23,11 @@ public sealed partial class SiteEditorDialog : Window
     private readonly Button _save = new() { Content = "保存", IsDefault = true };
     public SiteConfiguration? Site { get; private set; }
 
-    public SiteEditorDialog(SiteConfiguration? original, LocalAppSettings settings, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
+    public SiteEditorDialog(SiteConfiguration? original, LocalAppSettings settings, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications)
     {
         InitializeComponent();
         _original = original;
         _settings = settings;
-        _refreshService = refreshService;
         _adapterRegistry = adapterRegistry;
         _credentialStore = credentialStore;
         _notifications = notifications;
@@ -41,7 +38,6 @@ public sealed partial class SiteEditorDialog : Window
         Height = 760;
         MinHeight = 620;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-
         _displayName.Text = original?.DisplayName ?? string.Empty;
         _provider.Text = original?.ProviderId ?? string.Empty;
         _siteType.SelectedItem = adapterRegistry.Descriptors.FirstOrDefault(x => string.Equals(x.SiteType, original?.SiteType, StringComparison.Ordinal)) ?? (adapterRegistry.Descriptors.Count > 0 ? adapterRegistry.Descriptors[0] : null);
@@ -52,10 +48,10 @@ public sealed partial class SiteEditorDialog : Window
         _authentication.SelectedItem = original?.AuthenticationMode ?? (initialDescriptor?.AuthenticationModes.Count > 0 ? initialDescriptor.AuthenticationModes[0] : null);
         _model.Text = original?.Model ?? settings.Model;
         _group.Text = original?.CurrentGroup ?? string.Empty;
-        _ratio.Text = (original?.CurrentGroupRatio ?? refreshService.LoadSnapshots().GetValueOrDefault(original?.ProviderId ?? string.Empty)?.CurrentGroupRatio)?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        var snapshotResult = snapshotQuery.Load();
+        _ratio.Text = (original?.CurrentGroupRatio ?? (snapshotResult.IsSuccess ? snapshotResult.Snapshots.GetValueOrDefault(original?.ProviderId ?? string.Empty)?.CurrentGroupRatio : null))?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
         _currency.Text = original?.Currency ?? string.Empty;
         _conversion.Text = original?.CnyConversionRate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
-
         var form = new StackPanel { Margin = new Thickness(20) };
         form.Children.Add(Section("基本信息"));
         form.Children.Add(Field("显示名称（预留）", _displayName));

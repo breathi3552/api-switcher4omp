@@ -75,7 +75,7 @@ MUST NOT 在 `PricingRefreshService`、`MainWindow.xaml.cs`、对话框、持久
 
 站点新增、编辑、重命名、启用/禁用和删除 MUST 复用 `SiteManagementUseCase(ISettingsRepository, IPricingSnapshotRepository)`。该用例维护快照：重命名删除旧 provider 快照，匹配快照按 `PricingSnapshot.Matches`/`WithCurrentRatio` 应用手动倍率；每个有效设置操作按现有契约保存一次；目标不存在抛 `InvalidOperationException`。
 
-设置保存 MUST 复用 `SettingsUseCase(ISettingsRepository).Save`。它以 `StringComparer.OrdinalIgnoreCase` 去重工作目录并保留首次拼写，优先保留等价的原默认目录，否则选择第一项或 null；不额外检查目录是否存在。新增 UI 流程不得直接写 JSON repository。当前 `SitesDialog`/`SiteEditorDialog` 仍在内部创建部分用例或具体凭据实现，这是待收敛债务，不是新增代码的模板。
+设置保存 MUST 复用 `SettingsUseCase(ISettingsRepository).Save`。它以 `StringComparer.OrdinalIgnoreCase` 去重工作目录并保留首次拼写，优先保留等价的原默认目录，否则选择第一项或 null；不额外检查目录是否存在。新增 UI 流程不得直接写 JSON repository。`SitesDialog` 已接收预构造的 `SiteManagementUseCase` 与 `IPricingSnapshotQuery`；`SiteEditorDialog` 仍在内部创建 `PricingProbeUseCase`，这是待由编辑器命令化收敛的现行债务，不是新增代码模板。
 
 验证：按 [build-release.md](build-release.md) 的影响分级矩阵选择受影响 runner；不在本节复制命令。
 ***

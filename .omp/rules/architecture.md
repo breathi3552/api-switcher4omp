@@ -87,9 +87,9 @@ flowchart LR
 
 ### 3.4 App 与 WPF
 
-1. App 是 composition root：新增外部实现和 adapter 的生产装配 **MUST** 集中在启动处，并将依赖传入 Window/ViewModel。现有 ViewModel/对话框内部创建用例的代码属于待收敛债务，不得据此新增具体 Infrastructure 实例。
+1. App 是 composition root：外部实现、adapter、Application 用例和查询端口的生产装配 **MUST** 集中在启动处，并将已构造依赖传入 Window/ViewModel；不得在窗口内恢复具体 Infrastructure 装配。
 2. 使用 XAML Binding 的 Window **MUST** 有明确、可追踪的 `DataContext`（XAML 声明或构造时注入均可）；纯 programmatic code-behind 对话框可以不设 `DataContext`，但不得出现无来源的 Binding。不得依赖隐式全局服务定位器。
-3. 新增 View/ViewModel 业务流程 **MUST** 调用 Application 用例；不得直接读写文件、调用 HTTP、DPAPI、OMP 配置或启动进程。现有 `MainViewModel`、`SitesDialog`、`SiteEditorDialog` 对具体 Infrastructure 类型和内部用例构造的依赖是明确例外，只允许迁出，不得扩大。
+3. 新增 View/ViewModel 业务流程 **MUST** 调用 Application 用例；不得直接读写文件、调用 HTTP、DPAPI、OMP 配置或启动进程。`MainViewModel` 与 `SitesDialog` 已只消费 Application 用例/窄查询契约；`SiteEditorDialog` 内部创建 `PricingProbeUseCase` 是待由编辑器命令化迁出的唯一现行例外，不得扩大。
 4. UI **MUST** 遵守“检查只推荐、不自动切换”；刷新失败沿用旧快照时不得参与自动推荐，当前组和最低组都必须保留展示。UI 细节引用 [`coding.md`](coding.md)。
 
 ## 4. Composition root 与运行方向
@@ -108,9 +108,7 @@ flowchart LR
 
 以下是文档编写时仍存在的已知例外，不构成新代码可复用的先例：
 
-- `MainViewModel` 仍接收 `JsonSettingsRepository`、`OmpConfigurationSwitcher`、`OmpProcessService` 并在内部创建部分 Application 用例。
-- `SitesDialog` 仍接收具体 repository/refresh service 并在内部创建 `SiteManagementUseCase`。
-- `SiteEditorDialog` 仍在内部创建 `PricingProbeUseCase`；credential store 已从 composition root 经 `MainViewModel`/`SitesDialog` 注入，不再创建具体 store 或读取凭据原文。
+- `SiteEditorDialog` 仍在内部创建 `PricingProbeUseCase`；credential store 已从 composition root 注入，不再创建具体 store 或读取凭据原文。
 - 三个对话框当前以 programmatic code-behind 构建大部分控件；新增界面不得把这种形态扩展为新的业务编排入口。
 
 触及上述代码时遵循“先不扩大、能够顺手收敛则收敛”的原则；若迁移公开构造契约，必须一次性更新全部调用者与 runner。

@@ -1,17 +1,14 @@
 ﻿using System.Globalization;
-using System.IO;
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
 using ProviderPriceSwitcher.Core;
 using ProviderPriceSwitcher.Application;
-using ProviderPriceSwitcher.Infrastructure;
 
 namespace ProviderPriceSwitcher.App;
 public sealed partial class SitesDialog : Window
 {
-    private readonly JsonSettingsRepository _settingsRepository;
-    private readonly PricingRefreshService _refreshService;
+    private readonly IPricingSnapshotQuery _snapshotQuery;
     private readonly IPricingAdapterRegistry _adapterRegistry;
     private readonly ISiteCredentialStore _credentialStore;
     private readonly IUserNotificationService _notifications;
@@ -23,17 +20,15 @@ public sealed partial class SitesDialog : Window
     private readonly Button _delete = new() { Content = "删除" };
 
     public LocalAppSettings Settings { get; private set; }
-
-    public SitesDialog(LocalAppSettings settings, JsonSettingsRepository settingsRepository, PricingRefreshService refreshService, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications, string? currentProvider)
+    public SitesDialog(LocalAppSettings settings, SiteManagementUseCase siteManagement, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, ISiteCredentialStore credentialStore, IUserNotificationService notifications, string? currentProvider)
     {
         InitializeComponent();
         Settings = settings;
-        _settingsRepository = settingsRepository;
-        _refreshService = refreshService;
+        _siteManagement = siteManagement;
+        _snapshotQuery = snapshotQuery;
         _adapterRegistry = adapterRegistry;
         _credentialStore = credentialStore;
         _notifications = notifications;
-        _siteManagement = new SiteManagementUseCase(settingsRepository, refreshService.SnapshotRepository);
         _currentProvider = currentProvider;
         Title = "管理站点";
         Width = 1120;
@@ -81,7 +76,8 @@ public sealed partial class SitesDialog : Window
 
     private void RefreshRows(string? selectProvider = null)
     {
-        var snapshots = _refreshService.LoadSnapshots();
+        var result = _snapshotQuery.Load();
+        var snapshots = result.IsSuccess ? result.Snapshots : new Dictionary<string, PricingSnapshot>(StringComparer.Ordinal);
         var rows = Settings.Sites.Select(site => new SiteListRow(site, snapshots.GetValueOrDefault(site.ProviderId))).ToList();
         _grid.ItemsSource = rows;
         _grid.SelectedItem = rows.FirstOrDefault(x => string.Equals(x.ProviderId, selectProvider, StringComparison.Ordinal)) ?? rows.FirstOrDefault();
@@ -99,7 +95,7 @@ public sealed partial class SitesDialog : Window
 
     private void AddSite()
     {
-        var dialog = new SiteEditorDialog(null, Settings, _refreshService, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
+        var dialog = new SiteEditorDialog(null, Settings, _snapshotQuery, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Site is null) return;
         SaveSite(dialog.Site, null);
     }
@@ -109,7 +105,7 @@ public sealed partial class SitesDialog : Window
         var selected = Selected;
         if (selected is null) return;
         var original = Settings.Sites.First(x => string.Equals(x.ProviderId, selected.ProviderId, StringComparison.Ordinal));
-        var dialog = new SiteEditorDialog(original, Settings, _refreshService, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
+        var dialog = new SiteEditorDialog(original, Settings, _snapshotQuery, _adapterRegistry, _credentialStore, _notifications) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Site is null) return;
         SaveSite(dialog.Site, original.ProviderId);
     }
