@@ -36,6 +36,32 @@ static async Task<(SitePricingResult Result, StubHandler Handler)> FetchPaws(str
     });
     return (result, handler);
 }
+static async Task<(SitePricingResult Result, AiHubHandler Handler)> FetchAiHub(string group = "gpt-plus", SiteCredentialRecord? credential = null, HttpStatusCode status = HttpStatusCode.OK)
+{
+    var handler = new AiHubHandler(status);
+    using var client = new HttpClient(handler);
+    var credentials = new MemoryCredentialStore
+    {
+        Credential = credential ?? new SiteCredentialRecord
+        {
+            ProviderId = "aihub-provider",
+            SiteType = "aihub",
+            AuthorizationScheme = "Bearer",
+            AccessToken = "synthetic-aihub-token",
+            CookieHeader = "session=synthetic"
+        }
+    };
+    var result = await new AiHubPricingAdapter(client, credentials).FetchAsync(new SiteConfiguration
+    {
+        ProviderId = "aihub-provider",
+        ConfigurationKey = "aihub-key",
+        BaseUrl = new Uri("https://example.test/"),
+        SiteType = "aihub",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = group
+    });
+    return (result, handler);
+}
 
 static async Task ExpectPawsFailure(string json, PricingAdapterFailure expected, string group = "GPT混合池（GPT5.4卡顿）", string model = "gpt-5.6-sol")
 {
@@ -112,25 +138,25 @@ using (var unauthorizedClient = new HttpClient(subUnauthorized))
 {
     var credentials = new MemoryCredentialStore
     {
-        Credential = new SiteCredentialRecord { ProviderId = "sevnx", SiteType = "sub2api", AuthorizationScheme = "Bearer", AccessToken = "expired", CookieHeader = "refresh_token=rt_test" }
+        Credential = new SiteCredentialRecord { ProviderId = "sevnx", SiteType = "sevnx", AuthorizationScheme = "Bearer", AccessToken = "expired", CookieHeader = "refresh_token=rt_test" }
     };
     try
     {
-        await new Sub2ApiPricingAdapter(unauthorizedClient, credentials).FetchAsync(new SiteConfiguration
+        await new SevnXPricingAdapter(unauthorizedClient, credentials).FetchAsync(new SiteConfiguration
         {
             ProviderId = "sevnx",
             ConfigurationKey = "sub-key",
             BaseUrl = new Uri("https://example.test/"),
-            SiteType = "sub2api",
+            SiteType = "sevnx",
             Model = "gpt-5.6-sol",
             CurrentGroup = "default"
         });
-        throw new InvalidOperationException("Sub2API unauthorized response was accepted");
+        throw new InvalidOperationException("SevnX unauthorized response was accepted");
     }
     catch (PricingAdapterException exception)
     {
-        Assert(exception.Failure == PricingAdapterFailure.Authentication, "Sub2API unauthorized failure kind mismatch");
-        Assert(exception.Message.Contains("INVALID_TOKEN: Invalid token", StringComparison.Ordinal), "Sub2API unauthorized message mismatch");
+        Assert(exception.Failure == PricingAdapterFailure.Authentication, "SevnX unauthorized failure kind mismatch");
+        Assert(exception.Message.Contains("INVALID_TOKEN: Invalid token", StringComparison.Ordinal), "SevnX unauthorized message mismatch");
     }
 }
 
@@ -138,16 +164,16 @@ using (var missingCredentialClient = new HttpClient(new StubHandler("{}")))
 {
     try
     {
-        await new Sub2ApiPricingAdapter(missingCredentialClient, new MemoryCredentialStore()).FetchAsync(new SiteConfiguration
+        await new SevnXPricingAdapter(missingCredentialClient, new MemoryCredentialStore()).FetchAsync(new SiteConfiguration
         {
             ProviderId = "missing",
             ConfigurationKey = "sub-key",
             BaseUrl = new Uri("https://example.test/"),
-            SiteType = "sub2api",
+            SiteType = "sevnx",
             Model = "gpt-5.6-sol",
             CurrentGroup = "default"
         });
-        throw new InvalidOperationException("Missing Sub2API credential was accepted");
+        throw new InvalidOperationException("Missing SevnX credential was accepted");
     }
     catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Authentication) { }
 }
@@ -180,7 +206,7 @@ using (var canceledClient = new HttpClient(new CancelHandler()))
     catch (OperationCanceledException) { }
 }
 
-var subHandler = new Sub2ApiHandler();
+var subHandler = new SevnXHandler();
 using (var subClient = new HttpClient(subHandler))
 {
     var credentials = new MemoryCredentialStore
@@ -188,42 +214,55 @@ using (var subClient = new HttpClient(subHandler))
         Credential = new SiteCredentialRecord
         {
             ProviderId = "sevnx",
-            SiteType = "sub2api",
+            SiteType = "sevnx",
             AuthorizationScheme = "Bearer",
             AccessToken = "access-token",
             CookieHeader = "refresh_token=rt_test"
         }
     };
-    var result = await new Sub2ApiPricingAdapter(subClient, credentials).FetchAsync(new SiteConfiguration
+    var result = await new SevnXPricingAdapter(subClient, credentials).FetchAsync(new SiteConfiguration
     {
         ProviderId = "sevnx",
         ConfigurationKey = "sub-ok",
         BaseUrl = new Uri("https://example.test/"),
-        SiteType = "sub2api",
+        SiteType = "sevnx",
         Model = "gpt-5.6-sol",
         CurrentGroup = "gpt-plus"
     });
-    Assert(result.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "Sub2API base price conversion mismatch");
-    Assert(result.Prices.InputPerMillion == 0.5m && result.Prices.CachedInputPerMillion == 0.05m && result.Prices.OutputPerMillion == 3m, "Sub2API group prices mismatch");
-    Assert(result.MinimumValidGroup == "gpt-plus" && result.MinimumGroupRatio == 0.1m, "Sub2API minimum group mismatch");
-    Assert(subHandler.Requests.Count == 3 && subHandler.Requests.Contains("https://example.test/api/v1/groups/available?timezone=Asia%2FShanghai"), "Sub2API request paths mismatch");
-    Assert(subHandler.Authorization == "Bearer access-token", "Sub2API authorization header mismatch");
-    Assert(subHandler.Cookie == "refresh_token=rt_test", "Sub2API cookie header mismatch");
-    Assert(subHandler.UiRequestHeader == "1", "Sub2API x-user-ui-request header mismatch");
-    Assert(subHandler.UserAgent?.Contains("Edg/150.0.0.0", StringComparison.Ordinal) == true, "Sub2API user agent mismatch");
-    Assert(subHandler.ClientHint?.Contains("Microsoft Edge", StringComparison.Ordinal) == true, "Sub2API client hint mismatch");
-    Assert(subHandler.FetchSite == "same-origin", "Sub2API fetch-site mismatch");
-    Assert(subHandler.Referrer == "https://example.test/model-pricing", "Sub2API referrer mismatch");
+    Assert(result.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "SevnX base price conversion mismatch");
+    Assert(result.Prices.InputPerMillion == 0.5m && result.Prices.CachedInputPerMillion == 0.05m && result.Prices.OutputPerMillion == 3m, "SevnX group prices mismatch");
+    Assert(result.MinimumValidGroup == "gpt-plus" && result.MinimumGroupRatio == 0.1m, "SevnX minimum group mismatch");
+    Assert(subHandler.Requests.Count == 3 && subHandler.Requests.Contains("https://example.test/api/v1/groups/available?timezone=Asia%2FShanghai"), "SevnX request paths mismatch");
+    Assert(subHandler.Authorization == "Bearer access-token", "SevnX authorization header mismatch");
+    Assert(subHandler.Cookie == "refresh_token=rt_test", "SevnX cookie header mismatch");
+    Assert(subHandler.UiRequestHeader == "1", "SevnX x-user-ui-request header mismatch");
+    Assert(subHandler.UserAgent?.Contains("Edg/150.0.0.0", StringComparison.Ordinal) == true, "SevnX user agent mismatch");
+    Assert(subHandler.ClientHint?.Contains("Microsoft Edge", StringComparison.Ordinal) == true, "SevnX client hint mismatch");
+    Assert(subHandler.FetchSite == "same-origin", "SevnX fetch-site mismatch");
+    Assert(subHandler.Referrer == "https://example.test/model-pricing", "SevnX referrer mismatch");
 }
+Assert(new AiHubPricingAdapter(new HttpClient(new AiHubHandler()), new MemoryCredentialStore()).Descriptor is { SiteType: "aihub", DisplayName: "AIHub", RequiresCredential: true } descriptor && descriptor.AuthenticationModes.SequenceEqual(["导入令牌"]), "AIHub descriptor mismatch");
+var (aihub, aihubHandler) = await FetchAiHub();
+Assert(aihub.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "AIHub base prices mismatch");
+Assert(aihub.Prices.InputPerMillion == 0.5m && aihub.Prices.CachedInputPerMillion == 0.05m && aihub.Prices.OutputPerMillion == 3m, "AIHub account ratio prices mismatch");
+Assert(aihub.MinimumValidGroup == "gpt-free" && aihub.MinimumGroupRatio == 0.05m, "AIHub minimum group mismatch");
+Assert(aihubHandler.Requests.SetEquals(["https://example.test/api/v1/groups/available?timezone=Asia%2FShanghai", "https://example.test/api/v1/groups/rates?timezone=Asia%2FShanghai"]), "AIHub endpoint contract mismatch");
+Assert(aihubHandler.Authorization == "Bearer synthetic-aihub-token" && aihubHandler.Cookie == "session=synthetic" && aihubHandler.UiRequestHeader == "1" && aihubHandler.Referrer == "https://example.test/keys", "AIHub request headers mismatch");
+var (accountOverride, _) = await FetchAiHub(credential: new SiteCredentialRecord { ProviderId = "aihub-provider", SiteType = "aihub", AuthorizationScheme = "Bearer", AccessToken = "synthetic-override-token", CookieHeader = "session=synthetic" });
+Assert(accountOverride.Prices.InputPerMillion == 0.5m, "AIHub rate override mismatch");
+var missingAiHub = new MemoryCredentialStore();
+try { using var missingClient = new HttpClient(new AiHubHandler()); await new AiHubPricingAdapter(missingClient, missingAiHub).FetchAsync(new SiteConfiguration { ProviderId = "missing", ConfigurationKey = "k", BaseUrl = new Uri("https://example.test"), SiteType = "aihub", Model = "gpt-5.6-sol", CurrentGroup = "gpt-plus" }); throw new InvalidOperationException("Missing AIHub credential accepted"); } catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Authentication) { }
+try { await FetchAiHub(status: HttpStatusCode.Unauthorized); throw new InvalidOperationException("AIHub 401 accepted"); } catch (PricingAdapterException exception) when (exception.Failure == PricingAdapterFailure.Authentication) { }
 
 var registry = new PricingAdapterRegistry([
     new NewApiPricingAdapter(new HttpClient(new StubHandler(simpleJson))),
     new PawsAiPricingAdapter(new HttpClient(new StubHandler(pawsJson))),
-    new Sub2ApiPricingAdapter(new HttpClient(new StubHandler("{}")), new MemoryCredentialStore())
+    new SevnXPricingAdapter(new HttpClient(new StubHandler("{}")), new MemoryCredentialStore()),
+    new AiHubPricingAdapter(new HttpClient(new AiHubHandler()), new MemoryCredentialStore())
 ]);
-Assert(registry.Descriptors.Select(x => x.SiteType).SequenceEqual(["new-api", "pawsai", "sub2api"]), "Registry order mismatch");
-Assert(registry.Descriptors.Select(x => x.DisplayName).SequenceEqual(["New API", "PawsAI", "Sub2API"]), "Descriptor display names mismatch");
-Assert(!registry.Descriptors[0].RequiresCredential && registry.Descriptors[2].RequiresCredential, "Descriptor credential capability mismatch");
+Assert(registry.Descriptors.Select(x => x.SiteType).SequenceEqual(["new-api", "pawsai", "sevnx", "aihub"]), "Registry order mismatch");
+Assert(registry.Descriptors.Select(x => x.DisplayName).SequenceEqual(["New API", "PawsAI", "SevnX", "AIHub"]), "Descriptor display names mismatch");
+Assert(!registry.Descriptors[0].RequiresCredential && registry.Descriptors[2].RequiresCredential && registry.Descriptors[3].RequiresCredential, "Descriptor credential capability mismatch");
 Assert(registry.TryGet("new-api", out var registered) && registered.Descriptor.SiteType == "new-api", "Registry lookup failed");
 Assert(!registry.TryGet("NEW-API", out _) && !registry.TryGet("missing", out _), "Registry lookup must be Ordinal");
 var emptyRejected = false;
@@ -274,7 +313,7 @@ sealed class StubHandler(string body, HttpStatusCode statusCode = HttpStatusCode
     }
 }
 
-sealed class Sub2ApiHandler : HttpMessageHandler
+sealed class SevnXHandler : HttpMessageHandler
 {
     public HashSet<string> Requests { get; } = new(StringComparer.Ordinal);
     public string? Authorization { get; private set; }
@@ -304,6 +343,29 @@ sealed class Sub2ApiHandler : HttpMessageHandler
             _ => "{}"
         };
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+    }
+}
+sealed class AiHubHandler(HttpStatusCode statusCode = HttpStatusCode.OK) : HttpMessageHandler
+{
+    public HashSet<string> Requests { get; } = new(StringComparer.Ordinal);
+    public string? Authorization { get; private set; }
+    public string? Cookie { get; private set; }
+    public string? UiRequestHeader { get; private set; }
+    public string? Referrer { get; private set; }
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request.RequestUri?.ToString() ?? string.Empty);
+        Authorization = request.Headers.Authorization?.ToString();
+        Cookie = request.Headers.TryGetValues("Cookie", out var cookies) ? string.Join("; ", cookies) : null;
+        UiRequestHeader = request.Headers.TryGetValues("X-User-UI-Request", out var ui) ? string.Join(",", ui) : null;
+        Referrer = request.Headers.Referrer?.ToString();
+        var body = request.RequestUri?.AbsolutePath switch
+        {
+            "/api/v1/groups/available" => "{\"data\":[{\"id\":1,\"name\":\"gpt-plus\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.2},{\"id\":2,\"name\":\"gpt-free\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.1}]} ",
+            "/api/v1/groups/rates" => "{\"data\":{\"1\":0.1,\"2\":0.05}}",
+            _ => "{}"
+        };
+        return Task.FromResult(new HttpResponseMessage(statusCode) { Content = new StringContent(body) });
     }
 }
 

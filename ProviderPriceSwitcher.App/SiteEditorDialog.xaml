@@ -1,4 +1,4 @@
-<Window x:Class="ProviderPriceSwitcher.App.SiteEditorDialog" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="站点编辑">
+<Window x:Class="ProviderPriceSwitcher.App.SiteEditorDialog" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="站点编辑" Icon="Assets\AppIcon.ico">
 <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="20">
 <TextBlock Text="站点类型"/><ComboBox ItemsSource="{Binding Descriptors}" SelectedItem="{Binding Descriptor}" DisplayMemberPath="DisplayName"/>
 <TextBlock Text="ProviderId"/><TextBox Text="{Binding ProviderId,UpdateSourceTrigger=PropertyChanged}"/>

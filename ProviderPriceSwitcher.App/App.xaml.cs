@@ -43,7 +43,8 @@ public partial class App : System.Windows.Application
             var adapterRegistry = new PricingAdapterRegistry([
                 new NewApiPricingAdapter(_httpClient),
                 new PawsAiPricingAdapter(_httpClient),
-                new Sub2ApiPricingAdapter(_httpClient, credentialStore)
+                new SevnXPricingAdapter(_httpClient, credentialStore),
+                new AiHubPricingAdapter(_httpClient, credentialStore)
             ]);
             var refreshService = new PricingRefreshService(adapterRegistry, _loggerFactory.CreateLogger<PricingRefreshService>());
             var currentProviderQuery = new OmpCurrentProviderQuery(new OmpConfigurationSwitcher(), new AppPathDefaults());

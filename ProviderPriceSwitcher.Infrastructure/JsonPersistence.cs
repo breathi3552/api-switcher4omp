@@ -114,10 +114,19 @@ public sealed class JsonSettingsRepository : ISettingsRepository
                     var rootUrl = new Uri($"{site.BaseUrl.Scheme}://{site.BaseUrl.Authority}/");
                     return site with
                     {
-                        SiteType = "sub2api",
+                        SiteType = "sevnx",
                         BaseUrl = rootUrl,
                         AuthenticationMode = "导入令牌",
-                        ConfigurationKey = SiteConfigurationKey.Create(site.ProviderId, "sub2api", rootUrl, site.Model, site.CurrentGroup)
+                        ConfigurationKey = SiteConfigurationKey.Create(site.ProviderId, "sevnx", rootUrl, site.Model, site.CurrentGroup)
+                    };
+                }
+
+                if (string.Equals(site.SiteType, "sub2api", StringComparison.Ordinal))
+                {
+                    return site with
+                    {
+                        SiteType = "sevnx",
+                        ConfigurationKey = SiteConfigurationKey.Create(site.ProviderId, "sevnx", site.BaseUrl, site.Model, site.CurrentGroup)
                     };
                 }
 

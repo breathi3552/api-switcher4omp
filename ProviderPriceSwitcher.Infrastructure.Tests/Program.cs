@@ -108,9 +108,27 @@ try
     };
     settingsRepo.Save(new LocalAppSettings { Sites = [sevnxRoot] });
     var migratedSevnx = settingsRepo.Load().Sites.Single();
-    Assert(migratedSevnx.SiteType == "sub2api" && migratedSevnx.BaseUrl.AbsoluteUri == "https://www.sevnx.one/", "SevnX root migration");
+    Assert(migratedSevnx.SiteType == "sevnx" && migratedSevnx.BaseUrl.AbsoluteUri == "https://www.sevnx.one/", "SevnX root migration");
     Assert(migratedSevnx.AuthenticationMode == "导入令牌", "SevnX auth mode migration");
-    Assert(migratedSevnx.ConfigurationKey == SiteConfigurationKey.Create("sevnx", "sub2api", migratedSevnx.BaseUrl, migratedSevnx.Model, migratedSevnx.CurrentGroup), "SevnX key rebuild");
+    Assert(migratedSevnx.ConfigurationKey == SiteConfigurationKey.Create("sevnx", "sevnx", migratedSevnx.BaseUrl, migratedSevnx.Model, migratedSevnx.CurrentGroup), "SevnX key rebuild");
+    var legacySevnx = sevnxRoot with
+    {
+        ProviderId = "legacy-sevnx",
+        SiteType = "sub2api",
+        ConfigurationKey = "legacy-sub2api-key",
+        BaseUrl = new Uri("https://legacy.sevnx.example/api"),
+        AuthenticationMode = "保留认证"
+    };
+    settingsRepo.Save(new LocalAppSettings { Sites = [legacySevnx] });
+    var migratedLegacySevnx = settingsRepo.Load().Sites.Single();
+    Assert(migratedLegacySevnx.SiteType == "sevnx" && migratedLegacySevnx.BaseUrl.AbsoluteUri == "https://legacy.sevnx.example/api", "legacy sub2api migration");
+    Assert(migratedLegacySevnx.AuthenticationMode == "保留认证" && migratedLegacySevnx.ProviderId == "legacy-sevnx", "legacy migration preserves fields");
+    Assert(migratedLegacySevnx.ConfigurationKey == SiteConfigurationKey.Create("legacy-sevnx", "sevnx", migratedLegacySevnx.BaseUrl, migratedLegacySevnx.Model, migratedLegacySevnx.CurrentGroup), "legacy SevnX key rebuild");
+    settingsRepo.Save(new LocalAppSettings { Sites = [migratedLegacySevnx] });
+    var idempotentSevnx = settingsRepo.Load().Sites.Single();
+    Assert(idempotentSevnx == migratedLegacySevnx, "SevnX migration idempotent");
+    var savedSevnxSettings = File.ReadAllText(settingsRepo.FilePath);
+    Assert(!savedSevnxSettings.Contains("sub2api", StringComparison.Ordinal), "saved settings must not retain sub2api");
     Assert(SiteConfigurationKey.Create(" Provider ", "new-api", new Uri("HTTPS://Example.COM/base/"), " model ", " group ") == SiteConfigurationKey.Create("provider", "new-api", new Uri("https://example.com/base"), "model", "group"), "key regression");
     Assert(SiteConfigurationKey.Create("provider", "new-api", new Uri("https://example.com/base"), "model", "group") != SiteConfigurationKey.Create("provider", "pawsai", new Uri("https://example.com/base"), "model", "group"), "old snapshot key mismatch");
     settingsRepo.Save(migrated);
