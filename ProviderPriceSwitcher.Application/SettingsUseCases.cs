@@ -78,7 +78,7 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
     }
 }
 
-public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore)
+public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null)
 {
     public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
@@ -86,7 +86,10 @@ public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore)
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
-        var record = new InferenceApiKeyRecord { ProviderId = providerId.Trim(), ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim(), KeyHandle = Guid.NewGuid().ToString("N") };
+        var normalizedProviderId = providerId.Trim();
+        if (settingsRepository is not null && !settingsRepository.Load().Sites.Any(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal)))
+            throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
+        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim(), KeyHandle = Guid.NewGuid().ToString("N") };
         keyStore.Save(record);
         return keyStore.GetSummary(record.ProviderId) ?? throw new InvalidOperationException("推理 API key 保存后不可读取。");
     }
