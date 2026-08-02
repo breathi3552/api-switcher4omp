@@ -104,9 +104,11 @@ public sealed class SiteEditorViewModel : ObservableObject
         try
         {
             var result = await _probe.ExecuteAsync(site, _settings.RequestTimeoutSeconds, _cancel.Token);
+            var boundGroup = CurrentGroup;
             GroupOptions.Clear();
             foreach (var group in result.ValidGroups.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(group);
-            if (!GroupOptions.Contains(CurrentGroup, StringComparer.OrdinalIgnoreCase)) GroupOptions.Insert(0, CurrentGroup);
+            if (!GroupOptions.Contains(boundGroup, StringComparer.OrdinalIgnoreCase)) GroupOptions.Insert(0, boundGroup);
+            CurrentGroup = boundGroup;
             ProbeState = SiteEditorProbeState.Succeeded; ProbeMessage = $"成功：当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）。";
         }
         catch (OperationCanceledException) { ProbeState = SiteEditorProbeState.Canceled; ProbeMessage = "已取消价格查询。"; }

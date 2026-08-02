@@ -143,15 +143,19 @@ var windowThread = new Thread(() =>
         probeAdapter.Block = true;
         editorVm.ProbeCommand.Execute(null);
         Assert(editorVm.IsProbing && !editorVm.ProbeCommand.CanExecute(null) && !editorVm.SaveCommand.CanExecute(null) && editorVm.CancelProbeCommand.CanExecute(null), "probe must become busy and prevent reentry while enabling cancel");
+        editorVm.CurrentGroup = "edited-during-probe";
         editorVm.ProbeCommand.Execute(null);
         Assert(probeAdapter.FetchCalls == 1, "busy probe command must reject reentry");
         editorVm.CancelProbeCommand.Execute(null);
         WaitFor(() => !editorVm.IsProbing);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must restore commands without an error notification");
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.CurrentGroup == "edited-during-probe" && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must preserve group edits and restore commands without an error notification");
         probeAdapter.Block = false;
+        probeAdapter.ReturnedGroups = new HashSet<string>(["different-group"]);
+        var groupComboBox = Descendants(dialog).OfType<System.Windows.Controls.ComboBox>().Single(combo => combo.IsEditable && ReferenceEquals(combo.ItemsSource, editorVm.GroupOptions));
+        Assert(groupComboBox.Text == "edited-during-probe", "editable group selector must initially show the latest bound group");
         editorVm.ProbeCommand.Execute(null);
         WaitFor(() => !editorVm.IsProbing);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2, "successful probe must complete through the real dialog view model");
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2 && editorVm.CurrentGroup == "edited-during-probe" && groupComboBox.Text == "edited-during-probe", "successful price probe must not replace the latest current bound group when returned groups differ");
         dialog.Close();
         var saveDialog = editorFactoryForDialog.Create(site, settings, window);
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
@@ -201,12 +205,14 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
 {
     public ProviderPriceSwitcher.Application.PricingAdapterDescriptor Descriptor { get; } = descriptor;
     public bool Block { get; set; }
+    public IReadOnlySet<string>? ReturnedGroups { get; set; }
     public int FetchCalls { get; private set; }
     public async Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default)
     {
         FetchCalls++;
         if (Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = 1, RefreshedAt = DateTimeOffset.UtcNow }, ValidGroups = new HashSet<string>([site.CurrentGroup]), MinimumValidGroup = site.CurrentGroup, MinimumGroupRatio = 1, Warnings = [] };
+        var groups = ReturnedGroups ?? new HashSet<string>([site.CurrentGroup]);
+        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = 1, RefreshedAt = DateTimeOffset.UtcNow }, ValidGroups = groups, MinimumValidGroup = groups.First(), MinimumGroupRatio = 1, Warnings = [] };
     }
 }
 
