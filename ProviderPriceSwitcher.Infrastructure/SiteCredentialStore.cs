@@ -56,20 +56,27 @@ public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore
 
     public SiteCredentialSummary GetSummary(string providerId)
     {
-        var credential = LoadCredential(providerId);
-        if (credential is null)
-            return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.NotConfigured, StatusText = "未配置凭据" };
-
-        var expired = credential.ExpiresAt is DateTimeOffset expiresAt && expiresAt <= DateTimeOffset.UtcNow;
-        var cookieHint = !string.IsNullOrWhiteSpace(credential.CookieHeader) ? "；已保存浏览器会话 Cookie" : string.Empty;
-        return new SiteCredentialSummary
+        try
         {
-            ProviderId = providerId,
-            Status = expired ? SiteCredentialStatus.Expired : SiteCredentialStatus.Available,
-            StatusText = (expired ? "访问令牌已过期" : $"已绑定 {credential.AuthorizationScheme} 访问令牌") + cookieHint,
-            ExpiresAt = credential.ExpiresAt,
-            UpdatedAt = credential.UpdatedAt
-        };
+            var credential = LoadCredential(providerId);
+            if (credential is null)
+                return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.NotConfigured, StatusText = "未配置凭据" };
+
+            var expired = credential.ExpiresAt is DateTimeOffset expiresAt && expiresAt <= DateTimeOffset.UtcNow;
+            var cookieHint = !string.IsNullOrWhiteSpace(credential.CookieHeader) ? "；已保存浏览器会话 Cookie" : string.Empty;
+            return new SiteCredentialSummary
+            {
+                ProviderId = providerId,
+                Status = expired ? SiteCredentialStatus.Expired : SiteCredentialStatus.Available,
+                StatusText = (expired ? "访问令牌已过期" : $"已绑定 {credential.AuthorizationScheme} 访问令牌") + cookieHint,
+                ExpiresAt = credential.ExpiresAt,
+                UpdatedAt = credential.UpdatedAt
+            };
+        }
+        catch (JsonDataException)
+        {
+            return new SiteCredentialSummary { ProviderId = providerId, Status = SiteCredentialStatus.Invalid, StatusText = "本地凭据无法读取，请重新保存或清除凭据" };
+        }
     }
 
     private string FilePath(string providerId)
@@ -136,8 +143,15 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
 
     public InferenceApiKeySummary? GetSummary(string providerId)
     {
-        var record = Load(providerId);
-        return record is null ? null : new InferenceApiKeySummary { ProviderId = record.ProviderId, KeyHandle = record.KeyHandle, BoundGroup = record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey), UpdatedAt = record.UpdatedAt };
+        try
+        {
+            var record = Load(providerId);
+            return record is null ? null : new InferenceApiKeySummary { ProviderId = record.ProviderId, KeyHandle = record.KeyHandle, BoundGroup = record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey), UpdatedAt = record.UpdatedAt };
+        }
+        catch (JsonDataException)
+        {
+            return null;
+        }
     }
 
     private string FilePath(string providerId) => Path.Combine(AppDataPaths.GetRoot(_rootDirectory), "inference-keys", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerId))) + ".bin");

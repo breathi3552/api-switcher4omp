@@ -119,14 +119,14 @@ var windowThread = new Thread(() =>
         var editorVm = (SiteEditorViewModel)dialog.DataContext;
         Assert(editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null), "valid editor fields must enable probe/save and leave cancel disabled");
         var tokenBox = (System.Windows.Controls.PasswordBox)dialog.FindName("TokenBox");
-        var cookieBox = (System.Windows.Controls.TextBox)dialog.FindName("CookieBox");
+        var cookieBox = (System.Windows.Controls.PasswordBox)dialog.FindName("CookieBox");
         tokenBox.Password = "synthetic-token-ui";
-        cookieBox.Text = "synthetic-cookie-ui";
+        cookieBox.Password = "synthetic-cookie-ui";
         credentialStore.ExpectedToken = tokenBox.Password;
-        credentialStore.ExpectedCookie = cookieBox.Text;
+        credentialStore.ExpectedCookie = cookieBox.Password;
         var credentialButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "绑定/更新站点凭据"));
         credentialButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput && tokenBox.Password.Length == 0 && cookieBox.Text.Length == 0, "real credential bridge must save once and immediately clear both inputs");
+        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput && tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0, "real credential bridge must save once and immediately clear both inputs");
         Assert(credentialStore.LoadCalls == 0, "editor must never load credential material");
         probeAdapter.Block = true;
         editorVm.ProbeCommand.Execute(null);

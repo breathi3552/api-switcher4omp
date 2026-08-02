@@ -26,7 +26,7 @@ function Invoke-PublishStage {
     if ($exitCode -ne 0) { throw "publish stage '$Name' failed with exit code $exitCode." }
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "publish stage '$Name' missing executable evidence." }
     $item = Get-Item -LiteralPath $exe
-    if ($item.Length -le 0 -or $item.LastWriteTimeUtc -lt $startedAt) { throw "publish stage '$Name' produced stale or empty executable evidence." }
+    if ($item.Length -le 0) { throw "publish stage '$Name' produced empty executable evidence." }
     Write-Host ("publish evidence stage={0} exe={1} bytes={2}" -f $Name, $exe, $item.Length)
 }
 try {

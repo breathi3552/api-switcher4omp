@@ -1,10 +1,9 @@
-# Quality Debt Register and Runner Scenario Matrix
+# Verification Register and Runner Scenario Matrix
 
-> **Canonical governance entry.** 本文件是仓库唯一的质量债务登记与八 runner 场景矩阵；计划 07 已完成代码、兼容性、runner、隔离 WPF smoke 与文档治理闭环，所有状态以以下实际证据为准。
+
+> **共享实际验证证据（2026-08-02）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner；随后复跑 `.omp\prototypes\bifrost-route-prototype\run.cmd`，固定 Bifrost v1.6.5 loopback 原型完成 `24/24 PASS`，并清理临时运行目录与子进程。未执行真实 Provider、真实凭据、真实用户 root 或真实 OMP 请求级路由；原型明确复现原生 endpoint/key 两步更新的非原子窗口，不能作为生产闭环证据。`ActiveRouteState` 仅验证应用层状态清除，不应表述为真实网关数据面已完成。
 >
-> **共享实际验证证据（2026-07-26）。** `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 build（0 警告、0 错误）、format 与八 runner passed；静态搜索四个旧 refresh API 零引用。Application runner 覆盖 settings 公共数组不可变、`with` 更新不污染旧实例及调用方数组后续突变；Infrastructure runner 覆盖旧 `settings`/`ompWorkingDirectories` 数组读取、字段/顺序/形状往返、未知字段既有 ignore-on-save、迁移、损坏输入与原子写入；Refresh runner 证明 refresh 无持久化职责。独立 WPF smoke 使用临时 data/OMP/working root 和空合成 sites，窗口标题出现，WM_CLOSE 后 exit 0，隔离日志 1 份、无残留，临时目录删除。文档字段检查 14 条、9 字段完整、27 链接全部存在；重复链接是多个条目对同一 canonical 事实入口的合法引用。未访问真实 Provider、凭据、用户 root 或 OMP，未执行 publish。
->
-> 证据使用合成数据、fake/loopback 和临时隔离 root；不记录真实用户路径、凭据、token、Cookie、完整响应或生产配置。
+> 证据使用合成数据、fake/loopback 和临时 data/OMP/work root；不记录真实用户路径、凭据、token、Cookie、完整响应或生产配置。
 
 ## Quality debt register
 
@@ -14,10 +13,10 @@
 - **owner:** `Application maintainers`
 - **status:** `closed`
 - **priority:** `P0`
-- **evidence:** 计划 07 的目标与迁移约束见 [`07-Application模型与文档治理收敛.md`](../plans/07-Application模型与文档治理收敛.md)；实现入口见 [`LocalAppSettings.cs`](../../ProviderPriceSwitcher.Application/LocalAppSettings.cs)。
+- **evidence:** `LocalAppSettings.cs` 的当前实现与 Application runner 的可观察验证证据。
 - **DoD:** 已由共享实际验证证据闭环：Application runner 与隔离 UI 场景证明公共集合不可原地修改、`with` 更新不污染旧实例，并完成兼容 JSON 往返。
 - **scope:** Application settings model、settings 用例、App 站点/设置展示和受影响 runner。
-- **dependencies:** 计划 07 代码迁移；`ISettingsRepository` JSON 边界适配；Application/App runner。
+- **dependencies:** `ISettingsRepository` JSON 边界适配；Application/App runner。
 - **last_verified:** `2026-07-26`（已验证）
 
 ### QD-07-002 — PricingRefreshService 持久化职责耦合
@@ -26,10 +25,10 @@
 - **owner:** `Application maintainers`
 - **status:** `closed`
 - **priority:** `P0`
-- **evidence:** 计划 07 的刷新职责收敛要求见 [`07-Application模型与文档治理收敛.md`](../plans/07-Application模型与文档治理收敛.md)；实现入口见 [`PricingRefreshService.cs`](../../ProviderPriceSwitcher.Application/PricingRefreshService.cs)。
+- **evidence:** `PricingRefreshService.cs` 的当前实现与 Refresh/App runner 的可观察验证证据。
 - **DoD:** 已由共享实际验证证据闭环：Refresh runner 与 App runner 证明刷新服务不持有或转发快照 repository，旧成员零引用；快照读取/保存由既有 Application 端口或用例承接，成功、失败、超时和取消均无未声明持久化副作用。
 - **scope:** Application refresh orchestration、pricing-check/site-management callers、composition root and runners。
-- **dependencies:** 计划 03 composition root；`IPricingSnapshotRepository` caller migration；Refresh/App runner。
+- **dependencies:** `IPricingSnapshotRepository` caller migration；Refresh/App runner。
 - **last_verified:** `2026-07-26`（已验证）
 
 ### QD-07-003 — Composition root 与 UI 外部实现边界
@@ -38,10 +37,10 @@
 - **owner:** `App maintainers`
 - **status:** `closed`
 - **priority:** `P1`
-- **evidence:** 装配边界规范见 [`architecture.md`](../rules/architecture.md)；计划 07 要求见 [`07-Application模型与文档治理收敛.md`](../plans/07-Application模型与文档治理收敛.md)。
+- **evidence:** 装配边界规范见 [`architecture.md`](../rules/architecture.md)；当前源码、App runner 与隔离 WPF smoke 的可观察验证证据。
 - **DoD:** 已由共享实际验证证据闭环：App runner 与隔离 WPF smoke 证明 repository/端口由唯一 composition root 注入，窗口只读展示且不直接 new Infrastructure，受影响调用方已迁移。
 - **scope:** `App.xaml.cs`、MainWindow view models/dialogs、Application ports and App runner.
-- **dependencies:** 计划 03 验收；QD-07-001；QD-07-002。
+- **dependencies:** QD-07-001；QD-07-002。
 - **last_verified:** `2026-07-26`（已验证）
 
 ### QD-07-004 — 凭据隔离与错误脱敏的持续回归风险
@@ -53,7 +52,7 @@
 - **evidence:** 安全规范见 [`coding.md`](../rules/coding.md)；既有凭据与 UI 事实入口见 [`Project-Overview.md`](Project-Overview.md)。
 - **DoD:** 已由共享实际验证证据闭环：Infrastructure runner 与 App 隔离 smoke 使用 synthetic secret 验证 token/Cookie 不进入 settings、snapshot、日志、异常、备份或 UI 回填；真实凭据场景明确未执行。
 - **scope:** Windows credential boundary, persistence/logging/error mapping, SiteEditor presentation.
-- **dependencies:** 计划 01/02/05 的既有安全事实；QD-07-003；隔离 data root。
+- **dependencies:** QD-07-003；隔离 data root。
 - **last_verified:** `2026-07-26`（已验证）
 
 ### QD-07-005 — Settings/snapshot 旧 JSON 兼容往返证据
@@ -62,10 +61,10 @@
 - **owner:** `Infrastructure maintainers`
 - **status:** `closed`
 - **priority:** `P0`
-- **evidence:** 持久化入口见 [`JsonPersistence.cs`](../../ProviderPriceSwitcher.Infrastructure/JsonPersistence.cs)；兼容约束见 [`07-Application模型与文档治理收敛.md`](../plans/07-Application模型与文档治理收敛.md)。
+- **evidence:** 持久化入口见 [`JsonPersistence.cs`](../../ProviderPriceSwitcher.Infrastructure/JsonPersistence.cs)；Infrastructure runner 的兼容性验证证据。
 - **DoD:** 已由共享实际验证证据闭环：Infrastructure runner 在临时目录读取旧 settings/snapshot JSON，完成只读模型更新及写回，并断言字段名、数组形状、顺序、默认值、未知字段策略和无部分写入。
 - **scope:** JSON persistence adapters and settings/snapshot schema boundary; no schema version change.
-- **dependencies:** QD-07-001; existing migration/default behavior; Infrastructure runner.
+- **dependencies:** QD-07-001；existing migration/default behavior；Infrastructure runner。
 - **last_verified:** `2026-07-26`（已验证）
 
 ### QD-07-006 — 治理事实入口与验证闭环
@@ -74,7 +73,7 @@
 - **owner:** `Repository maintainers`
 - **status:** `closed`
 - **priority:** `P1`
-- **evidence:** 本文件为唯一登记入口；验证分级规范见 [`build-release.md`](../rules/build-release.md)；计划 07 文档验收见 [`07-Application模型与文档治理收敛.md`](../plans/07-Application模型与文档治理收敛.md)。
+- **evidence:** 本文件为唯一登记入口；验证分级规范见 [`build-release.md`](../rules/build-release.md)；文档字段、链接与验证证据已回填。
 - **DoD:** 已由共享实际验证证据闭环：文档字段/链接检查与逐条审阅确认固定字段完整、相对链接可解析，且源码、八 runner、JSON 与隔离 smoke 证据已回填。
 - **scope:** canonical register, Project Overview route separation, minimal rulebook links.
 - **dependencies:** QD-07-001..005；代码执行者与主代理的最终验证证据。
@@ -182,8 +181,6 @@
 
 ## Status update protocol
 
-- 计划 07 的六项债务与八个 runner 均已依据共享实际验证证据关闭；后续状态变更必须以新的可观察源码、runner、兼容性或隔离场景证据为准。
-- 未执行的外部边界仅包括真实 Provider、真实凭据、真实用户 data/OMP root 与正式 publish；这些不属于本次仓库闭环，也未被伪称为已验证。
-- 本文件不得新增第二份债务登记或 runner 矩阵；规则文件只引用本文件。
-
-> **底部证据索引（2026-07-26）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。
+ - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；本轮新增固定 Bifrost v1.6.5 loopback 原型 `24/24 PASS` 证据，但真实 OMP 请求级路由仍未验证。
+ - 未执行的外部边界包括真实 Provider、真实凭据、真实用户 data/OMP root 与真实 OMP 请求级路由；生产 sidecar、Named Pipe、固定 fork 二进制分发及原子 route/key 控制协议尚未接入，发布成功不等于真实数据面已验证。
+> **底部证据索引（2026-08-02）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。

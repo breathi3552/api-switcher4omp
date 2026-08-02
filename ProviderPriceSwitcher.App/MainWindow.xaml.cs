@@ -265,7 +265,7 @@ public sealed class MainViewModel : ObservableObject
     private void HandleCommandError(Exception exception)
     {
         if (exception is OperationCanceledException) return;
-        LogUiFailure(_logger, "CommandUnexpected", null);
+        LogUiFailure(_logger, "CommandUnexpected", exception);
         _notifications.ShowError(StatusText, "操作失败");
     }
 

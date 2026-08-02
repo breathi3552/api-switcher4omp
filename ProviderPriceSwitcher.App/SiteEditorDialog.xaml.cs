@@ -25,7 +25,7 @@ public sealed partial class SiteEditorDialog : Window
     private void SaveCredentialClick(object sender, RoutedEventArgs e)
     {
         var token = TokenBox.Password;
-        var cookie = CookieBox.Text;
+        var cookie = CookieBox.Password;
         try { _viewModel.SaveCredential(token, cookie); }
         finally { TokenBox.Clear(); CookieBox.Clear(); }
     }
@@ -38,6 +38,7 @@ public sealed partial class SiteEditorDialog : Window
         try { _viewModel.SaveInferenceKey(InferenceKeyBox.Password); }
         finally { InferenceKeyBox.Clear(); }
     }
+    private void InferenceKeyBoxChanged(object sender, RoutedEventArgs e) => InferenceKeyPlaceholder.Visibility = InferenceKeyBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     private void DeleteInferenceKeyClick(object sender, RoutedEventArgs e) => _viewModel.DeleteInferenceKey();
 }
 public sealed class SiteEditorDialogFactory(Func<SiteConfiguration?, LocalAppSettings, SiteEditorViewModel> create) : ISiteEditorDialogFactory

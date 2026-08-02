@@ -23,7 +23,7 @@ public partial class App : System.Windows.Application
         DispatcherUnhandledException += (_, args) =>
         {
             var logger = _loggerFactory?.CreateLogger<App>();
-            if (logger is not null) LogApplicationFailure(logger, "Unhandled", null);
+            if (logger is not null) LogApplicationFailure(logger, "Unhandled", args.Exception);
             _notifications.ShowError(UserErrorMessages.Unhandled, "ProviderPriceSwitcher");
             args.Handled = true;
         };

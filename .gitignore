@@ -11,6 +11,3 @@ artifacts/
 .omp/lsp.json
 .omp/prototypes/
 skills-lock.json
-.omp/context/Bifrost-Route-Investigation.md
-.omp/context/Gateway-Launcher-UX-Decisions.md
-.omp/context/Runtime-Status-Page.md
