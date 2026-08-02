@@ -185,6 +185,85 @@ try
         Assert(json.RootElement.GetProperty("exception").GetString() == typeof(InvalidOperationException).FullName, "log must retain only the exception type");
         Assert(!json.RootElement.TryGetProperty("Unknown", out _), "unknown state retained");
     }
+    var sidecarPath = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "ProviderPriceSwitcher.App", "Assets", "Bifrost", "bifrost-sidecar.exe"));
+    const string sidecarHash = "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491";
+    var upstream = new System.Net.HttpListener();
+    var upstreamPort = Random.Shared.Next(20000, 30000);
+    var secondUpstreamPort = upstreamPort + 10000;
+    var secondUpstream = new System.Net.HttpListener();
+    upstream.Prefixes.Add($"http://127.0.0.1:{upstreamPort}/");
+    secondUpstream.Prefixes.Add($"http://127.0.0.1:{secondUpstreamPort}/");
+    upstream.Start();
+    secondUpstream.Start();
+    using var upstreamCancellation = new CancellationTokenSource();
+    var ompRequestCount = 0;
+    async Task ServeResponsesAsync(System.Net.HttpListener listener, string expectedKey, string responseId, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            System.Net.HttpListenerContext context;
+            try { context = await listener.GetContextAsync(); }
+            catch when (cancellationToken.IsCancellationRequested) { return; }
+            Assert(context.Request.Url?.AbsolutePath == "/v1/responses", "sidecar used unexpected upstream path");
+            Assert(context.Request.Headers["Authorization"] == $"Bearer {expectedKey}", "sidecar key/endpoint isolation failed");
+            using var reader = new StreamReader(context.Request.InputStream);
+            var requestBody = await reader.ReadToEndAsync(cancellationToken);
+            Assert(requestBody.Contains("gpt-5.6-sol", StringComparison.Ordinal), "sidecar did not preserve ModelId");
+            if (requestBody.Contains("matrix", StringComparison.Ordinal)) Assert(requestBody.Contains("function_call_output", StringComparison.Ordinal), "sidecar did not preserve tool result input");
+            if (!requestBody.Contains("matrix", StringComparison.Ordinal)) Interlocked.Increment(ref ompRequestCount);
+            var streaming = requestBody.Contains("\"stream\":true", StringComparison.Ordinal);
+            var response = streaming
+                ? $"event: response.reasoning_summary_text.delta\ndata: {{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"reasoning\"}}\n\nevent: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{{}}\"}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{responseId}\"}}}}\n\n"
+                : $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"reason_1\",\"type\":\"reasoning\",\"summary\":[]}},{{\"id\":\"call_1\",\"type\":\"function_call\",\"status\":\"completed\",\"name\":\"lookup\",\"call_id\":\"call_1\",\"arguments\":\"{{}}\"}},{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}";
+            context.Response.StatusCode = 200;
+            context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
+            var bytes = System.Text.Encoding.UTF8.GetBytes(response);
+            await context.Response.OutputStream.WriteAsync(bytes, cancellationToken);
+            context.Response.Close();
+        }
+    }
+    var upstreamTask = ServeResponsesAsync(upstream, "synthetic-sidecar-secret", "resp_A", upstreamCancellation.Token);
+    var secondUpstreamTask = ServeResponsesAsync(secondUpstream, "synthetic-sidecar-secret-B", "resp_B", upstreamCancellation.Token);
+    await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N")), new SyntheticResolver()))
+    {
+        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        var ompAgentRoot = Path.Combine(root, "omp-agent");
+        Directory.CreateDirectory(ompAgentRoot);
+        await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:8080/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
+        await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "config.yml"), "modelRoles:\n  default: provider-price-switcher/gpt-5.6-sol\n");
+        var ompInfo = new System.Diagnostics.ProcessStartInfo("D:\\.Pi Projects\\omp.exe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = root };
+        ompInfo.ArgumentList.Add("--model"); ompInfo.ArgumentList.Add("provider-price-switcher/gpt-5.6-sol"); ompInfo.ArgumentList.Add("--no-tools"); ompInfo.ArgumentList.Add("--no-session"); ompInfo.ArgumentList.Add("-p"); ompInfo.ArgumentList.Add("Return loopback-ok.");
+        ompInfo.Environment["PI_CODING_AGENT_DIR"] = ompAgentRoot;
+        ompInfo.Environment["PPS_SIDECAR_PLACEHOLDER"] = "not-a-secret";
+        using var ompProcess = System.Diagnostics.Process.Start(ompInfo) ?? throw new InvalidOperationException("OMP loopback process did not start");
+        var ompOutput = await ompProcess.StandardOutput.ReadToEndAsync();
+        var ompError = await ompProcess.StandardError.ReadToEndAsync();
+        await ompProcess.WaitForExitAsync();
+        Assert(ompProcess.ExitCode == 0 && ompRequestCount > 0, $"real OMP sidecar request failed: exit={ompProcess.ExitCode}, requests={ompRequestCount}, stdout={ompOutput}, stderr={ompError}");
+        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        using var nonStream = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup\"}]}", System.Text.Encoding.UTF8, "application/json"));
+        var nonStreamBody = await nonStream.Content.ReadAsStringAsync();
+        Assert(nonStream.IsSuccessStatusCode && nonStreamBody.Contains("function_call", StringComparison.Ordinal) && nonStreamBody.Contains("reasoning", StringComparison.Ordinal), "sidecar non-stream/tools/reasoning matrix failed");
+        using var stream = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"stream\":true}", System.Text.Encoding.UTF8, "application/json"));
+        var streamBody = await stream.Content.ReadAsStringAsync();
+        Assert(stream.IsSuccessStatusCode && stream.Content.Headers.ContentType?.MediaType == "text/event-stream" && streamBody.Contains("response.completed", StringComparison.Ordinal) && streamBody.Contains("response.function_call_arguments.delta", StringComparison.Ordinal), "sidecar SSE matrix failed");
+        await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
+        using var switched = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
+        Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
+        await supervisor.ClearAsync();
+        using var noRoute = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert(noRoute.StatusCode == System.Net.HttpStatusCode.BadRequest && (await noRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal), "sidecar no-route contract failed");
+    }
+    upstreamCancellation.Cancel(); upstream.Stop(); secondUpstream.Stop(); await Task.WhenAll(upstreamTask, secondUpstreamTask);
+    var sidecarExitDeadline = DateTime.UtcNow.AddSeconds(5);
+    while (System.Diagnostics.Process.GetProcessesByName("bifrost-sidecar").Length != 0 && DateTime.UtcNow < sidecarExitDeadline)
+        await Task.Delay(50);
+    Assert(System.Diagnostics.Process.GetProcessesByName("bifrost-sidecar").Length == 0, "sidecar process remained after matrix");
     Console.WriteLine("Infrastructure persistence contract tests passed.");
 }
 finally { Directory.Delete(root, true); }
+
+sealed class SyntheticResolver : IInferenceApiKeyResolver
+{
+    public ValueTask<string?> ResolveAsync(string keyHandle, CancellationToken cancellationToken = default) => ValueTask.FromResult<string?>(keyHandle switch { "synthetic-handle" => "synthetic-sidecar-secret", "synthetic-handle-B" => "synthetic-sidecar-secret-B", _ => null });
+}

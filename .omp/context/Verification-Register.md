@@ -1,9 +1,9 @@
 # Verification Register and Runner Scenario Matrix
 
 
-> **共享实际验证证据（2026-08-02）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner；随后复跑 `.omp\prototypes\bifrost-route-prototype\run.cmd`，固定 Bifrost v1.6.5 loopback 原型完成 `24/24 PASS`，并清理临时运行目录与子进程。未执行真实 Provider、真实凭据、真实用户 root 或真实 OMP 请求级路由；原型明确复现原生 endpoint/key 两步更新的非原子窗口，不能作为生产闭环证据。`ActiveRouteState` 仅验证应用层状态清除，不应表述为真实网关数据面已完成。
+> **共享实际验证证据（2026-08-02）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner。Infrastructure runner 使用临时 OMP/data root、两个 loopback upstream 和合成 key，启动真实 `omp.exe -p`，证明请求经固定 sidecar `/v1/responses`，并覆盖非流式、流式 SSE 结束、tools/tool results、reasoning、GPT ModelId、endpoint/key 隔离、路由切换、清除路由及进程清理。固定 fork `ppscontrol` Go tests 通过；framework-dependent/self-contained publish self-check 通过且 sidecar SHA-256 均为 `38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491`。
 >
-> 证据使用合成数据、fake/loopback 和临时 data/OMP/work root；不记录真实用户路径、凭据、token、Cookie、完整响应或生产配置。
+> 证据使用合成数据、loopback 和临时 data/OMP/work root；未访问真实 Provider、真实凭据或真实用户配置。
 
 ## Quality debt register
 

@@ -3,6 +3,10 @@ using Microsoft.Extensions.Logging;
 
 namespace ProviderPriceSwitcher.Application;
 
+public static class OmpSidecarProvider
+{
+    public const string Id = "provider-price-switcher";
+}
 public sealed record OmpConfigurationOperationResult(bool Succeeded);
 public sealed record OmpLaunchResult(bool Succeeded, bool ExistingProcess);
 
@@ -32,7 +36,8 @@ public sealed class SwitchAndStartUseCase(
     IOmpProcessLauncher processLauncher,
     ILogger<SwitchAndStartUseCase> logger,
     IRouteController? routeController = null,
-    IInferenceApiKeyStore? inferenceApiKeyStore = null)
+    IInferenceApiKeyStore? inferenceApiKeyStore = null,
+    IActiveRouteController? activeRoute = null)
 {
     private static readonly Action<ILogger, string, Exception?> LogLaunchFailure =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed after configuration switch: {FailureKind}");
@@ -43,7 +48,7 @@ public sealed class SwitchAndStartUseCase(
         string workingDirectory,
         CancellationToken cancellationToken = default)
     {
-        var configuration = await configurationService.SwitchAsync(settings.OmpRootDirectory, providerId, cancellationToken).ConfigureAwait(false);
+        var configuration = await configurationService.SwitchAsync(settings.OmpRootDirectory, OmpSidecarProvider.Id, cancellationToken).ConfigureAwait(false);
         if (!configuration.Succeeded)
             return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
 
@@ -56,7 +61,9 @@ public sealed class SwitchAndStartUseCase(
             var key = site is null ? null : inferenceApiKeyStore.Load(providerId);
             if (site is null || key is null)
                 return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
-            await routeController.ApplyAsync(new ProviderPriceSwitcher.Core.RouteSnapshot(providerId, site.BaseUrl.ToString(), key.KeyHandle), cancellationToken).ConfigureAwait(false);
+            var snapshot = new ProviderPriceSwitcher.Core.RouteSnapshot(providerId, site.BaseUrl.ToString(), key.KeyHandle);
+            await routeController.ApplyAsync(snapshot, cancellationToken).ConfigureAwait(false);
+            activeRoute?.Apply(snapshot);
         }
 
         var launch = processLauncher.Launch(workingDirectory);

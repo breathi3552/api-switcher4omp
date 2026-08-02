@@ -7,12 +7,17 @@ public sealed class SiteManagementUseCase(
     IPricingSnapshotRepository snapshotRepository,
     ISiteAccessCredentialStore? siteCredentialStore = null,
     IInferenceApiKeyStore? inferenceApiKeyStore = null,
-    IActiveRouteController? activeRoute = null)
+    IActiveRouteController? activeRoute = null,
+    IRouteController? routeController = null,
+    InferenceApiKeyResolverBridge? keyResolver = null)
 {
-    public LocalAppSettings SaveSite(LocalAppSettings settings, SiteConfiguration site, string? originalProviderId)
+    public async Task<LocalAppSettings> SaveSiteAsync(LocalAppSettings settings, SiteConfiguration site, string? originalProviderId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(site);
+        ArgumentException.ThrowIfNullOrWhiteSpace(site.ProviderId);
+        if (settings.Sites.Any(existing => !string.Equals(existing.ProviderId, originalProviderId, StringComparison.Ordinal) && string.Equals(existing.ProviderId, site.ProviderId, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"供应商 '{site.ProviderId}' 已存在。");
         var sites = settings.Sites.ToList();
         if (originalProviderId is null)
         {
@@ -25,9 +30,12 @@ public sealed class SiteManagementUseCase(
             sites[index] = site;
             if (!string.Equals(originalProviderId, site.ProviderId, StringComparison.Ordinal))
             {
+                if (activeRoute?.CurrentProviderId is { } active && string.Equals(active, originalProviderId, StringComparison.Ordinal) && routeController is not null)
+                    await routeController.ClearAsync(cancellationToken).ConfigureAwait(false);
                 snapshotRepository.Delete(originalProviderId);
                 siteCredentialStore?.ClearCredential(originalProviderId);
                 inferenceApiKeyStore?.Clear(originalProviderId);
+                keyResolver?.Remove(originalProviderId);
                 activeRoute?.ClearIfProvider(originalProviderId);
             }
         }
@@ -51,15 +59,18 @@ public sealed class SiteManagementUseCase(
         return updated;
     }
 
-    public LocalAppSettings DeleteSite(LocalAppSettings settings, string providerId)
+    public async Task<LocalAppSettings> DeleteSiteAsync(LocalAppSettings settings, string providerId, CancellationToken cancellationToken = default)
     {
         var sites = settings.Sites.Where(x => !string.Equals(x.ProviderId, providerId, StringComparison.Ordinal)).ToList();
         if (sites.Count == settings.Sites.Count) throw new InvalidOperationException($"站点 '{providerId}' 不存在。");
+        if (activeRoute?.CurrentProviderId is { } active && string.Equals(active, providerId, StringComparison.Ordinal) && routeController is not null)
+            await routeController.ClearAsync(cancellationToken).ConfigureAwait(false);
         var updated = settings with { Sites = sites.ToArray() };
         settingsRepository.Save(updated);
         snapshotRepository.Delete(providerId);
         siteCredentialStore?.ClearCredential(providerId);
         inferenceApiKeyStore?.Clear(providerId);
+        keyResolver?.Remove(providerId);
         activeRoute?.ClearIfProvider(providerId);
         return updated;
     }
@@ -85,21 +96,51 @@ public interface IInferenceApiKeyUseCase
 {
     InferenceApiKeySummary? GetSummary(string providerId);
     InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup);
-    void Delete(string providerId);
+    Task DeleteAsync(string providerId, CancellationToken cancellationToken = default);
 }
 
-public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null, IActiveRouteController? activeRoute = null) : IInferenceApiKeyUseCase
+public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null, IActiveRouteController? activeRoute = null, IRouteController? routeController = null, InferenceApiKeyResolverBridge? keyResolver = null) : IInferenceApiKeyUseCase
 {
     public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId); ArgumentException.ThrowIfNullOrWhiteSpace(apiKey); ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
         var normalizedProviderId = providerId.Trim();
-        if (settingsRepository is not null && !settingsRepository.Load().Sites.Any(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal))) throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
+        var normalizedGroup = boundGroup.Trim();
+        LocalAppSettings? originalSettings = null;
+        if (settingsRepository is not null)
+        {
+            originalSettings = settingsRepository.Load();
+            var siteIndex = originalSettings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal));
+            if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
+            if (!string.Equals(originalSettings.Sites[siteIndex].CurrentGroup, normalizedGroup, StringComparison.Ordinal))
+            {
+                var sites = originalSettings.Sites.ToArray();
+                sites[siteIndex] = sites[siteIndex] with { CurrentGroup = normalizedGroup };
+                settingsRepository.Save(originalSettings with { Sites = sites });
+            }
+        }
         var existing = keyStore.Load(normalizedProviderId);
-        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"), ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim() };
-        keyStore.Save(record);
+        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"), ApiKey = apiKey.Trim(), BoundGroup = normalizedGroup };
+        try
+        {
+            keyStore.Save(record);
+            keyResolver?.Register(record);
+        }
+        catch
+        {
+            if (originalSettings is not null) settingsRepository!.Save(originalSettings);
+            throw;
+        }
         return keyStore.GetSummary(normalizedProviderId) ?? throw new InvalidOperationException("inference_key_save_failed");
     }
-    public void Delete(string providerId) { keyStore.Clear(providerId); activeRoute?.ClearIfProvider(providerId); }
+    public async Task DeleteAsync(string providerId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        if (activeRoute?.CurrentProviderId is { } active && string.Equals(active, providerId, StringComparison.Ordinal) && routeController is not null)
+            await routeController.ClearAsync(cancellationToken).ConfigureAwait(false);
+        keyStore.Clear(providerId);
+        keyResolver?.Remove(providerId);
+        activeRoute?.ClearIfProvider(providerId);
+    }
 }

@@ -46,20 +46,20 @@ using (var cts = new CancellationTokenSource())
 
 settingsRepo.SaveCount = 0;
 var siteUseCase = new SiteManagementUseCase(settingsRepo, snapshots);
-var managed = siteUseCase.SaveSite(new LocalAppSettings(), Site(1), null);
+var managed = await siteUseCase.SaveSiteAsync(new LocalAppSettings(), Site(1), null);
 Assert(managed.Sites.Count == 1 && settingsRepo.SaveCount == 1, "add site saves once");
 snapshots.Save(Pricing(1).Snapshot);
-managed = siteUseCase.SaveSite(managed, Site(2), "p");
+managed = await siteUseCase.SaveSiteAsync(managed, Site(2), "p");
 Assert(snapshots.Load("p")?.CurrentGroupRatio == 2 && settingsRepo.SaveCount == 2, "manual ratio updates matching snapshot");
 var renamed = Site(2) with { ProviderId = "renamed", ConfigurationKey = "renamed-key" };
-managed = siteUseCase.SaveSite(managed, renamed, "p");
+managed = await siteUseCase.SaveSiteAsync(managed, renamed, "p");
 Assert(snapshots.Load("p") is null && managed.Sites.Single().ProviderId == "renamed", "rename deletes old snapshot");
 managed = siteUseCase.SetEnabled(managed, "renamed", false);
 Assert(!managed.Sites.Single().Enabled, "set enabled updates target");
 snapshots.Save(Pricing(1).Snapshot with { ProviderId = "renamed", ConfigurationKey = "renamed-key" });
-managed = siteUseCase.DeleteSite(managed, "renamed");
+managed = await siteUseCase.DeleteSiteAsync(managed, "renamed");
 Assert(managed.Sites.Count == 0 && snapshots.Load("renamed") is null, "delete removes site and snapshot");
-try { siteUseCase.DeleteSite(managed, "missing"); throw new InvalidOperationException("missing site accepted"); } catch (InvalidOperationException) { }
+try { await siteUseCase.DeleteSiteAsync(managed, "missing"); throw new InvalidOperationException("missing site accepted"); } catch (InvalidOperationException) { }
 
 settingsRepo.SaveCount = 0;
 var normalized = new SettingsUseCase(settingsRepo).Save(new LocalAppSettings { OmpWorkingDirectories = ["C:\\Work", "c:\\work", "D:\\Other"], LastOmpWorkingDirectory = "missing" });
@@ -90,19 +90,29 @@ var keyStore = new MemoryInferenceKeyStore();
 var keySettings = new MemorySettings();
 keySettings.Save(new LocalAppSettings { Sites = [Site(1)] });
 var keyUseCase = new InferenceApiKeyUseCase(keyStore, keySettings);
-var keySummary = keyUseCase.Save("p", "synthetic-inference-key", "g");
-Assert(keySummary.MaskedKey == "synt…-key" && keySummary.BoundGroup == "g" && keyStore.Record?.ApiKey == "synthetic-inference-key", "inference key must be stored and masked");
-var activeRoute = new FakeActiveRoute();
-var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, activeRoute);
-management.DeleteSite(keySettings.Value, "p");
+var keySummary = keyUseCase.Save("p", "synthetic-inference-key", "updated-group");
+Assert(keySummary.MaskedKey == "synt…-key" && keySummary.BoundGroup == "updated-group" && keyStore.Record?.ApiKey == "synthetic-inference-key" && keySettings.Value.Sites.Single().CurrentGroup == "updated-group", "inference key and bound group must be stored together");
+var resolver = new InferenceApiKeyResolverBridge(keyStore, keySettings);
+var routedKeyUseCase = new InferenceApiKeyUseCase(keyStore, keySettings, null, null, resolver);
+var routedSummary = routedKeyUseCase.Save("p", "replacement-inference-key", "updated-group");
+Assert(await resolver.ResolveAsync(routedSummary.KeyHandle) == "replacement-inference-key", "saved key must be immediately resolvable by its handle");
+var routeController = new FakeRouteController();
+var launchRouteState = new ActiveRouteState();
+launcher.Result = new OmpLaunchResult(true, true);
+var routedSwitch = new SwitchAndStartUseCase(keySettings, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance, routeController, keyStore, launchRouteState);
+var routedStart = await routedSwitch.ExecuteAsync(keySettings.Value with { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] }, "p", "C:\\Two");
+Assert(routedStart.Status == SwitchAndStartStatus.StartedWithExistingProcess && routeController.Applied?.ProviderId == "p" && launchRouteState.CurrentProviderId == "p", "route must apply without restarting an existing OMP process");
+var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, launchRouteState, routeController, resolver);
+await management.DeleteSiteAsync(keySettings.Value, "p");
+Assert(keyStore.Record is null && launchRouteState.CurrentProviderId is null && routeController.ClearCount == 1 && await resolver.ResolveAsync(routedSummary.KeyHandle) is null, "deleting supplier must clear key, resolver and active sidecar route");
 
 var routeState = new ActiveRouteState();
 routeState.Apply(new RouteSnapshot("p", "https://example.test", "handle"));
 routeState.ClearIfProvider("other");
 Assert(routeState.Current is not null, "unrelated route clear must preserve active snapshot");
 routeState.ClearIfProvider("p");
+Assert(routeState.CurrentProviderId is null, "cleared route provider id must be absent");
 Assert(routeState.Current is null, "matching route clear must remove active snapshot");
-Assert(keyStore.Record is null && activeRoute.ClearedProvider == "p", "deleting supplier must clear inference key and active route");
 
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
@@ -147,8 +157,18 @@ sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
     public InferenceApiKeySummary? GetSummary(string providerId) => Record is null ? null : new() { ProviderId = Record.ProviderId, KeyHandle = Record.KeyHandle, BoundGroup = Record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(Record.ApiKey), UpdatedAt = Record.UpdatedAt };
 }
 
+sealed class FakeRouteController : IRouteController
+{
+    public RouteSnapshot? Applied { get; private set; }
+    public int ClearCount { get; private set; }
+    public Task ApplyAsync(RouteSnapshot snapshot, CancellationToken cancellationToken = default) { Applied = snapshot; return Task.CompletedTask; }
+    public Task ClearAsync(CancellationToken cancellationToken = default) { ClearCount++; return Task.CompletedTask; }
+}
+
 sealed class FakeActiveRoute : IActiveRouteController
 {
+    public string? CurrentProviderId => ClearedProvider;
     public string? ClearedProvider { get; private set; }
+    public void Apply(RouteSnapshot snapshot) { }
     public void ClearIfProvider(string providerId) => ClearedProvider = providerId;
 }

@@ -1,4 +1,4 @@
-using ProviderPriceSwitcher.Core;
+﻿using ProviderPriceSwitcher.Core;
 
 namespace ProviderPriceSwitcher.Application;
 

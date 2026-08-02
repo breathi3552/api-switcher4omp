@@ -21,8 +21,8 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 2. 输入、缓存读取和输出价格标准化为每百万 Token 的 `decimal` 金额；缓存读取和未缓存输入是互斥计费桶。
 3. 自动推荐只使用本轮检查成功、配置和当前分组匹配、价格有效的站点；同价时优先保留当前 Provider。未验证的低价分组只作提示。
 4. 成功检查覆盖最后成功快照；失败保留旧快照并显示失败/旧快照状态。旧快照不能自动参与推荐。
-5. 检查只更新本地价格显示与快照，不修改 OMP 配置；只有用户明确执行切换/启动后才替换合法 Provider 引用并启动 OMP。
-6. OMP 配置修改先备份再原子替换；切换成功和进程启动是独立结果，启动失败不静默回滚已完成的切换。
+5. 检查只更新本地价格显示与快照，不修改 OMP 配置；只有用户明确执行切换/启动后才写入固定本地 sidecar Provider、应用原子路由并启动或复用 OMP。
+6. OMP 配置修改先备份再原子替换；sidecar 路由切换与进程启动是独立结果，启动失败不静默回滚已完成的配置和路由切换。
 7. 访问令牌和 Cookie 使用 Windows 当前用户保护的安全存储；不得进入普通设置、快照、日志、错误消息、备份或仓库。凭据绑定不验证真实有效性，真实认证结果由价格探测反映。
 
 - 启动时加载最后成功价格、倍率、来源和检查时间；不因启动自动联网。价格检查可取消并有逐请求超时。
@@ -30,8 +30,9 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 站点编辑器的配置页面地址为空时，首页双击供应商默认打开 `Base URL/keys`；填写路径时拼接到 `Base URL` 后。
 - New API、PawsAI、SevnX 和 AIHub 价格适配器已接入，已覆盖已知计费条件；无法可靠标准化的复杂计费拒绝猜测。
 - 支持浏览器 access token/Cookie 的绑定、更新、清除和状态展示；凭据在编辑器中独立于价格查询和模型推理字段管理，原文不进入普通设置、快照、日志或 UI 回填。
-- 支持每个供应商保存、更新、删除一个模型推理 API key，并绑定一个当前分组；界面只显示脱敏摘要，删除会清理应用层活动路由状态。
-- `ActiveRouteState`、`RouteSnapshot` 和 `keyHandle` 已存在于 Core/Application/App 装配中；固定 Bifrost v1.6.5 loopback 原型已验证 Responses、SSE、tool call/tool result、reasoning、ModelId 透传、在途路由快照、重启和凭据脱敏，但真实 OMP 请求数据面、生产 sidecar、Named Pipe 和 fork 二进制分发尚未接入生产运行链路。
+- 支持每个供应商保存、更新、删除一个模型推理 API key，并绑定一个当前分组；界面只显示脱敏摘要，删除或重命名活动供应商会同步清除应用层和 sidecar 活动路由。
+- 固定 Bifrost fork 已作为 Windows x64 sidecar 随应用发布并校验 SHA-256；当前用户私有 Named Pipe 提交不可变 `RouteSnapshot` 并按请求解析 `keyHandle`。OMP 使用固定 `provider-price-switcher` OpenAI Responses Provider，普通配置只含占位凭据。
+- 生产 loopback runner 已验证真实 OMP 请求经过 sidecar，以及 Responses 非流式/流式 SSE、tools/tool results、reasoning、ModelId 透传、endpoint/key 隔离、路由切换、无活动路由错误和无残留进程；真实供应商与真实凭据未触及。
 - 推荐和成本计算使用固定的 Codex 高缓存默认用量；站内计价单位与人民币统一换算尚未完成。
 - 已实现 OMP Provider 识别、配置切换和 Windows Terminal/PowerShell 启动；已有 OMP 进程不会被强杀。
 - 生产 composition root 负责装配凭据、查询端口、repositories、adapter registry、推理 key 用例和活动路由状态，再注入窗口及 ViewModel。

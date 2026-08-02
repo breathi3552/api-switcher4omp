@@ -16,6 +16,8 @@ Directory.CreateDirectory(workingRoot);
 var sentinels = new[] { dataRoot, ompRoot, workingRoot }.Select(path => Path.Combine(path, ".sentinel")).ToArray();
 foreach (var sentinel in sentinels) File.WriteAllText(sentinel, runId);
 File.WriteAllText(Path.Combine(dataRoot, "settings.json"), $"{{\"OmpRootDirectory\":\"{ompRoot}\",\"OmpWorkingDirectories\":[\"{workingRoot}\"],\"LastOmpWorkingDirectory\":\"{workingRoot}\"}}");
+Directory.CreateDirectory(Path.Combine(ompRoot, "agent"));
+File.WriteAllText(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  existing:\r\n    baseUrl: https://example.test/v1\r\n");
 try
 {
     var yaml = "# keep this comment\r\nmodelRoles:\r\n  DEFAULT: old-provider/alpha/variant\r\n  fast: another-provider/beta@2024\r\n  indirect: '@smol'\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: old-provider/review\r\n    helper: '@role'\r\nunrelated: old-provider/untouched\r\n";
@@ -41,6 +43,18 @@ try
     var written = await File.ReadAllTextAsync(path);
     Assert(written == preview.NewText, "atomic result differs from preview");
     Assert(written.Contains("unrelated: old-provider/untouched", StringComparison.Ordinal), "unrelated field changed");
+    var service = new OmpConfigurationService(new OmpConfigurationSwitcher(), new TestPaths(ompRoot));
+    await File.WriteAllTextAsync(path, yaml, new System.Text.UTF8Encoding(false));
+    var serviceResult = await service.SwitchAsync(ompRoot, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+    Assert(serviceResult.Succeeded, "sidecar provider configuration failed");
+    var models = await File.ReadAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"));
+    Assert(models.Contains("provider-price-switcher:", StringComparison.Ordinal) && models.Contains("baseUrl: http://127.0.0.1:8080/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && models.Contains("apiKey: PPS_SIDECAR_PLACEHOLDER", StringComparison.Ordinal) && models.Contains("id: gpt-5.6-sol", StringComparison.Ordinal), "fixed sidecar provider missing");
+    Assert(!models.Contains("sk-", StringComparison.Ordinal), "raw key leaked into OMP provider config");
+    await File.WriteAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  provider-price-switcher:\r\n    baseUrl: https://malicious.example/v1\r\n    apiKey: SHOULD_NOT_SURVIVE\r\n    api: openai-completions\r\n", new System.Text.UTF8Encoding(false));
+    serviceResult = await service.SwitchAsync(ompRoot, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+    Assert(serviceResult.Succeeded, "existing sidecar provider correction failed");
+    models = await File.ReadAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"));
+    Assert(models.Contains("baseUrl: http://127.0.0.1:8080/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && !models.Contains("malicious.example", StringComparison.Ordinal) && !models.Contains("SHOULD_NOT_SURVIVE", StringComparison.Ordinal), "existing sidecar provider was not forced to fixed local definition");
     foreach (var sentinel in sentinels) Assert(File.ReadAllText(sentinel) == runId, "isolation sentinel changed");
     Console.WriteLine("OMP configuration runner passed.");
 }
@@ -48,4 +62,12 @@ finally
 {
     Directory.Delete(root, recursive: true);
     Assert(!Directory.Exists(root), "isolated OMP root was not removed");
+}
+
+sealed class TestPaths(string root) : ProviderPriceSwitcher.Application.IAppPathDefaults
+{
+    public string OmpRootDirectory => root;
+    public string OmpConfigPath(string ompRootDirectory) => Path.Combine(ompRootDirectory, "config.yml");
+    public string OmpModelsPath(string ompRootDirectory) => Path.Combine(ompRootDirectory, "agent", "models.yml");
+    public string OmpAgentDirectory(string ompRootDirectory) => Path.Combine(ompRootDirectory, "agent");
 }

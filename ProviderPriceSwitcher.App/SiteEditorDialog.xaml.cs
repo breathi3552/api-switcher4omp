@@ -7,6 +7,7 @@ public sealed partial class SiteEditorDialog : Window
 {
     private readonly SiteEditorViewModel _viewModel;
     private bool _closePending;
+    private bool _deletingInferenceKey;
     public SiteConfiguration? Site => _viewModel.SavedSite;
     public SiteEditorDialog(SiteEditorViewModel viewModel, Window owner)
     {
@@ -39,7 +40,15 @@ public sealed partial class SiteEditorDialog : Window
         finally { InferenceKeyBox.Clear(); }
     }
     private void InferenceKeyBoxChanged(object sender, RoutedEventArgs e) => InferenceKeyPlaceholder.Visibility = InferenceKeyBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-    private void DeleteInferenceKeyClick(object sender, RoutedEventArgs e) => _viewModel.DeleteInferenceKey();
+    private async void DeleteInferenceKeyClick(object sender, RoutedEventArgs e)
+    {
+        if (_deletingInferenceKey) return;
+        _deletingInferenceKey = true;
+        if (sender is System.Windows.Controls.Button button) button.IsEnabled = false;
+        try { await _viewModel.DeleteInferenceKeyAsync(); }
+        catch { _viewModel.ReportInferenceKeyDeleteFailure(); }
+        finally { _deletingInferenceKey = false; if (sender is System.Windows.Controls.Button completed) completed.IsEnabled = true; }
+    }
 }
 public sealed class SiteEditorDialogFactory(Func<SiteConfiguration?, LocalAppSettings, SiteEditorViewModel> create) : ISiteEditorDialogFactory
 {

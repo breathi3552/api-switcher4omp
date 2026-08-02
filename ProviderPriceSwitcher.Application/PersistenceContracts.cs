@@ -6,6 +6,7 @@ public interface IAppPathDefaults
 {
     string OmpRootDirectory { get; }
     string OmpConfigPath(string ompRootDirectory);
+    string OmpModelsPath(string ompRootDirectory);
     string OmpAgentDirectory(string ompRootDirectory);
 }
 
@@ -62,6 +63,8 @@ public interface IPricingSnapshotQuery
 
 public interface IActiveRouteController
 {
+    string? CurrentProviderId { get; }
+    void Apply(RouteSnapshot snapshot);
     void ClearIfProvider(string providerId);
 }
 
@@ -71,6 +74,7 @@ public sealed class ActiveRouteState : IActiveRouteController
     private RouteSnapshot? _current;
 
     public RouteSnapshot? Current { get { lock (_gate) return _current; } }
+    public string? CurrentProviderId => Current?.ProviderId;
     public void Apply(RouteSnapshot snapshot) { ArgumentNullException.ThrowIfNull(snapshot); lock (_gate) _current = snapshot; }
     public void ClearIfProvider(string providerId) { ArgumentException.ThrowIfNullOrWhiteSpace(providerId); lock (_gate) { if (string.Equals(_current?.ProviderId, providerId, StringComparison.Ordinal)) _current = null; } }
 }

@@ -72,11 +72,12 @@ public sealed class SiteEditorViewModel : ObservableObject
         KeyActionMessage = "API key 已更新并安全保存。";
         return true;
     }
-    public bool DeleteInferenceKey()
+    public void ReportInferenceKeyDeleteFailure() => KeyActionMessage = "API key 删除失败，请重试。";
+    public async Task<bool> DeleteInferenceKeyAsync(CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(ProviderId)) return false;
         if (!_notifications.Confirm("确定删除当前供应商的模型推理 API key 吗？", "删除 API key")) return false;
-        _inferenceKeyUseCase.Delete(ProviderId);
+        await _inferenceKeyUseCase.DeleteAsync(ProviderId, cancellationToken);
         UpdateInferenceKeyStatus();
         KeyActionMessage = "API key 已删除。";
         return true;
@@ -124,5 +125,5 @@ file sealed class NullInferenceApiKeyUseCase : IInferenceApiKeyUseCase
 {
     public InferenceApiKeySummary? GetSummary(string providerId) => null;
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup) => throw new InvalidOperationException("推理 key 用例未装配。");
-    public void Delete(string providerId) { }
+    public Task DeleteAsync(string providerId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }

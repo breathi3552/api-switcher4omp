@@ -48,7 +48,8 @@ public partial class App : System.Windows.Application
                 var record = inferenceKeyStore.Load(site.ProviderId);
                 if (record is not null) resolver.Register(record);
             }
-            _sidecar = new WindowsSidecarSupervisor(new SidecarBinaryOptions(Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"), "9a5ad3bff321eb61544131114c35a27b840465b4600a27ef5187549f86770397", "pps.sidecar.v1"), resolver);
+            _sidecar = new WindowsSidecarSupervisor(new SidecarBinaryOptions(Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"), "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491", "pps-sidecar-v1"), resolver);
+            inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute, _sidecar, resolver);
             _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
@@ -60,10 +61,10 @@ public partial class App : System.Windows.Application
             var refreshService = new PricingRefreshService(adapterRegistry, _loggerFactory.CreateLogger<PricingRefreshService>());
             var currentProviderQuery = new OmpCurrentProviderQuery(new OmpConfigurationSwitcher(), new AppPathDefaults());
             var snapshotQuery = new PricingSnapshotQuery(snapshotRepository);
-            var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute);
+            var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute, _sidecar, resolver);
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
             var settingsUseCase = new SettingsUseCase(settingsRepository);
-            var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>(), _sidecar, inferenceKeyStore);
+            var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>(), _sidecar, inferenceKeyStore, activeRoute);
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
             var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, adapterRegistry, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>());

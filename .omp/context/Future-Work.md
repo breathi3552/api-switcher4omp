@@ -17,7 +17,6 @@
 - 独立运行状态详情、请求日志和用量统计。
 - 运行中 OMP 实例列表或实例级路由。
 - 自动切换、自动 fallback 和模型 fallback。
- - Issue #2 当前阻塞：需将固定 Bifrost v1.6.5 fork（含 Windows x64 二进制哈希校验）、单一私有 Named Pipe 控制协议、原子 `RouteSnapshot` 提交、按 `keyHandle` 的 Windows 安全存储解析、稳定无活动路由错误和 sidecar 生命周期监督接入生产；在此之前不得把应用层活动状态描述为真实 OMP 请求路由已完成。
 
 ## 当前非目标
 
