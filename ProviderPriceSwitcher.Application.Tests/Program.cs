@@ -89,23 +89,39 @@ Console.WriteLine("Application contract tests passed.");
 var keyStore = new MemoryInferenceKeyStore();
 var keySettings = new MemorySettings();
 keySettings.Save(new LocalAppSettings { Sites = [Site(1)] });
-var keyUseCase = new InferenceApiKeyUseCase(keyStore, keySettings);
+var bindingStore = new MemoryInferenceBindingStore(keyStore, keySettings);
+var keyUseCase = new InferenceApiKeyUseCase(keyStore, bindingStore);
 var keySummary = keyUseCase.Save("p", "synthetic-inference-key", "updated-group");
 Assert(keySummary.MaskedKey == "synt…-key" && keySummary.BoundGroup == "updated-group" && keyStore.Record?.ApiKey == "synthetic-inference-key" && keySettings.Value.Sites.Single().CurrentGroup == "updated-group", "inference key and bound group must be stored together");
 var resolver = new InferenceApiKeyResolverBridge(keyStore, keySettings);
-var routedKeyUseCase = new InferenceApiKeyUseCase(keyStore, keySettings, null, null, resolver);
+var routedKeyUseCase = new InferenceApiKeyUseCase(keyStore, bindingStore, keyResolver: resolver);
 var routedSummary = routedKeyUseCase.Save("p", "replacement-inference-key", "updated-group");
 Assert(await resolver.ResolveAsync(routedSummary.KeyHandle) == "replacement-inference-key", "saved key must be immediately resolvable by its handle");
+bindingStore.ThrowOnSave = true;
+try { routedKeyUseCase.Save("p", "must-not-commit", "failed-group"); throw new InvalidOperationException("binding failure accepted"); } catch (IOException) { }
+bindingStore.ThrowOnSave = false;
+Assert(keyStore.Record?.ApiKey == "replacement-inference-key" && keyStore.Record.BoundGroup == "updated-group" && keySettings.Value.Sites.Single().CurrentGroup == "updated-group", "binding save failure must retain the previous key and group");
 var routeController = new FakeRouteController();
 var launchRouteState = new ActiveRouteState();
 launcher.Result = new OmpLaunchResult(true, true);
 var routedSwitch = new SwitchAndStartUseCase(keySettings, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance, routeController, keyStore, launchRouteState);
 var routedStart = await routedSwitch.ExecuteAsync(keySettings.Value with { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] }, "p", "C:\\Two");
 Assert(routedStart.Status == SwitchAndStartStatus.StartedWithExistingProcess && routeController.Applied?.ProviderId == "p" && launchRouteState.CurrentProviderId == "p", "route must apply without restarting an existing OMP process");
+var disabledSettings = keySettings.Value with { Sites = [keySettings.Value.Sites.Single() with { Enabled = false }] };
+var clearCountBeforeInvalidRoute = routeController.ClearCount;
+var disabledStart = await routedSwitch.ExecuteAsync(disabledSettings, "p", "C:\\Two");
+Assert(disabledStart.Status == SwitchAndStartStatus.ConfigurationFailed && routeController.Applied?.ProviderId == "p" && routeController.ClearCount == clearCountBeforeInvalidRoute + 1 && launchRouteState.CurrentProviderId is null, "disabled active supplier must clear the sidecar route instead of leaving the old target active");
+var mismatchedGroupStore = new MemoryInferenceKeyStore();
+mismatchedGroupStore.Save(keyStore.Record! with { BoundGroup = "other-group" });
+launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", keyStore.Record!.KeyHandle));
+clearCountBeforeInvalidRoute = routeController.ClearCount;
+var mismatchedSwitch = new SwitchAndStartUseCase(keySettings, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance, routeController, mismatchedGroupStore, launchRouteState);
+var mismatchedStart = await mismatchedSwitch.ExecuteAsync(keySettings.Value, "p", "C:\\Two");
+Assert(mismatchedStart.Status == SwitchAndStartStatus.ConfigurationFailed && routeController.ClearCount == clearCountBeforeInvalidRoute + 1 && launchRouteState.CurrentProviderId is null, "key bound to another group must clear an existing active route");
+launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", keyStore.Record!.KeyHandle));
 var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, launchRouteState, routeController, resolver);
 await management.DeleteSiteAsync(keySettings.Value, "p");
-Assert(keyStore.Record is null && launchRouteState.CurrentProviderId is null && routeController.ClearCount == 1 && await resolver.ResolveAsync(routedSummary.KeyHandle) is null, "deleting supplier must clear key, resolver and active sidecar route");
-
+Assert(keyStore.Record is null && launchRouteState.CurrentProviderId is null && await resolver.ResolveAsync(routedSummary.KeyHandle) is null, "deleting supplier must clear key, resolver and active sidecar route");
 var routeState = new ActiveRouteState();
 routeState.Apply(new RouteSnapshot("p", "https://example.test", "handle"));
 routeState.ClearIfProvider("other");
@@ -122,9 +138,10 @@ sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfigura
 sealed class MemorySettings : ISettingsRepository
 {
     public int SaveCount { get; set; }
+    public bool ThrowOnSave { get; set; }
     public LocalAppSettings Value { get; private set; } = new();
     public LocalAppSettings Load() => Value;
-    public void Save(LocalAppSettings settings) { SaveCount++; Value = settings; }
+    public void Save(LocalAppSettings settings) { if (ThrowOnSave) throw new IOException("synthetic settings save failure"); SaveCount++; Value = settings; }
 }
 sealed class MemorySnapshots : IPricingSnapshotRepository
 {
@@ -148,11 +165,31 @@ sealed class FakeLauncher(OmpLaunchResult result) : IOmpProcessLauncher
     public OmpLaunchResult Launch(string workingDirectory) { Calls++; return Result; }
 }
 
+sealed class MemoryInferenceBindingStore(MemoryInferenceKeyStore keyStore, MemorySettings settings) : IInferenceBindingStore
+{
+    public bool ThrowOnSave { get; set; }
+    public void Recover() { }
+    public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
+    {
+        if (ThrowOnSave) throw new IOException("synthetic binding save failure");
+        var current = settings.Load();
+        var sites = current.Sites.ToArray();
+        var index = Array.FindIndex(sites, site => string.Equals(site.ProviderId, providerId, StringComparison.Ordinal));
+        if (index < 0) throw new InvalidOperationException("provider missing");
+        sites[index] = sites[index] with { CurrentGroup = boundGroup };
+        var existing = keyStore.Load(providerId);
+        keyStore.Save(new InferenceApiKeyRecord { ProviderId = providerId, KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"), ApiKey = apiKey, BoundGroup = boundGroup });
+        settings.Save(current with { Sites = sites });
+        return keyStore.GetSummary(providerId)!;
+    }
+}
+
 sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
 {
     public InferenceApiKeyRecord? Record { get; private set; }
+    public bool ThrowOnSave { get; set; }
     public InferenceApiKeyRecord? Load(string providerId) => Record;
-    public void Save(InferenceApiKeyRecord record) => Record = record;
+    public void Save(InferenceApiKeyRecord record) { if (ThrowOnSave) throw new IOException("synthetic key save failure"); Record = record; }
     public void Clear(string providerId) => Record = null;
     public InferenceApiKeySummary? GetSummary(string providerId) => Record is null ? null : new() { ProviderId = Record.ProviderId, KeyHandle = Record.KeyHandle, BoundGroup = Record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(Record.ApiKey), UpdatedAt = Record.UpdatedAt };
 }

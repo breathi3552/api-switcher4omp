@@ -56,6 +56,28 @@ internal static class AtomicJsonFile
             if (File.Exists(temp)) File.Delete(temp);
         }
     }
+
+    internal static void WriteBytes(string path, ReadOnlySpan<byte> bytes)
+    {
+        var directory = Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Data path has no directory.");
+        Directory.CreateDirectory(directory);
+        var temp = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+        var backup = path + ".bak";
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes);
+                stream.Flush(true);
+            }
+            if (File.Exists(path)) File.Copy(path, backup, true);
+            File.Move(temp, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
 }
 
 public sealed class JsonSettingsRepository : ISettingsRepository

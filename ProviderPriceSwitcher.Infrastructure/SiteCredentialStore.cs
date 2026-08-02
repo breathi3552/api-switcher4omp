@@ -3,6 +3,7 @@ using System.Text;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using ProviderPriceSwitcher.Core;
+using ProviderPriceSwitcher.Application;
 
 namespace ProviderPriceSwitcher.Infrastructure;
 
@@ -112,6 +113,18 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
         }
     }
 
+    internal static byte[] Protect(InferenceApiKeyRecord record)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(record with { ApiKey = record.ApiKey.Trim(), BoundGroup = record.BoundGroup.Trim(), UpdatedAt = DateTimeOffset.UtcNow }, AtomicJsonFile.Options);
+        return ProtectedData.Protect(payload, Entropy(record.ProviderId), DataProtectionScope.CurrentUser);
+    }
+
+    internal void WriteProtected(string providerId, ReadOnlySpan<byte> protectedPayload)
+    {
+        var path = FilePath(providerId);
+        AtomicJsonFile.WriteBytes(path, protectedPayload);
+    }
+
     public void Save(InferenceApiKeyRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -119,19 +132,7 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
         ArgumentException.ThrowIfNullOrWhiteSpace(record.KeyHandle);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.ApiKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.BoundGroup);
-        var path = FilePath(record.ProviderId);
-        var payload = JsonSerializer.SerializeToUtf8Bytes(record with { ApiKey = record.ApiKey.Trim(), BoundGroup = record.BoundGroup.Trim(), UpdatedAt = DateTimeOffset.UtcNow }, AtomicJsonFile.Options);
-        var protectedPayload = ProtectedData.Protect(payload, Entropy(record.ProviderId), DataProtectionScope.CurrentUser);
-        var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
-        try
-        {
-            File.WriteAllBytes(temp, protectedPayload);
-            File.Move(temp, path, true);
-        }
-        finally
-        {
-            if (File.Exists(temp)) File.Delete(temp);
-        }
+        WriteProtected(record.ProviderId, Protect(record));
     }
 
     public void Clear(string providerId)
@@ -156,4 +157,83 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
 
     private string FilePath(string providerId) => Path.Combine(AppDataPaths.GetRoot(_rootDirectory), "inference-keys", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerId))) + ".bin");
     private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
+}
+
+[SupportedOSPlatform("windows")]
+public sealed class WindowsInferenceBindingStore : IInferenceBindingStore
+{
+    private const string TransactionDirectoryName = "inference-binding-transaction";
+    private readonly JsonSettingsRepository _settingsRepository;
+    private readonly WindowsInferenceApiKeyStore _keyStore;
+    private readonly string _rootDirectory;
+
+    public WindowsInferenceBindingStore(JsonSettingsRepository settingsRepository, WindowsInferenceApiKeyStore keyStore, string? rootDirectory = null)
+    {
+        _settingsRepository = settingsRepository;
+        _keyStore = keyStore;
+        _rootDirectory = AppDataPaths.GetRoot(rootDirectory);
+    }
+
+    public void Recover()
+    {
+        var transactionDirectory = TransactionDirectory;
+        if (!Directory.Exists(transactionDirectory)) return;
+        var settingsPath = Path.Combine(transactionDirectory, "settings.json");
+        var keyPath = Path.Combine(transactionDirectory, "key.bin");
+        var providerPath = Path.Combine(transactionDirectory, "provider-id.txt");
+        if (!File.Exists(settingsPath) || !File.Exists(keyPath) || !File.Exists(providerPath))
+        {
+            Directory.Delete(transactionDirectory, true);
+            return;
+        }
+        CommitPrepared(transactionDirectory, File.ReadAllText(providerPath));
+    }
+
+    public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
+        Recover();
+        var settings = _settingsRepository.Load();
+        var siteIndex = settings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, providerId, StringComparison.Ordinal));
+        if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{providerId}' 不存在。");
+        var existing = _keyStore.Load(providerId);
+        var record = new InferenceApiKeyRecord
+        {
+            ProviderId = providerId,
+            KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"),
+            ApiKey = apiKey,
+            BoundGroup = boundGroup
+        };
+        var sites = settings.Sites.ToArray();
+        sites[siteIndex] = sites[siteIndex] with { CurrentGroup = boundGroup };
+        var updatedSettings = settings with { Sites = sites };
+        var transactionDirectory = TransactionDirectory;
+        Directory.CreateDirectory(transactionDirectory);
+        var protectedKey = WindowsInferenceApiKeyStore.Protect(record);
+        WriteDurable(Path.Combine(transactionDirectory, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(updatedSettings, AtomicJsonFile.Options));
+        WriteDurable(Path.Combine(transactionDirectory, "key.bin"), protectedKey);
+        WriteDurable(Path.Combine(transactionDirectory, "provider-id.txt"), Encoding.UTF8.GetBytes(providerId));
+        CommitPrepared(transactionDirectory, providerId);
+        return _keyStore.GetSummary(providerId) ?? throw new InvalidOperationException("inference_binding_commit_failed");
+    }
+
+    private string TransactionDirectory => Path.Combine(_rootDirectory, TransactionDirectoryName);
+
+    private void CommitPrepared(string transactionDirectory, string providerId)
+    {
+        var settingsBytes = File.ReadAllBytes(Path.Combine(transactionDirectory, "settings.json"));
+        var keyBytes = File.ReadAllBytes(Path.Combine(transactionDirectory, "key.bin"));
+        AtomicJsonFile.WriteBytes(_settingsRepository.FilePath, settingsBytes);
+        _keyStore.WriteProtected(providerId, keyBytes);
+        Directory.Delete(transactionDirectory, true);
+    }
+
+    private static void WriteDurable(string path, byte[] bytes)
+    {
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+        stream.Write(bytes);
+        stream.Flush(true);
+    }
 }

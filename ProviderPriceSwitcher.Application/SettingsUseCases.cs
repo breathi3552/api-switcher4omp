@@ -99,41 +99,28 @@ public interface IInferenceApiKeyUseCase
     Task DeleteAsync(string providerId, CancellationToken cancellationToken = default);
 }
 
-public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null, IActiveRouteController? activeRoute = null, IRouteController? routeController = null, InferenceApiKeyResolverBridge? keyResolver = null) : IInferenceApiKeyUseCase
+public sealed class InferenceApiKeyUseCase(
+    IInferenceApiKeyStore keyStore,
+    IInferenceBindingStore bindingStore,
+    IActiveRouteController? activeRoute = null,
+    IRouteController? routeController = null,
+    InferenceApiKeyResolverBridge? keyResolver = null) : IInferenceApiKeyUseCase
 {
     public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
+
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(providerId); ArgumentException.ThrowIfNullOrWhiteSpace(apiKey); ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
         var normalizedProviderId = providerId.Trim();
         var normalizedGroup = boundGroup.Trim();
-        LocalAppSettings? originalSettings = null;
-        if (settingsRepository is not null)
-        {
-            originalSettings = settingsRepository.Load();
-            var siteIndex = originalSettings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal));
-            if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
-            if (!string.Equals(originalSettings.Sites[siteIndex].CurrentGroup, normalizedGroup, StringComparison.Ordinal))
-            {
-                var sites = originalSettings.Sites.ToArray();
-                sites[siteIndex] = sites[siteIndex] with { CurrentGroup = normalizedGroup };
-                settingsRepository.Save(originalSettings with { Sites = sites });
-            }
-        }
-        var existing = keyStore.Load(normalizedProviderId);
-        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"), ApiKey = apiKey.Trim(), BoundGroup = normalizedGroup };
-        try
-        {
-            keyStore.Save(record);
-            keyResolver?.Register(record);
-        }
-        catch
-        {
-            if (originalSettings is not null) settingsRepository!.Save(originalSettings);
-            throw;
-        }
-        return keyStore.GetSummary(normalizedProviderId) ?? throw new InvalidOperationException("inference_key_save_failed");
+        var summary = bindingStore.Save(normalizedProviderId, apiKey.Trim(), normalizedGroup);
+        var registered = keyStore.Load(normalizedProviderId);
+        if (registered is not null) keyResolver?.Register(registered);
+        return summary;
     }
+
     public async Task DeleteAsync(string providerId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId);

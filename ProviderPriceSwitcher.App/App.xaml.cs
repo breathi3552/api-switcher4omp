@@ -43,12 +43,15 @@ public partial class App : System.Windows.Application
             var snapshotRepository = new JsonPricingSnapshotRepository(dataRoot);
             var credentialStore = new WindowsSiteCredentialStore(dataRoot);
             var inferenceKeyStore = new WindowsInferenceApiKeyStore(dataRoot);
+            var inferenceBindingStore = new WindowsInferenceBindingStore(settingsRepository, inferenceKeyStore, dataRoot);
+            inferenceBindingStore.Recover();
+            settings = settingsRepository.Load();
             var activeRoute = new ActiveRouteState();
-            var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute);
+            var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, inferenceBindingStore, activeRoute);
             var resolver = new InferenceApiKeyResolverBridge(inferenceKeyStore, settingsRepository);
             RegisterAvailableInferenceKeys(settings, inferenceKeyStore, resolver, _loggerFactory.CreateLogger<App>());
             _sidecar = new WindowsSidecarSupervisor(new SidecarBinaryOptions(Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"), "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491", "pps-sidecar-v1"), resolver);
-            inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute, _sidecar, resolver);
+            inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, inferenceBindingStore, activeRoute, _sidecar, resolver);
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
                 new NewApiPricingAdapter(_httpClient),

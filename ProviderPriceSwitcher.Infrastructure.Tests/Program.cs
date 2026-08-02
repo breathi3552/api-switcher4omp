@@ -2,6 +2,16 @@
 using ProviderPriceSwitcher.Core;
 using ProviderPriceSwitcher.Infrastructure;
 using ProviderPriceSwitcher.Application;
+using System.Runtime.Versioning;
+
+[assembly: SupportedOSPlatform("windows")]
+
+var currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("current user SID unavailable");
+var privatePipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)");
+var broadPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;WD)");
+var foreignSid = new System.Security.Principal.SecurityIdentifier("S-1-5-18");
+var foreignPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)(A;;FA;;;{foreignSid.Value})");
+Assert(WindowsNamedPipeSecurity.IsCurrentUserOnly(privatePipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(broadPipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignPipeDescriptor, currentUserSid), "pipe ACL contract must accept owner-only access and reject world or foreign-SID access");
 
 static void Assert(bool condition, string message)
 {
@@ -185,6 +195,21 @@ try
         Assert(json.RootElement.GetProperty("exception").GetString() == typeof(InvalidOperationException).FullName, "log must retain only the exception type");
         Assert(!json.RootElement.TryGetProperty("Unknown", out _), "unknown state retained");
     }
+    var bindingSettings = new JsonSettingsRepository(root);
+    bindingSettings.Save(new LocalAppSettings { Sites = [new SiteConfiguration { ProviderId = "binding", ConfigurationKey = "binding-key", BaseUrl = new Uri("https://binding.example"), Model = "gpt-5.6-sol", CurrentGroup = "old-group" }] });
+    var bindingKeys = new WindowsInferenceApiKeyStore(root);
+    var bindingStore = new WindowsInferenceBindingStore(bindingSettings, bindingKeys, root);
+    var bindingSummary = bindingStore.Save("binding", "synthetic-binding-secret", "new-group");
+    Assert(bindingSettings.Load().Sites.Single().CurrentGroup == "new-group" && bindingKeys.Load("binding")?.BoundGroup == "new-group" && bindingSummary.MaskedKey == "synt…cret", "inference binding transaction must commit key and group together");
+    var transactionDirectory = Path.Combine(root, "inference-binding-transaction");
+    Directory.CreateDirectory(transactionDirectory);
+    var recoveredSettings = bindingSettings.Load() with { Sites = [bindingSettings.Load().Sites.Single() with { CurrentGroup = "recovered-group" }] };
+    await File.WriteAllBytesAsync(Path.Combine(transactionDirectory, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(recoveredSettings, AtomicJsonFile.Options));
+    var recoveredRecord = bindingKeys.Load("binding")! with { ApiKey = "synthetic-recovered-secret", BoundGroup = "recovered-group" };
+    await File.WriteAllBytesAsync(Path.Combine(transactionDirectory, "key.bin"), WindowsInferenceApiKeyStore.Protect(recoveredRecord));
+    await File.WriteAllTextAsync(Path.Combine(transactionDirectory, "provider-id.txt"), "binding");
+    bindingStore.Recover();
+    Assert(bindingSettings.Load().Sites.Single().CurrentGroup == "recovered-group" && bindingKeys.Load("binding")?.ApiKey == "synthetic-recovered-secret" && !Directory.Exists(transactionDirectory), "startup recovery must finish a prepared inference binding transaction");
     var sidecarPath = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "ProviderPriceSwitcher.App", "Assets", "Bifrost", "bifrost-sidecar.exe"));
     const string sidecarHash = "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491";
     var upstream = new System.Net.HttpListener();
@@ -197,6 +222,8 @@ try
     secondUpstream.Start();
     using var upstreamCancellation = new CancellationTokenSource();
     var ompRequestCount = 0;
+    var inFlightStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseInFlight = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     async Task ServeResponsesAsync(System.Net.HttpListener listener, string expectedKey, string responseId, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -210,6 +237,11 @@ try
             var requestBody = await reader.ReadToEndAsync(cancellationToken);
             Assert(requestBody.Contains("gpt-5.6-sol", StringComparison.Ordinal), "sidecar did not preserve ModelId");
             if (requestBody.Contains("matrix", StringComparison.Ordinal)) Assert(requestBody.Contains("function_call_output", StringComparison.Ordinal), "sidecar did not preserve tool result input");
+            if (requestBody.Contains("in-flight", StringComparison.Ordinal))
+            {
+                inFlightStarted.TrySetResult();
+                await releaseInFlight.Task.WaitAsync(cancellationToken);
+            }
             if (!requestBody.Contains("matrix", StringComparison.Ordinal)) Interlocked.Increment(ref ompRequestCount);
             var streaming = requestBody.Contains("\"stream\":true", StringComparison.Ordinal);
             var response = streaming
@@ -247,12 +279,25 @@ try
         using var stream = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"stream\":true}", System.Text.Encoding.UTF8, "application/json"));
         var streamBody = await stream.Content.ReadAsStringAsync();
         Assert(stream.IsSuccessStatusCode && stream.Content.Headers.ContentType?.MediaType == "text/event-stream" && streamBody.Contains("response.completed", StringComparison.Ordinal) && streamBody.Contains("response.function_call_arguments.delta", StringComparison.Ordinal), "sidecar SSE matrix failed");
+        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        var inFlightTask = client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"in-flight\"}", System.Text.Encoding.UTF8, "application/json"));
+        await inFlightStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
+        using var postSwitch = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"new-route\"}", System.Text.Encoding.UTF8, "application/json"));
+        releaseInFlight.TrySetResult();
+        using var inFlight = await inFlightTask;
+        Assert((await inFlight.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal) && (await postSwitch.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "in-flight request must retain its original route snapshot while new requests use the replacement route");
         await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
         using var switched = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
         Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
         await supervisor.ClearAsync();
         using var noRoute = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(noRoute.StatusCode == System.Net.HttpStatusCode.BadRequest && (await noRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal), "sidecar no-route contract failed");
+        await supervisor.StopAsync();
+        Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop must publish a stable stopped state");
+        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        using var afterRestart = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-restart\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert(afterRestart.IsSuccessStatusCode && (await afterRestart.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal), "sidecar restart must require and accept an explicitly confirmed route snapshot");
     }
     upstreamCancellation.Cancel(); upstream.Stop(); secondUpstream.Stop(); await Task.WhenAll(upstreamTask, secondUpstreamTask);
     var sidecarExitDeadline = DateTime.UtcNow.AddSeconds(5);

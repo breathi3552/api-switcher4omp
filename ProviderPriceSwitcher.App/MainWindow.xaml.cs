@@ -272,7 +272,7 @@ public sealed class MainViewModel : ObservableObject
     private void LoadProviderChoices(string? preferredProvider)
     {
         ProviderChoices.Clear();
-        foreach (var providerId in _settings.Sites.Select(x => x.ProviderId).Distinct(StringComparer.Ordinal)) ProviderChoices.Add(new ProviderChoice(providerId));
+        foreach (var providerId in _settings.Sites.Where(x => x.Enabled).Select(x => x.ProviderId).Distinct(StringComparer.Ordinal)) ProviderChoices.Add(new ProviderChoice(providerId));
         SelectedProvider = ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, preferredProvider, StringComparison.Ordinal)) ?? ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, CurrentProvider, StringComparison.Ordinal));
     }
     private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = _sitesDialogFactory.Create(_settings, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }

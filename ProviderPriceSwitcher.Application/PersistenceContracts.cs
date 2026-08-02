@@ -16,6 +16,12 @@ public interface ISettingsRepository
     void Save(LocalAppSettings settings);
 }
 
+public interface IInferenceBindingStore
+{
+    void Recover();
+    InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup);
+}
+
 public interface IPricingSnapshotRepository
 {
     IReadOnlyDictionary<string, PricingSnapshot> LoadAll();

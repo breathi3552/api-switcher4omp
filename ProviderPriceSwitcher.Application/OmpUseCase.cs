@@ -59,8 +59,15 @@ public sealed class SwitchAndStartUseCase(
         {
             var site = settings.Sites.FirstOrDefault(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));
             var key = site is null ? null : inferenceApiKeyStore.Load(providerId);
-            if (site is null || key is null)
+            if (site is null || !site.Enabled || key is null || !string.Equals(key.BoundGroup, site.CurrentGroup, StringComparison.Ordinal))
+            {
+                if (activeRoute?.CurrentProviderId is { } active && string.Equals(active, providerId, StringComparison.Ordinal))
+                {
+                    await routeController.ClearAsync(cancellationToken).ConfigureAwait(false);
+                    activeRoute.ClearIfProvider(providerId);
+                }
                 return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
+            }
             var snapshot = new ProviderPriceSwitcher.Core.RouteSnapshot(providerId, site.BaseUrl.ToString(), key.KeyHandle);
             await routeController.ApplyAsync(snapshot, cancellationToken).ConfigureAwait(false);
             activeRoute?.Apply(snapshot);
