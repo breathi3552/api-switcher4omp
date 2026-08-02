@@ -32,7 +32,7 @@ public sealed class SiteEditorViewModel : ObservableObject
         ProbeCommand = new AsyncCommand(ProbeAsync, HandleError, () => CanProbe); CancelProbeCommand = new RelayCommand(() => _cancel?.Cancel(), () => IsProbing); SaveCommand = new RelayCommand(Save, () => CanSave);
     }
     public IReadOnlyList<PricingAdapterDescriptor> Descriptors { get; }
-    public string ProviderId { get => _providerId; set { if (SetProperty(ref _providerId, value)) { UpdateCredentialStatus(); RaiseCommands(); } } }
+    public string ProviderId { get => _providerId; set { if (SetProperty(ref _providerId, value)) { UpdateCredentialStatus(); UpdateInferenceKeyStatus(); RaiseCommands(); } } }
     public string DisplayName { get => _displayName; set => SetProperty(ref _displayName, value); }
     public string BaseUrl { get => _baseUrl; set { if (SetProperty(ref _baseUrl, value)) RaiseCommands(); } }
     public string ConfigurationApiAddress { get; set; } = "/keys";
@@ -66,7 +66,7 @@ public sealed class SiteEditorViewModel : ObservableObject
         return true;
     }
     public bool DeleteInferenceKey() { if (string.IsNullOrWhiteSpace(ProviderId)) return false; new InferenceApiKeyUseCase(_inferenceKeys).Delete(ProviderId); UpdateInferenceKeyStatus(); return true; }
-    public void UpdateInferenceKeyStatus() { InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeys.GetSummary(ProviderId); InferenceBoundGroup = InferenceKeySummary?.BoundGroup ?? string.Empty; OnPropertyChanged(nameof(InferenceKeySummary)); OnPropertyChanged(nameof(InferenceBoundGroup)); }
+    public void UpdateInferenceKeyStatus() { var previous = InferenceBoundGroup; InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeys.GetSummary(ProviderId); if (string.IsNullOrWhiteSpace(previous) || string.Equals(previous, InferenceKeySummary?.BoundGroup, StringComparison.Ordinal)) InferenceBoundGroup = InferenceKeySummary?.BoundGroup ?? string.Empty; OnPropertyChanged(nameof(InferenceKeySummary)); OnPropertyChanged(nameof(InferenceBoundGroup)); }
     public void UpdateCredentialStatus() { CredentialSummary = string.IsNullOrWhiteSpace(ProviderId) ? new SiteCredentialSummary { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured, StatusText = "请先填写 ProviderId。" } : _credentials.GetSummary(ProviderId.Trim()); OnPropertyChanged(nameof(CredentialSummary)); }
     public bool SaveCredential(string token, string cookie) { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cookie)) { _notifications.ShowWarning("访问令牌和 Cookie 不能为空。", "校验失败"); return false; } _credentials.SaveCredential(new SiteCredentialRecord { ProviderId = ProviderId.Trim(), SiteType = Descriptor!.SiteType, AuthorizationScheme = "Bearer", AccessToken = token.Trim(), CookieHeader = cookie.Trim() }); UpdateCredentialStatus(); return true; }
     public bool ClearCredential() { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || !_notifications.Confirm("确定清除本地凭据吗？", "清除凭据")) return false; _credentials.ClearCredential(ProviderId.Trim()); UpdateCredentialStatus(); return true; }

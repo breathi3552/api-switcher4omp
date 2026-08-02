@@ -113,9 +113,18 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
         ArgumentException.ThrowIfNullOrWhiteSpace(record.ApiKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(record.BoundGroup);
         var path = FilePath(record.ProviderId);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var payload = JsonSerializer.SerializeToUtf8Bytes(record with { ApiKey = record.ApiKey.Trim(), BoundGroup = record.BoundGroup.Trim(), UpdatedAt = DateTimeOffset.UtcNow }, AtomicJsonFile.Options);
-        File.WriteAllBytes(path, ProtectedData.Protect(payload, Entropy(record.ProviderId), DataProtectionScope.CurrentUser));
+        var protectedPayload = ProtectedData.Protect(payload, Entropy(record.ProviderId), DataProtectionScope.CurrentUser);
+        var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllBytes(temp, protectedPayload);
+            File.Move(temp, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     public void Clear(string providerId)

@@ -23,7 +23,11 @@ public sealed class SiteManagementUseCase(
             if (index < 0) throw new InvalidOperationException($"站点 '{originalProviderId}' 不存在。");
             sites[index] = site;
             if (!string.Equals(originalProviderId, site.ProviderId, StringComparison.Ordinal))
+            {
                 snapshotRepository.Delete(originalProviderId);
+                siteCredentialStore?.ClearCredential(originalProviderId);
+                inferenceApiKeyStore?.Clear(originalProviderId);
+            }
         }
 
         var updated = settings with { Sites = sites.ToArray() };
