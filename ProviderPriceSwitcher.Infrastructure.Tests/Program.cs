@@ -201,6 +201,13 @@ try
     var bindingStore = new WindowsInferenceBindingStore(bindingSettings, bindingKeys, root);
     var bindingSummary = bindingStore.Save("binding", "synthetic-binding-secret", "new-group");
     Assert(bindingSettings.Load().Sites.Single().CurrentGroup == "new-group" && bindingKeys.Load("binding")?.BoundGroup == "new-group" && bindingSummary.MaskedKey == "synt…cret", "inference binding transaction must commit key and group together");
+    var replaceCorruptSettings = new JsonSettingsRepository(root);
+    replaceCorruptSettings.Save(new LocalAppSettings { Sites = [new SiteConfiguration { ProviderId = "replace-corrupt", ConfigurationKey = "replace-corrupt-key", BaseUrl = new Uri("https://replace-corrupt.example"), Model = "gpt-5.6-sol", CurrentGroup = "old-group" }] });
+    var replaceCorruptKeys = new WindowsInferenceApiKeyStore(root);
+    replaceCorruptKeys.Save(new InferenceApiKeyRecord { ProviderId = "replace-corrupt", KeyHandle = "old-handle", ApiKey = "synthetic-old-secret", BoundGroup = "old-group" });
+    replaceCorruptKeys.WriteProtected("replace-corrupt", "not-a-protected-key"u8);
+    var replacedCorruptSummary = new WindowsInferenceBindingStore(replaceCorruptSettings, replaceCorruptKeys, root).Save("replace-corrupt", "synthetic-new-secret", "new-group");
+    Assert(replacedCorruptSummary.BoundGroup == "new-group" && replacedCorruptSummary.KeyHandle != "old-handle" && replaceCorruptKeys.Load("replace-corrupt")?.ApiKey == "synthetic-new-secret" && replaceCorruptSettings.Load().Sites.Single().CurrentGroup == "new-group", "updating a provider must replace an unreadable previous inference key and commit its group binding with a fresh handle");
     var transactionDirectory = Path.Combine(root, "inference-binding-transaction");
     Directory.CreateDirectory(transactionDirectory);
     var recoveredSettings = bindingSettings.Load() with { Sites = [bindingSettings.Load().Sites.Single() with { CurrentGroup = "recovered-group" }] };

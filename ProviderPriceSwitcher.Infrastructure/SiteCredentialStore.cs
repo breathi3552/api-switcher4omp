@@ -107,7 +107,7 @@ public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
             var bytes = ProtectedData.Unprotect(File.ReadAllBytes(path), Entropy(providerId), DataProtectionScope.CurrentUser);
             return JsonSerializer.Deserialize<InferenceApiKeyRecord>(bytes, AtomicJsonFile.Options);
         }
-        catch (Exception ex) when (ex is IOException or CryptographicException or JsonException)
+        catch (Exception ex) when (ex is CryptographicException or JsonException)
         {
             throw new JsonDataException(path, ex);
         }
@@ -198,11 +198,10 @@ public sealed class WindowsInferenceBindingStore : IInferenceBindingStore
         var settings = _settingsRepository.Load();
         var siteIndex = settings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, providerId, StringComparison.Ordinal));
         if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{providerId}' 不存在。");
-        var existing = _keyStore.Load(providerId);
         var record = new InferenceApiKeyRecord
         {
             ProviderId = providerId,
-            KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"),
+            KeyHandle = Guid.NewGuid().ToString("N"),
             ApiKey = apiKey,
             BoundGroup = boundGroup
         };
