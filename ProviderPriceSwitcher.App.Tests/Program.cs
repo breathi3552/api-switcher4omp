@@ -23,6 +23,18 @@ var publicMessages = Enum.GetValues<ProviderPriceSwitcher.Application.PricingRef
     .ToArray();
 Assert(publicMessages.All(message => !message.Contains(syntheticFailure, StringComparison.Ordinal) && !message.Contains("api_key", StringComparison.OrdinalIgnoreCase) && !message.Contains("Cookie", StringComparison.OrdinalIgnoreCase) && !message.Contains("Authorization", StringComparison.OrdinalIgnoreCase) && !message.Contains("已验证请求指纹", StringComparison.Ordinal)), "public error mapping must remain fixed and non-sensitive");
 Assert(UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Timeout) == "请求超时，请稍后重试。" && UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication) == "需要重新绑定凭据。", "pricing failure mapping mismatch");
+var startupSettings = new ProviderPriceSwitcher.Application.LocalAppSettings
+{
+    Sites =
+    [
+        new ProviderPriceSwitcher.Core.SiteConfiguration { ProviderId = "healthy", ConfigurationKey = "k", BaseUrl = new Uri("https://healthy.example"), Model = "model", CurrentGroup = "group" },
+        new ProviderPriceSwitcher.Core.SiteConfiguration { ProviderId = "corrupt", ConfigurationKey = "k", BaseUrl = new Uri("https://corrupt.example"), Model = "model", CurrentGroup = "group" }
+    ]
+};
+var startupKeyStore = new StartupKeyStore();
+var startupResolver = new ProviderPriceSwitcher.Application.InferenceApiKeyResolverBridge(startupKeyStore);
+App.RegisterAvailableInferenceKeys(startupSettings, startupKeyStore, startupResolver, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+Assert(await startupResolver.ResolveAsync("healthy-handle") == "healthy-secret", "one corrupt inference key must not prevent healthy keys or application startup");
 Assert(UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.ConfigurationFailed, "provider").StartsWith("配置未切换，OMP 未启动", StringComparison.Ordinal) && UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.LaunchFailedAfterSwitch, "provider").StartsWith("配置已切换，但 OMP 启动失败", StringComparison.Ordinal), "switch failure mapping mismatch");
 var probeAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
 var registry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
@@ -196,6 +208,15 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
         if (Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = 1, RefreshedAt = DateTimeOffset.UtcNow }, ValidGroups = new HashSet<string>([site.CurrentGroup]), MinimumValidGroup = site.CurrentGroup, MinimumGroupRatio = 1, Warnings = [] };
     }
+}
+
+sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
+{
+    private static readonly ProviderPriceSwitcher.Core.InferenceApiKeyRecord Healthy = new() { ProviderId = "healthy", KeyHandle = "healthy-handle", ApiKey = "healthy-secret", BoundGroup = "group" };
+    public ProviderPriceSwitcher.Core.InferenceApiKeyRecord? Load(string providerId) => providerId == "corrupt" ? throw new ProviderPriceSwitcher.Infrastructure.JsonDataException("corrupt.bin", new System.Text.Json.JsonException()) : Healthy;
+    public void Save(ProviderPriceSwitcher.Core.InferenceApiKeyRecord record) => throw new NotSupportedException();
+    public void Clear(string providerId) => throw new NotSupportedException();
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
 }
 
 sealed class FakeUriLauncher : IExternalUriLauncher

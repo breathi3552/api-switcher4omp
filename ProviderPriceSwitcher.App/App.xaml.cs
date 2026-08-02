@@ -5,6 +5,7 @@ using System.Windows;
 using ProviderPriceSwitcher.Application;
 using ProviderPriceSwitcher.Adapters;
 using ProviderPriceSwitcher.Infrastructure;
+using ProviderPriceSwitcher.Core;
 
 namespace ProviderPriceSwitcher.App;
 
@@ -16,6 +17,7 @@ public partial class App : System.Windows.Application
     private static readonly Action<ILogger, Exception?> LogApplicationStarted = LoggerMessage.Define(LogLevel.Information, new EventId(100, "ApplicationStarted"), "ProviderPriceSwitcher started");
     private WindowsSidecarSupervisor? _sidecar;
     private static readonly Action<ILogger, string, Exception?> LogApplicationFailure = LoggerMessage.Define<string>(LogLevel.Error, new EventId(101, "ApplicationFailure"), "Application failure: {FailureKind}");
+    private static readonly Action<ILogger, string, Exception?> LogInferenceKeyLoadFailure = LoggerMessage.Define<string>(LogLevel.Warning, new EventId(102, "InferenceKeyLoadFailure"), "Inference API key unavailable for provider {ProviderId}");
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -32,6 +34,7 @@ public partial class App : System.Windows.Application
         for (var index = 0; index < e.Args.Length; index++)
             if (string.Equals(e.Args[index], "--data-root", StringComparison.Ordinal) && index + 1 < e.Args.Length)
                 dataRoot = e.Args[++index];
+        _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
         try
         {
             var settingsRepository = new JsonSettingsRepository(dataRoot);
@@ -43,14 +46,9 @@ public partial class App : System.Windows.Application
             var activeRoute = new ActiveRouteState();
             var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute);
             var resolver = new InferenceApiKeyResolverBridge(inferenceKeyStore, settingsRepository);
-            foreach (var site in settings.Sites)
-            {
-                var record = inferenceKeyStore.Load(site.ProviderId);
-                if (record is not null) resolver.Register(record);
-            }
+            RegisterAvailableInferenceKeys(settings, inferenceKeyStore, resolver, _loggerFactory.CreateLogger<App>());
             _sidecar = new WindowsSidecarSupervisor(new SidecarBinaryOptions(Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"), "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491", "pps-sidecar-v1"), resolver);
             inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute, _sidecar, resolver);
-            _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
                 new NewApiPricingAdapter(_httpClient),
@@ -71,12 +69,28 @@ public partial class App : System.Windows.Application
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             var logger = _loggerFactory?.CreateLogger<App>();
-            if (logger is not null) LogApplicationFailure(logger, "Startup", null);
+            if (logger is not null) LogApplicationFailure(logger, "Startup", exception);
             _notifications.ShowError(UserErrorMessages.ApplicationStartupFailed, "ProviderPriceSwitcher");
             Shutdown(-1);
+        }
+    }
+
+    internal static void RegisterAvailableInferenceKeys(LocalAppSettings settings, IInferenceApiKeyStore store, InferenceApiKeyResolverBridge resolver, ILogger logger)
+    {
+        foreach (var site in settings.Sites)
+        {
+            try
+            {
+                var record = store.Load(site.ProviderId);
+                if (record is not null) resolver.Register(record);
+            }
+            catch (JsonDataException exception)
+            {
+                LogInferenceKeyLoadFailure(logger, site.ProviderId, exception);
+            }
         }
     }
 
