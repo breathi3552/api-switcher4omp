@@ -8,7 +8,7 @@ namespace ProviderPriceSwitcher.Infrastructure;
 
 
 [SupportedOSPlatform("windows")]
-public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
+public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore, ISiteCredentialStore
 {
     private const string Purpose = "ProviderPriceSwitcher.SiteCredential";
     private readonly string? _rootDirectory;
@@ -78,5 +78,59 @@ public sealed class WindowsSiteCredentialStore : ISiteCredentialStore
         return Path.Combine(AppDataPaths.GetRoot(_rootDirectory), "credentials", safe + ".bin");
     }
 
+    private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
+}
+
+[SupportedOSPlatform("windows")]
+public sealed class WindowsInferenceApiKeyStore : IInferenceApiKeyStore
+{
+    private const string Purpose = "ProviderPriceSwitcher.InferenceApiKey";
+    private readonly string? _rootDirectory;
+
+    public WindowsInferenceApiKeyStore(string? rootDirectory = null) => _rootDirectory = rootDirectory;
+
+    public InferenceApiKeyRecord? Load(string providerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        var path = FilePath(providerId);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var bytes = ProtectedData.Unprotect(File.ReadAllBytes(path), Entropy(providerId), DataProtectionScope.CurrentUser);
+            return JsonSerializer.Deserialize<InferenceApiKeyRecord>(bytes, AtomicJsonFile.Options);
+        }
+        catch (Exception ex) when (ex is IOException or CryptographicException or JsonException)
+        {
+            throw new JsonDataException(path, ex);
+        }
+    }
+
+    public void Save(InferenceApiKeyRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.ProviderId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.KeyHandle);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.ApiKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.BoundGroup);
+        var path = FilePath(record.ProviderId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(record with { ApiKey = record.ApiKey.Trim(), BoundGroup = record.BoundGroup.Trim(), UpdatedAt = DateTimeOffset.UtcNow }, AtomicJsonFile.Options);
+        File.WriteAllBytes(path, ProtectedData.Protect(payload, Entropy(record.ProviderId), DataProtectionScope.CurrentUser));
+    }
+
+    public void Clear(string providerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        var path = FilePath(providerId);
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    public InferenceApiKeySummary? GetSummary(string providerId)
+    {
+        var record = Load(providerId);
+        return record is null ? null : new InferenceApiKeySummary { ProviderId = record.ProviderId, KeyHandle = record.KeyHandle, BoundGroup = record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey), UpdatedAt = record.UpdatedAt };
+    }
+
+    private string FilePath(string providerId) => Path.Combine(AppDataPaths.GetRoot(_rootDirectory), "inference-keys", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(providerId))) + ".bin");
     private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
 }

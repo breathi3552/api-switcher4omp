@@ -46,13 +46,16 @@ public sealed record SiteCredentialSummary
     public DateTimeOffset? UpdatedAt { get; init; }
 }
 
-public interface ISiteCredentialStore
+public interface ISiteAccessCredentialStore
 {
     SiteCredentialRecord? LoadCredential(string providerId);
     void SaveCredential(SiteCredentialRecord credential);
     void ClearCredential(string providerId);
     SiteCredentialSummary GetSummary(string providerId);
 }
+
+public interface ISiteCredentialStore : ISiteAccessCredentialStore { }
+
 
 public sealed record UsageProfile
 {
@@ -149,3 +152,35 @@ public sealed record RecommendationDecision
     public required IReadOnlyDictionary<string, string> ExcludedReasons { get; init; }
     public bool IsRecommended => Selected is not null;
 }
+public sealed record InferenceApiKeyRecord
+{
+    public required string ProviderId { get; init; }
+    public required string KeyHandle { get; init; }
+    public required string ApiKey { get; init; }
+    public required string BoundGroup { get; init; }
+    public DateTimeOffset UpdatedAt { get; init; } = DateTimeOffset.UtcNow;
+}
+
+public sealed record InferenceApiKeySummary
+{
+    public required string ProviderId { get; init; }
+    public required string KeyHandle { get; init; }
+    public required string BoundGroup { get; init; }
+    public required string MaskedKey { get; init; }
+    public DateTimeOffset UpdatedAt { get; init; }
+
+    public static string Mask(string key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return key.Length < 12 ? "********" : $"{key[..4]}…{key[^4..]}";
+    }
+}
+
+public interface IInferenceApiKeyStore
+{
+    InferenceApiKeyRecord? Load(string providerId);
+    void Save(InferenceApiKeyRecord record);
+    void Clear(string providerId);
+    InferenceApiKeySummary? GetSummary(string providerId);
+}
+

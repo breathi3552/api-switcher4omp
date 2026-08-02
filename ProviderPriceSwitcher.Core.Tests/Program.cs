@@ -46,3 +46,6 @@ var ratioSnapshot = Snapshot(a, now, input: 2m) with
 var overridden = ratioSnapshot.WithCurrentRatio(0.5m, "手动");
 Assert(overridden.Prices.InputPerMillion == 1m && overridden.Prices.CachedInputPerMillion == 0.1m && overridden.Prices.OutputPerMillion == 2m && overridden.GroupRatioSource == "手动", "manual ratio scales all prices");
 Console.WriteLine("Core contract tests passed.");
+Assert(InferenceApiKeySummary.Mask("short-key") == "********", "short inference keys must use fixed masking");
+Assert(InferenceApiKeySummary.Mask("1234567890123456") == "1234…3456", "long inference keys must expose only four-character ends");
+Console.WriteLine("Core inference credential contract tests passed.");

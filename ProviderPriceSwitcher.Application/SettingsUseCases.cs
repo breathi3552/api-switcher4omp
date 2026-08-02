@@ -2,7 +2,11 @@
 
 namespace ProviderPriceSwitcher.Application;
 
-public sealed class SiteManagementUseCase(ISettingsRepository settingsRepository, IPricingSnapshotRepository snapshotRepository)
+public sealed class SiteManagementUseCase(
+    ISettingsRepository settingsRepository,
+    IPricingSnapshotRepository snapshotRepository,
+    ISiteAccessCredentialStore? siteCredentialStore = null,
+    IInferenceApiKeyStore? inferenceApiKeyStore = null)
 {
     public LocalAppSettings SaveSite(LocalAppSettings settings, SiteConfiguration site, string? originalProviderId)
     {
@@ -48,6 +52,8 @@ public sealed class SiteManagementUseCase(ISettingsRepository settingsRepository
         var updated = settings with { Sites = sites.ToArray() };
         settingsRepository.Save(updated);
         snapshotRepository.Delete(providerId);
+        siteCredentialStore?.ClearCredential(providerId);
+        inferenceApiKeyStore?.Clear(providerId);
         return updated;
     }
 }
@@ -66,4 +72,19 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
         settingsRepository.Save(normalized);
         return normalized;
     }
+}
+
+public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore)
+{
+    public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
+    public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
+        var record = new InferenceApiKeyRecord { ProviderId = providerId.Trim(), ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim(), KeyHandle = Guid.NewGuid().ToString("N") };
+        keyStore.Save(record);
+        return keyStore.GetSummary(record.ProviderId) ?? throw new InvalidOperationException("推理 API key 保存后不可读取。");
+    }
+    public void Delete(string providerId) => keyStore.Clear(providerId);
 }

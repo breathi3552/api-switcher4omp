@@ -33,6 +33,12 @@ public sealed partial class SiteEditorDialog : Window
     {
         if (_viewModel.ClearCredential()) { TokenBox.Clear(); CookieBox.Clear(); }
     }
+    private void SaveInferenceKeyClick(object sender, RoutedEventArgs e)
+    {
+        try { _viewModel.SaveInferenceKey(InferenceKeyBox.Password); }
+        finally { InferenceKeyBox.Clear(); }
+    }
+    private void DeleteInferenceKeyClick(object sender, RoutedEventArgs e) => _viewModel.DeleteInferenceKey();
 }
 public sealed class SiteEditorDialogFactory(Func<SiteConfiguration?, LocalAppSettings, SiteEditorViewModel> create) : ISiteEditorDialogFactory
 {
