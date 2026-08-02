@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using ProviderPriceSwitcher.Core;
+using Microsoft.Extensions.Logging;
 
 namespace ProviderPriceSwitcher.Application;
 
@@ -29,7 +30,9 @@ public sealed class SwitchAndStartUseCase(
     ISettingsRepository settingsRepository,
     IOmpConfigurationService configurationService,
     IOmpProcessLauncher processLauncher,
-    ILogger<SwitchAndStartUseCase> logger)
+    ILogger<SwitchAndStartUseCase> logger,
+    IRouteController? routeController = null,
+    IInferenceApiKeyStore? inferenceApiKeyStore = null)
 {
     private static readonly Action<ILogger, string, Exception?> LogLaunchFailure =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed after configuration switch: {FailureKind}");
@@ -47,6 +50,14 @@ public sealed class SwitchAndStartUseCase(
         var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var updated = settings with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory };
         settingsRepository.Save(updated);
+        if (routeController is not null && inferenceApiKeyStore is not null)
+        {
+            var site = settings.Sites.FirstOrDefault(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));
+            var key = site is null ? null : inferenceApiKeyStore.Load(providerId);
+            if (site is null || key is null)
+                return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
+            await routeController.ApplyAsync(new ProviderPriceSwitcher.Core.RouteSnapshot(providerId, site.BaseUrl.ToString(), key.KeyHandle), cancellationToken).ConfigureAwait(false);
+        }
 
         var launch = processLauncher.Launch(workingDirectory);
         if (!launch.Succeeded)

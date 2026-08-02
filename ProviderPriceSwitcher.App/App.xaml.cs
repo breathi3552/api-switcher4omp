@@ -14,6 +14,7 @@ public partial class App : System.Windows.Application
     private IUserNotificationService? _notifications;
     private ILoggerFactory? _loggerFactory;
     private static readonly Action<ILogger, Exception?> LogApplicationStarted = LoggerMessage.Define(LogLevel.Information, new EventId(100, "ApplicationStarted"), "ProviderPriceSwitcher started");
+    private WindowsSidecarSupervisor? _sidecar;
     private static readonly Action<ILogger, string, Exception?> LogApplicationFailure = LoggerMessage.Define<string>(LogLevel.Error, new EventId(101, "ApplicationFailure"), "Application failure: {FailureKind}");
 
     protected override void OnStartup(StartupEventArgs e)
@@ -41,6 +42,13 @@ public partial class App : System.Windows.Application
             var inferenceKeyStore = new WindowsInferenceApiKeyStore(dataRoot);
             var activeRoute = new ActiveRouteState();
             var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute);
+            var resolver = new InferenceApiKeyResolverBridge(inferenceKeyStore, settingsRepository);
+            foreach (var site in settings.Sites)
+            {
+                var record = inferenceKeyStore.Load(site.ProviderId);
+                if (record is not null) resolver.Register(record);
+            }
+            _sidecar = new WindowsSidecarSupervisor(new SidecarBinaryOptions(Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"), "9a5ad3bff321eb61544131114c35a27b840465b4600a27ef5187549f86770397", "pps.sidecar.v1"), resolver);
             _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
@@ -55,7 +63,7 @@ public partial class App : System.Windows.Application
             var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute);
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
             var settingsUseCase = new SettingsUseCase(settingsRepository);
-            var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>());
+            var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>(), _sidecar, inferenceKeyStore);
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
             var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, adapterRegistry, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
@@ -73,6 +81,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _sidecar?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _httpClient?.Dispose();
         _loggerFactory?.Dispose();
         base.OnExit(e);

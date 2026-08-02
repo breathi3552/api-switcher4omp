@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <Resource Include="Assets\AppIcon.ico" />
+    <None Include="Assets\Bifrost\bifrost-sidecar.exe" Link="bifrost-sidecar.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <None Include="Assets\Bifrost\bifrost-sidecar.manifest.json" Link="bifrost-sidecar.manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
 </Project>

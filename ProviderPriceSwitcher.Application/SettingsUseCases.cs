@@ -93,15 +93,13 @@ public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISett
     public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
-        ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId); ArgumentException.ThrowIfNullOrWhiteSpace(apiKey); ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
         var normalizedProviderId = providerId.Trim();
-        if (settingsRepository is not null && !settingsRepository.Load().Sites.Any(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal)))
-            throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
-        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim(), KeyHandle = Guid.NewGuid().ToString("N") };
+        if (settingsRepository is not null && !settingsRepository.Load().Sites.Any(site => string.Equals(site.ProviderId, normalizedProviderId, StringComparison.Ordinal))) throw new InvalidOperationException($"供应商 '{normalizedProviderId}' 不存在。");
+        var existing = keyStore.Load(normalizedProviderId);
+        var record = new InferenceApiKeyRecord { ProviderId = normalizedProviderId, KeyHandle = existing?.KeyHandle ?? Guid.NewGuid().ToString("N"), ApiKey = apiKey.Trim(), BoundGroup = boundGroup.Trim() };
         keyStore.Save(record);
-        return keyStore.GetSummary(record.ProviderId) ?? throw new InvalidOperationException("推理 API key 保存后不可读取。");
+        return keyStore.GetSummary(normalizedProviderId) ?? throw new InvalidOperationException("inference_key_save_failed");
     }
     public void Delete(string providerId) { keyStore.Clear(providerId); activeRoute?.ClearIfProvider(providerId); }
 }
