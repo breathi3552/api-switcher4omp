@@ -39,6 +39,8 @@ public partial class App : System.Windows.Application
             var snapshotRepository = new JsonPricingSnapshotRepository(dataRoot);
             var credentialStore = new WindowsSiteCredentialStore(dataRoot);
             var inferenceKeyStore = new WindowsInferenceApiKeyStore(dataRoot);
+            var activeRoute = new ActiveRouteState();
+            var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, settingsRepository, activeRoute);
             _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
@@ -50,11 +52,11 @@ public partial class App : System.Windows.Application
             var refreshService = new PricingRefreshService(adapterRegistry, _loggerFactory.CreateLogger<PricingRefreshService>());
             var currentProviderQuery = new OmpCurrentProviderQuery(new OmpConfigurationSwitcher(), new AppPathDefaults());
             var snapshotQuery = new PricingSnapshotQuery(snapshotRepository);
-            var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore);
+            var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute);
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
             var settingsUseCase = new SettingsUseCase(settingsRepository);
             var switchAndStart = new SwitchAndStartUseCase(settingsRepository, new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults()), new OmpProcessLauncher(new OmpProcessService()), _loggerFactory.CreateLogger<SwitchAndStartUseCase>());
-            var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyStore));
+            var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
             var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, adapterRegistry, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>());
             MainWindow = new MainWindow(viewModel);

@@ -9,11 +9,11 @@ namespace ProviderPriceSwitcher.Adapters;
 public sealed class SevnXPricingAdapter : IPricingAdapter
 {
     private readonly HttpClient _httpClient;
-    private readonly ISiteCredentialStore _credentialStore;
+    private readonly ISiteAccessCredentialStore _credentialStore;
 
     public PricingAdapterDescriptor Descriptor { get; } = new("sevnx", "SevnX", true, ["导入令牌"]);
 
-    public SevnXPricingAdapter(HttpClient httpClient, ISiteCredentialStore credentialStore)
+    public SevnXPricingAdapter(HttpClient httpClient, ISiteAccessCredentialStore credentialStore)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _credentialStore = credentialStore ?? throw new ArgumentNullException(nameof(credentialStore));

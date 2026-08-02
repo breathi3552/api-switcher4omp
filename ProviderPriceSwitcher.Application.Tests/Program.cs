@@ -86,6 +86,24 @@ var launchFailed = await switchUseCase.ExecuteAsync(switchSettings, "provider", 
 Assert(launchFailed.Status == SwitchAndStartStatus.LaunchFailedAfterSwitch && settingsRepo.SaveCount == 1 && configuration.Calls == 4, "launch failure must preserve switched settings without rollback");
 Console.WriteLine("Application contract tests passed.");
 
+var keyStore = new MemoryInferenceKeyStore();
+var keySettings = new MemorySettings();
+keySettings.Save(new LocalAppSettings { Sites = [Site(1)] });
+var keyUseCase = new InferenceApiKeyUseCase(keyStore, keySettings);
+var keySummary = keyUseCase.Save("p", "synthetic-inference-key", "g");
+Assert(keySummary.MaskedKey == "synt…-key" && keySummary.BoundGroup == "g" && keyStore.Record?.ApiKey == "synthetic-inference-key", "inference key must be stored and masked");
+var activeRoute = new FakeActiveRoute();
+var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, activeRoute);
+management.DeleteSite(keySettings.Value, "p");
+
+var routeState = new ActiveRouteState();
+routeState.Apply(new RouteSnapshot("p", "https://example.test", "handle"));
+routeState.ClearIfProvider("other");
+Assert(routeState.Current is not null, "unrelated route clear must preserve active snapshot");
+routeState.ClearIfProvider("p");
+Assert(routeState.Current is null, "matching route clear must remove active snapshot");
+Assert(keyStore.Record is null && activeRoute.ClearedProvider == "p", "deleting supplier must clear inference key and active route");
+
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
     public PricingAdapterDescriptor Descriptor { get; } = descriptor;
@@ -118,4 +136,19 @@ sealed class FakeLauncher(OmpLaunchResult result) : IOmpProcessLauncher
     public OmpLaunchResult Result { get; set; } = result;
     public int Calls { get; set; }
     public OmpLaunchResult Launch(string workingDirectory) { Calls++; return Result; }
+}
+
+sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
+{
+    public InferenceApiKeyRecord? Record { get; private set; }
+    public InferenceApiKeyRecord? Load(string providerId) => Record;
+    public void Save(InferenceApiKeyRecord record) => Record = record;
+    public void Clear(string providerId) => Record = null;
+    public InferenceApiKeySummary? GetSummary(string providerId) => Record is null ? null : new() { ProviderId = Record.ProviderId, KeyHandle = Record.KeyHandle, BoundGroup = Record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(Record.ApiKey), UpdatedAt = Record.UpdatedAt };
+}
+
+sealed class FakeActiveRoute : IActiveRouteController
+{
+    public string? ClearedProvider { get; private set; }
+    public void ClearIfProvider(string providerId) => ClearedProvider = providerId;
 }

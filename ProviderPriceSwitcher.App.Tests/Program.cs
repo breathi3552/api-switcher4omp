@@ -215,7 +215,7 @@ sealed class FakeNotifications : IUserNotificationService
     public bool Confirm(string message, string title) => ConfirmResult;
 }
 
-sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteCredentialStore
+sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredentialStore
 {
     public int LoadCalls { get; private set; }
     public int SaveCalls { get; private set; }

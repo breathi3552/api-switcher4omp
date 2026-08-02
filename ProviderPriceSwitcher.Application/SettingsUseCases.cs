@@ -6,7 +6,8 @@ public sealed class SiteManagementUseCase(
     ISettingsRepository settingsRepository,
     IPricingSnapshotRepository snapshotRepository,
     ISiteAccessCredentialStore? siteCredentialStore = null,
-    IInferenceApiKeyStore? inferenceApiKeyStore = null)
+    IInferenceApiKeyStore? inferenceApiKeyStore = null,
+    IActiveRouteController? activeRoute = null)
 {
     public LocalAppSettings SaveSite(LocalAppSettings settings, SiteConfiguration site, string? originalProviderId)
     {
@@ -27,6 +28,7 @@ public sealed class SiteManagementUseCase(
                 snapshotRepository.Delete(originalProviderId);
                 siteCredentialStore?.ClearCredential(originalProviderId);
                 inferenceApiKeyStore?.Clear(originalProviderId);
+                activeRoute?.ClearIfProvider(originalProviderId);
             }
         }
 
@@ -58,6 +60,7 @@ public sealed class SiteManagementUseCase(
         snapshotRepository.Delete(providerId);
         siteCredentialStore?.ClearCredential(providerId);
         inferenceApiKeyStore?.Clear(providerId);
+        activeRoute?.ClearIfProvider(providerId);
         return updated;
     }
 }
@@ -78,7 +81,14 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
     }
 }
 
-public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null)
+public interface IInferenceApiKeyUseCase
+{
+    InferenceApiKeySummary? GetSummary(string providerId);
+    InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup);
+    void Delete(string providerId);
+}
+
+public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISettingsRepository? settingsRepository = null, IActiveRouteController? activeRoute = null) : IInferenceApiKeyUseCase
 {
     public InferenceApiKeySummary? GetSummary(string providerId) => keyStore.GetSummary(providerId);
     public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
@@ -93,5 +103,5 @@ public sealed class InferenceApiKeyUseCase(IInferenceApiKeyStore keyStore, ISett
         keyStore.Save(record);
         return keyStore.GetSummary(record.ProviderId) ?? throw new InvalidOperationException("推理 API key 保存后不可读取。");
     }
-    public void Delete(string providerId) => keyStore.Clear(providerId);
+    public void Delete(string providerId) { keyStore.Clear(providerId); activeRoute?.ClearIfProvider(providerId); }
 }

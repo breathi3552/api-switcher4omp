@@ -59,3 +59,18 @@ public interface IPricingSnapshotQuery
 {
     PricingSnapshotQueryResult Load();
 }
+
+public interface IActiveRouteController
+{
+    void ClearIfProvider(string providerId);
+}
+
+public sealed class ActiveRouteState : IActiveRouteController
+{
+    private readonly object _gate = new();
+    private RouteSnapshot? _current;
+
+    public RouteSnapshot? Current { get { lock (_gate) return _current; } }
+    public void Apply(RouteSnapshot snapshot) { ArgumentNullException.ThrowIfNull(snapshot); lock (_gate) _current = snapshot; }
+    public void ClearIfProvider(string providerId) { ArgumentException.ThrowIfNullOrWhiteSpace(providerId); lock (_gate) { if (string.Equals(_current?.ProviderId, providerId, StringComparison.Ordinal)) _current = null; } }
+}

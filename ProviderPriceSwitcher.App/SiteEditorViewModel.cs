@@ -11,7 +11,7 @@ public sealed class SiteEditorViewModel : ObservableObject
 {
     private readonly PricingProbeUseCase _probe;
     private readonly ISiteAccessCredentialStore _credentials;
-    private readonly IInferenceApiKeyStore _inferenceKeys;
+    private readonly IInferenceApiKeyUseCase _inferenceKeyUseCase;
     private readonly IUserNotificationService _notifications;
     private readonly LocalAppSettings _settings;
     private readonly SiteConfiguration? _original;
@@ -24,9 +24,9 @@ public sealed class SiteEditorViewModel : ObservableObject
     private string _probeMessage = string.Empty;
     private string _providerId = string.Empty, _displayName = string.Empty, _baseUrl = string.Empty, _model = string.Empty, _group = string.Empty, _ratio = string.Empty;
 
-    public SiteEditorViewModel(PricingProbeUseCase probe, IPricingAdapterRegistry registry, ISiteAccessCredentialStore credentials, IUserNotificationService notifications, LocalAppSettings settings, SiteConfiguration? original = null, IInferenceApiKeyStore? inferenceKeys = null)
+    public SiteEditorViewModel(PricingProbeUseCase probe, IPricingAdapterRegistry registry, ISiteAccessCredentialStore credentials, IUserNotificationService notifications, LocalAppSettings settings, SiteConfiguration? original = null, IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
     {
-        _probe = probe; _credentials = credentials; _inferenceKeys = inferenceKeys ?? new NullInferenceApiKeyStore(); _notifications = notifications; _settings = settings; _original = original; Descriptors = registry.Descriptors;
+        _probe = probe; _credentials = credentials; _inferenceKeyUseCase = inferenceKeyUseCase ?? new NullInferenceApiKeyUseCase(); _notifications = notifications; _settings = settings; _original = original; Descriptors = registry.Descriptors;
         Descriptor = Descriptors.FirstOrDefault(x => string.Equals(x.SiteType, original?.SiteType, StringComparison.Ordinal)) ?? (Descriptors.Count > 0 ? Descriptors[0] : null); AuthenticationMode = original?.AuthenticationMode ?? (Descriptor?.AuthenticationModes.Count > 0 ? Descriptor.AuthenticationModes[0] : null);
         ProviderId = original?.ProviderId ?? string.Empty; DisplayName = original?.DisplayName ?? string.Empty; BaseUrl = original?.BaseUrl.ToString() ?? string.Empty; ConfigurationApiAddress = original?.ConfigurationApiAddress ?? "/keys"; Model = original?.Model ?? settings.Model; CurrentGroup = original?.CurrentGroup ?? string.Empty; CurrentGroupRatio = original?.CurrentGroupRatio?.ToString(CultureInfo.InvariantCulture) ?? string.Empty; Currency = original?.Currency ?? string.Empty; CnyConversionRate = original?.CnyConversionRate?.ToString(CultureInfo.InvariantCulture) ?? string.Empty; UpdateCredentialStatus(); UpdateInferenceKeyStatus();
         ProbeCommand = new AsyncCommand(ProbeAsync, HandleError, () => CanProbe); CancelProbeCommand = new RelayCommand(() => _cancel?.Cancel(), () => IsProbing); SaveCommand = new RelayCommand(Save, () => CanSave);
@@ -61,12 +61,12 @@ public sealed class SiteEditorViewModel : ObservableObject
     public bool SaveInferenceKey(string apiKey)
     {
         if (string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(InferenceBoundGroup)) return false;
-        new InferenceApiKeyUseCase(_inferenceKeys).Save(ProviderId, apiKey, InferenceBoundGroup);
+        _inferenceKeyUseCase.Save(ProviderId, apiKey, InferenceBoundGroup);
         UpdateInferenceKeyStatus();
         return true;
     }
-    public bool DeleteInferenceKey() { if (string.IsNullOrWhiteSpace(ProviderId)) return false; new InferenceApiKeyUseCase(_inferenceKeys).Delete(ProviderId); UpdateInferenceKeyStatus(); return true; }
-    public void UpdateInferenceKeyStatus() { var previous = InferenceBoundGroup; InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeys.GetSummary(ProviderId); if (string.IsNullOrWhiteSpace(previous) || string.Equals(previous, InferenceKeySummary?.BoundGroup, StringComparison.Ordinal)) InferenceBoundGroup = InferenceKeySummary?.BoundGroup ?? string.Empty; OnPropertyChanged(nameof(InferenceKeySummary)); OnPropertyChanged(nameof(InferenceBoundGroup)); }
+    public bool DeleteInferenceKey() { if (string.IsNullOrWhiteSpace(ProviderId)) return false; _inferenceKeyUseCase.Delete(ProviderId); UpdateInferenceKeyStatus(); return true; }
+    public void UpdateInferenceKeyStatus() { var previous = InferenceBoundGroup; InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeyUseCase.GetSummary(ProviderId); if (string.IsNullOrWhiteSpace(previous) || string.Equals(previous, InferenceKeySummary?.BoundGroup, StringComparison.Ordinal)) InferenceBoundGroup = InferenceKeySummary?.BoundGroup ?? string.Empty; OnPropertyChanged(nameof(InferenceKeySummary)); OnPropertyChanged(nameof(InferenceBoundGroup)); }
     public void UpdateCredentialStatus() { CredentialSummary = string.IsNullOrWhiteSpace(ProviderId) ? new SiteCredentialSummary { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured, StatusText = "请先填写 ProviderId。" } : _credentials.GetSummary(ProviderId.Trim()); OnPropertyChanged(nameof(CredentialSummary)); }
     public bool SaveCredential(string token, string cookie) { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cookie)) { _notifications.ShowWarning("访问令牌和 Cookie 不能为空。", "校验失败"); return false; } _credentials.SaveCredential(new SiteCredentialRecord { ProviderId = ProviderId.Trim(), SiteType = Descriptor!.SiteType, AuthorizationScheme = "Bearer", AccessToken = token.Trim(), CookieHeader = cookie.Trim() }); UpdateCredentialStatus(); return true; }
     public bool ClearCredential() { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || !_notifications.Confirm("确定清除本地凭据吗？", "清除凭据")) return false; _credentials.ClearCredential(ProviderId.Trim()); UpdateCredentialStatus(); return true; }
@@ -90,10 +90,10 @@ public sealed class SiteEditorViewModel : ObservableObject
     private void RaiseCommands() { ProbeCommand?.RaiseCanExecuteChanged(); SaveCommand?.RaiseCanExecuteChanged(); CancelProbeCommand?.RaiseCanExecuteChanged(); OnPropertyChanged(nameof(CanSave)); OnPropertyChanged(nameof(CanProbe)); }
 }
 
-file sealed class NullInferenceApiKeyStore : IInferenceApiKeyStore
+
+file sealed class NullInferenceApiKeyUseCase : IInferenceApiKeyUseCase
 {
-    public InferenceApiKeyRecord? Load(string providerId) => null;
-    public void Save(InferenceApiKeyRecord record) => throw new InvalidOperationException("推理 key 存储未装配。");
-    public void Clear(string providerId) { }
     public InferenceApiKeySummary? GetSummary(string providerId) => null;
+    public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup) => throw new InvalidOperationException("推理 key 用例未装配。");
+    public void Delete(string providerId) { }
 }

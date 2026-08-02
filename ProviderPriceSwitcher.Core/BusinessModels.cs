@@ -54,7 +54,6 @@ public interface ISiteAccessCredentialStore
     SiteCredentialSummary GetSummary(string providerId);
 }
 
-public interface ISiteCredentialStore : ISiteAccessCredentialStore { }
 
 
 public sealed record UsageProfile
@@ -184,3 +183,5 @@ public interface IInferenceApiKeyStore
     InferenceApiKeySummary? GetSummary(string providerId);
 }
 
+
+public sealed record RouteSnapshot(string ProviderId, string BaseUrl, string KeyHandle);

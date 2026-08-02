@@ -8,7 +8,7 @@ namespace ProviderPriceSwitcher.Infrastructure;
 
 
 [SupportedOSPlatform("windows")]
-public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore, ISiteCredentialStore
+public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore
 {
     private const string Purpose = "ProviderPriceSwitcher.SiteCredential";
     private readonly string? _rootDirectory;

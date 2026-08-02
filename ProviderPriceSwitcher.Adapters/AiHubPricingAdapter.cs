@@ -10,11 +10,11 @@ public sealed class AiHubPricingAdapter : IPricingAdapter
 {
     private const string Timezone = "?timezone=Asia%2FShanghai";
     private readonly HttpClient _httpClient;
-    private readonly ISiteCredentialStore _credentialStore;
+    private readonly ISiteAccessCredentialStore _credentialStore;
 
     public PricingAdapterDescriptor Descriptor { get; } = new("aihub", "AIHub", true, ["导入令牌"]);
 
-    public AiHubPricingAdapter(HttpClient httpClient, ISiteCredentialStore credentialStore)
+    public AiHubPricingAdapter(HttpClient httpClient, ISiteAccessCredentialStore credentialStore)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _credentialStore = credentialStore ?? throw new ArgumentNullException(nameof(credentialStore));

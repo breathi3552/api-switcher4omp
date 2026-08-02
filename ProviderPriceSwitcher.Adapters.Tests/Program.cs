@@ -369,7 +369,7 @@ sealed class AiHubHandler(HttpStatusCode statusCode = HttpStatusCode.OK) : HttpM
     }
 }
 
-sealed class MemoryCredentialStore : ISiteCredentialStore
+sealed class MemoryCredentialStore : ISiteAccessCredentialStore
 {
     public SiteCredentialRecord? Credential { get; set; }
     public SiteCredentialRecord? LoadCredential(string providerId) => Credential;
