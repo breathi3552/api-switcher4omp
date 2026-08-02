@@ -40,6 +40,14 @@ public sealed partial class SiteEditorDialog : Window
         finally { InferenceKeyBox.Clear(); }
     }
     private void InferenceKeyBoxChanged(object sender, RoutedEventArgs e) => InferenceKeyPlaceholder.Visibility = InferenceKeyBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+    private void GroupOptionSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.ComboBox { SelectedItem: string selected })
+        {
+            _viewModel.CurrentGroup = selected;
+            ((System.Windows.Controls.ComboBox)sender).SelectedItem = null;
+        }
+    }
     private async void DeleteInferenceKeyClick(object sender, RoutedEventArgs e)
     {
         if (_deletingInferenceKey) return;
