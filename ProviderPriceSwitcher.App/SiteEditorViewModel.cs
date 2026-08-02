@@ -105,10 +105,16 @@ public sealed class SiteEditorViewModel : ObservableObject
         {
             var result = await _probe.ExecuteAsync(site, _settings.RequestTimeoutSeconds, _cancel.Token);
             var boundGroup = CurrentGroup;
-            GroupOptions.Clear();
-            foreach (var group in result.ValidGroups.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(group);
-            if (!GroupOptions.Contains(boundGroup, StringComparer.OrdinalIgnoreCase)) GroupOptions.Insert(0, boundGroup);
-            CurrentGroup = boundGroup;
+            var desiredGroups = result.ValidGroups
+                .Append(boundGroup)
+                .Where(group => !string.IsNullOrWhiteSpace(group))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => group, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (var group in desiredGroups)
+                if (!GroupOptions.Contains(group, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(group);
+            for (var index = GroupOptions.Count - 1; index >= 0; index--)
+                if (!desiredGroups.Contains(GroupOptions[index], StringComparer.OrdinalIgnoreCase)) GroupOptions.RemoveAt(index);
             ProbeState = SiteEditorProbeState.Succeeded; ProbeMessage = $"成功：当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）。";
         }
         catch (OperationCanceledException) { ProbeState = SiteEditorProbeState.Canceled; ProbeMessage = "已取消价格查询。"; }

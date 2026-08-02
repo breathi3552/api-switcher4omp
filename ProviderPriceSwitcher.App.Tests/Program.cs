@@ -153,9 +153,12 @@ var windowThread = new Thread(() =>
         probeAdapter.ReturnedGroups = new HashSet<string>(["different-group"]);
         var groupComboBox = Descendants(dialog).OfType<System.Windows.Controls.ComboBox>().Single(combo => combo.IsEditable && ReferenceEquals(combo.ItemsSource, editorVm.GroupOptions));
         Assert(groupComboBox.Text == "edited-during-probe", "editable group selector must initially show the latest bound group");
+        var groupMissingDuringRefresh = false;
+        editorVm.GroupOptions.CollectionChanged += (_, _) => groupMissingDuringRefresh |= !editorVm.GroupOptions.Contains("edited-during-probe", StringComparer.OrdinalIgnoreCase);
         editorVm.ProbeCommand.Execute(null);
         WaitFor(() => !editorVm.IsProbing);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2 && editorVm.CurrentGroup == "edited-during-probe" && groupComboBox.Text == "edited-during-probe", "successful price probe must not replace the latest current bound group when returned groups differ");
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && groupComboBox.Text == "edited-during-probe", "price probe must preserve the displayed current bound group throughout candidate refresh");
         dialog.Close();
         var saveDialog = editorFactoryForDialog.Create(site, settings, window);
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
