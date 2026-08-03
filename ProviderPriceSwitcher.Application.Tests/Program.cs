@@ -120,8 +120,9 @@ var mismatchedStart = await mismatchedSwitch.ExecuteAsync(keySettings.Value, "p"
 Assert(mismatchedStart.Status == SwitchAndStartStatus.ConfigurationFailed && routeController.ClearCount == clearCountBeforeInvalidRoute + 1 && launchRouteState.CurrentProviderId is null, "key bound to another group must clear an existing active route");
 launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", keyStore.Record!.KeyHandle));
 var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, launchRouteState, routeController, resolver);
+var clearCountBeforeDelete = routeController.ClearCount;
 await management.DeleteSiteAsync(keySettings.Value, "p");
-Assert(keyStore.Record is null && launchRouteState.CurrentProviderId is null && await resolver.ResolveAsync(routedSummary.KeyHandle) is null, "deleting supplier must clear key, resolver and active sidecar route");
+Assert(keyStore.Record is null && launchRouteState.CurrentProviderId is null && await resolver.ResolveAsync(routedSummary.KeyHandle) is null && routeController.ClearCount == clearCountBeforeDelete + 1, "deleting supplier must clear key, resolver and active sidecar route");
 var routeState = new ActiveRouteState();
 routeState.Apply(new RouteSnapshot("p", "https://example.test", "handle"));
 routeState.ClearIfProvider("other");
@@ -129,6 +130,104 @@ Assert(routeState.Current is not null, "unrelated route clear must preserve acti
 routeState.ClearIfProvider("p");
 Assert(routeState.CurrentProviderId is null, "cleared route provider id must be absent");
 Assert(routeState.Current is null, "matching route clear must remove active snapshot");
+
+var serializedRouteState = new ActiveRouteState();
+var firstRouteLease = await serializedRouteState.AcquireAsync();
+using (var canceledRouteWait = new CancellationTokenSource())
+{
+    canceledRouteWait.Cancel();
+    try { await serializedRouteState.AcquireAsync(canceledRouteWait.Token); throw new InvalidOperationException("canceled route wait accepted"); }
+    catch (OperationCanceledException) { }
+}
+var nextRouteLeaseTask = serializedRouteState.AcquireAsync();
+firstRouteLease.Dispose();
+using var nextRouteLease = await nextRouteLeaseTask;
+Assert(nextRouteLease is not null, "route operation lock must remain usable after a canceled waiter");
+
+var activeRouteSettings = new LocalAppSettings { Sites = [Site(1)], ActiveProviderId = null };
+var activeRouteStore = new MemorySettings();
+activeRouteStore.Save(activeRouteSettings);
+var activeKeyStore = new MemoryInferenceKeyStore();
+activeKeyStore.Save(new InferenceApiKeyRecord { ProviderId = "p", KeyHandle = "active-handle", ApiKey = "active-secret", BoundGroup = "g" });
+var activeRouteState = new ActiveRouteState();
+var activeRouteController = new FakeRouteController();
+var activeRouteUseCase = new ApplyActiveRouteUseCase(activeRouteStore, activeRouteController, activeKeyStore, activeRouteState);
+var appliedRoute = await activeRouteUseCase.ExecuteAsync(activeRouteSettings, "p");
+Assert(appliedRoute.Status == ApplyActiveRouteStatus.Applied
+    && appliedRoute.Settings.ActiveProviderId == "p"
+    && activeRouteStore.Value.ActiveProviderId == "p"
+    && activeRouteController.Applied?.ProviderId == "p"
+    && activeRouteState.CurrentProviderId == "p", "explicit route apply must commit the sidecar route and non-secret active provider");
+
+var routeCallsBeforePricing = activeRouteController.ApplyCount;
+await new PricingCheckUseCase(refresh, activeRouteStore, new MemorySnapshots()).ExecuteAsync(activeRouteStore.Value, "p");
+Assert(activeRouteController.ApplyCount == routeCallsBeforePricing && activeRouteState.CurrentProviderId == "p" && activeRouteStore.Value.ActiveProviderId == "p", "price checks must not apply or clear the active route");
+
+var routeSaveFailureSettings = activeRouteStore.Value;
+activeRouteStore.ThrowOnSave = true;
+var oldRoute = activeRouteState.Current;
+var routeSaveFailure = await activeRouteUseCase.ExecuteAsync(routeSaveFailureSettings, "p");
+activeRouteStore.ThrowOnSave = false;
+Assert(routeSaveFailure.Status == ApplyActiveRouteStatus.PersistenceFailed
+    && activeRouteController.Applied == oldRoute
+    && activeRouteState.Current == oldRoute
+    && activeRouteStore.Value.ActiveProviderId == "p", "settings persistence failure must restore the previous sidecar route");
+
+var rollbackFailureStore = new MemorySettings();
+var rollbackFailureSettings = new LocalAppSettings { Sites = [Site(1)] };
+rollbackFailureStore.Save(rollbackFailureSettings);
+var rollbackFailureKeyStore = new MemoryInferenceKeyStore();
+rollbackFailureKeyStore.Save(new InferenceApiKeyRecord { ProviderId = "p", KeyHandle = "rollback-handle", ApiKey = "rollback-secret", BoundGroup = "g" });
+var rollbackFailureState = new ActiveRouteState();
+var rollbackFailureController = new FakeRouteController { ThrowOnApplyCall = 3 };
+var rollbackFailureUseCase = new ApplyActiveRouteUseCase(rollbackFailureStore, rollbackFailureController, rollbackFailureKeyStore, rollbackFailureState);
+await rollbackFailureUseCase.ExecuteAsync(rollbackFailureSettings, "p");
+rollbackFailureStore.ThrowOnSave = true;
+var rollbackFailure = await rollbackFailureUseCase.ExecuteAsync(
+    rollbackFailureStore.Value with { Sites = [Site(1) with { BaseUrl = new Uri("https://new.example.test") }], ActiveProviderId = "p" },
+    "p");
+rollbackFailureStore.ThrowOnSave = false;
+Assert(rollbackFailure.Status == ApplyActiveRouteStatus.RollbackFailed && rollbackFailureState.Current?.BaseUrl == "https://example.test/" && rollbackFailureController.Applied?.BaseUrl == "https://new.example.test/", "rollback failure must be returned as structured state without hiding the sidecar divergence");
+activeRouteController.ThrowOnApply = new IOException("synthetic sidecar failure");
+var sidecarFailure = await activeRouteUseCase.ExecuteAsync(activeRouteStore.Value, "p");
+activeRouteController.ThrowOnApply = null;
+Assert(sidecarFailure.Status == ApplyActiveRouteStatus.SidecarFailed && activeRouteStore.Value.ActiveProviderId == "p", "sidecar failure must not persist a new active provider");
+
+var disabledRoute = await activeRouteUseCase.ExecuteAsync(activeRouteStore.Value with { Sites = [Site(1) with { Enabled = false }] }, "p");
+Assert(disabledRoute.Status == ApplyActiveRouteStatus.ProviderDisabled && activeRouteController.ApplyCount == 3, "disabled provider must not become an active route");
+
+var restoredRouteState = new ActiveRouteState();
+var restoredRouteController = new FakeRouteController();
+var restoreUseCase = new ApplyActiveRouteUseCase(activeRouteStore, restoredRouteController, activeKeyStore, restoredRouteState);
+var restoreSaveCount = activeRouteStore.SaveCount;
+var restored = await restoreUseCase.RestoreAsync(activeRouteStore.Value with { ActiveProviderId = "p" });
+Assert(restored.Status == ApplyActiveRouteStatus.Applied && restoredRouteController.Applied?.ProviderId == "p" && restoredRouteState.CurrentProviderId == "p" && activeRouteStore.SaveCount == restoreSaveCount, "valid persisted provider must restore sidecar state without rewriting unchanged settings");
+var invalidRestoreStore = new MemorySettings();
+
+var deleteRouteSettings = new MemorySettings();
+deleteRouteSettings.Save(activeRouteStore.Value with { ActiveProviderId = "p" });
+var deleteRouteState = new ActiveRouteState();
+deleteRouteState.Apply(new RouteSnapshot("p", "https://example.test", "active-handle"));
+var deleteRouteController = new FakeRouteController();
+var deleteKeyStore = new MemoryInferenceKeyStore();
+deleteKeyStore.Save(new InferenceApiKeyRecord { ProviderId = "p", KeyHandle = "active-handle", ApiKey = "active-secret", BoundGroup = "g" });
+var deleteBindingStore = new MemoryInferenceBindingStore(deleteKeyStore, deleteRouteSettings);
+var deleteKeyUseCase = new InferenceApiKeyUseCase(deleteKeyStore, deleteBindingStore, deleteRouteState, deleteRouteController, settingsRepository: deleteRouteSettings);
+await deleteKeyUseCase.DeleteAsync("p");
+Assert(deleteRouteSettings.Value.ActiveProviderId is null && deleteRouteState.CurrentProviderId is null && deleteRouteController.ClearCount == 1, "deleting an active key must clear persisted and sidecar activity without fallback");
+invalidRestoreStore.Save(activeRouteStore.Value with { ActiveProviderId = "p" });
+var invalidRestore = await new ApplyActiveRouteUseCase(invalidRestoreStore, new FakeRouteController(), new MemoryInferenceKeyStore(), new ActiveRouteState())
+    .RestoreAsync(invalidRestoreStore.Value);
+Assert(invalidRestore.Status == ApplyActiveRouteStatus.Cleared && invalidRestoreStore.Value.ActiveProviderId is null, "disabled or missing-key persisted provider must be cleared without fallback");
+
+var emptyRestoreState = new ActiveRouteState();
+emptyRestoreState.Apply(new RouteSnapshot("stale", "https://example.test", "stale-handle"));
+var emptyRestoreController = new FakeRouteController();
+var emptyRestoreSettings = new MemorySettings();
+emptyRestoreSettings.Save(new LocalAppSettings());
+var emptyRestore = await new ApplyActiveRouteUseCase(emptyRestoreSettings, emptyRestoreController, activeKeyStore, emptyRestoreState)
+    .RestoreAsync(emptyRestoreSettings.Value);
+Assert(emptyRestore.Status == ApplyActiveRouteStatus.NoActiveRoute && emptyRestoreController.ClearCount == 1 && emptyRestoreState.Current is null, "empty persisted activity must clear the sidecar before serving stable no-route errors");
 
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
@@ -142,6 +241,7 @@ sealed class MemorySettings : ISettingsRepository
     public LocalAppSettings Value { get; private set; } = new();
     public LocalAppSettings Load() => Value;
     public void Save(LocalAppSettings settings) { if (ThrowOnSave) throw new IOException("synthetic settings save failure"); SaveCount++; Value = settings; }
+    public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update) { ArgumentNullException.ThrowIfNull(update); var updated = update(Value); Save(updated); return updated; }
 }
 sealed class MemorySnapshots : IPricingSnapshotRepository
 {
@@ -197,15 +297,31 @@ sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
 sealed class FakeRouteController : IRouteController
 {
     public RouteSnapshot? Applied { get; private set; }
+    public int ApplyCount { get; private set; }
     public int ClearCount { get; private set; }
-    public Task ApplyAsync(RouteSnapshot snapshot, CancellationToken cancellationToken = default) { Applied = snapshot; return Task.CompletedTask; }
+    public IOException? ThrowOnApply { get; set; }
+    public int? ThrowOnApplyCall { get; set; }
+    public Task ApplyAsync(RouteSnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        if (ThrowOnApply is not null) throw ThrowOnApply;
+        ApplyCount++;
+        if (ThrowOnApplyCall == ApplyCount) throw new IOException("synthetic apply failure");
+        Applied = snapshot;
+        return Task.CompletedTask;
+    }
     public Task ClearAsync(CancellationToken cancellationToken = default) { ClearCount++; return Task.CompletedTask; }
 }
 
 sealed class FakeActiveRoute : IActiveRouteController
 {
-    public string? CurrentProviderId => ClearedProvider;
-    public string? ClearedProvider { get; private set; }
-    public void Apply(RouteSnapshot snapshot) { }
-    public void ClearIfProvider(string providerId) => ClearedProvider = providerId;
+    public RouteSnapshot? Current { get; private set; }
+    public string? CurrentProviderId => Current?.ProviderId;
+    public Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default) => Task.FromResult<IDisposable>(NoopLease.Instance);
+    public void Apply(RouteSnapshot snapshot) => Current = snapshot;
+    public void ClearIfProvider(string providerId) { if (string.Equals(Current?.ProviderId, providerId, StringComparison.Ordinal)) Current = null; }
+    private sealed class NoopLease : IDisposable
+    {
+        public static NoopLease Instance { get; } = new();
+        public void Dispose() { }
+    }
 }

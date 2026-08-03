@@ -1,7 +1,7 @@
 # Verification Register and Runner Scenario Matrix
 
 
-> **共享实际验证证据（2026-08-02）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner。Infrastructure runner 使用临时 OMP/data root、两个 loopback upstream 和合成 key，启动真实 `omp.exe -p`，证明请求经固定 sidecar `/v1/responses`，并覆盖非流式、流式 SSE 结束、tools/tool results、reasoning、GPT ModelId、endpoint/key 隔离、路由切换、清除路由及进程清理。固定 fork `ppscontrol` Go tests 通过；framework-dependent/self-contained publish self-check 通过且 sidecar SHA-256 均为 `38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491`。
+> **共享实际验证证据（2026-08-03）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner。Application runner 覆盖价格检查无路由副作用、显式应用/恢复、空路由清除、删除活动 Provider 时清除 sidecar、持久化失败补偿和结构化回滚失败；Infrastructure runner 使用临时 OMP/data root、两个 loopback upstream 和合成 key，验证真实 OMP 请求经固定 sidecar、空路由启动、Route Snapshot 切换、在途请求保持旧路由、无活动路由错误和进程清理。固定 fork `ppscontrol` Go tests 通过；framework-dependent/self-contained publish self-check 通过且 sidecar SHA-256 均为 `38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491`。
 >
 > 证据使用合成数据、loopback 和临时 data/OMP/work root；未访问真实 Provider、真实凭据或真实用户配置。
 
@@ -181,6 +181,6 @@
 
 ## Status update protocol
 
- - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；本轮新增固定 Bifrost v1.6.5 loopback 原型 `24/24 PASS` 证据，但真实 OMP 请求级路由仍未验证。
- - 未执行的外部边界包括真实 Provider、真实凭据、真实用户 data/OMP root 与真实 OMP 请求级路由；生产 sidecar、Named Pipe、固定 fork 二进制分发及原子 route/key 控制协议尚未接入，发布成功不等于真实数据面已验证。
-> **底部证据索引（2026-08-02）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。
+ - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
+ - 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 当前路径不负责 OMP 接管或进程生命周期。
+> **底部证据索引（2026-08-03）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。

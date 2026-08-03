@@ -64,20 +64,20 @@ var windowThread = new Thread(() =>
         var settingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(root);
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var pathDefaults = new ProviderPriceSwitcher.Infrastructure.AppPathDefaults();
-        var switcher = new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher();
         var settings = settingsRepository.Load();
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
         var snapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(snapshots);
-        var currentProviderQuery = new ProviderPriceSwitcher.Infrastructure.OmpCurrentProviderQuery(switcher, pathDefaults);
+        var activeRoute = new ProviderPriceSwitcher.Application.ActiveRouteState();
+        var routeController = new FakeRouteController();
+        var keyStore = new StartupKeyStore();
+        var applyActiveRoute = new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(settingsRepository, routeController, keyStore, activeRoute);
         var siteManagement = new ProviderPriceSwitcher.Application.SiteManagementUseCase(settingsRepository, snapshots);
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
-        var switchAndStart = new ProviderPriceSwitcher.Application.SwitchAndStartUseCase(settingsRepository, new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(switcher, pathDefaults), new ProviderPriceSwitcher.Infrastructure.OmpProcessLauncher(new ProviderPriceSwitcher.Infrastructure.OmpProcessService()), Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.SwitchAndStartUseCase>.Instance);
         var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
         var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, switchAndStart, currentProviderQuery, snapshotQuery, registry, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         var window = new MainWindow(viewModel);
         window.Show();
 
@@ -237,6 +237,12 @@ sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
     public void Save(ProviderPriceSwitcher.Core.InferenceApiKeyRecord record) => throw new NotSupportedException();
     public void Clear(string providerId) => throw new NotSupportedException();
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
+}
+
+sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteController
+{
+    public Task ApplyAsync(ProviderPriceSwitcher.Core.RouteSnapshot snapshot, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public Task ClearAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
 
 sealed class FakeUriLauncher : IExternalUriLauncher

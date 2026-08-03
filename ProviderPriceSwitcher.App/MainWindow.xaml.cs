@@ -76,11 +76,10 @@ public partial class MainWindow : Window
 public sealed class MainViewModel : ObservableObject
 {
     private readonly IPricingSnapshotQuery _snapshotQuery;
-    private readonly IOmpCurrentProviderQuery _currentProviderQuery;
-    private readonly IPricingAdapterRegistry _adapterRegistry;
+    private readonly IActiveRouteController _activeRoute;
     private readonly PricingCheckUseCase _pricingCheck;
     private readonly SettingsUseCase _settingsUseCase;
-    private readonly SwitchAndStartUseCase _switchAndStart;
+    private readonly ApplyActiveRouteUseCase _applyActiveRoute;
     private readonly IUserNotificationService _notifications;
     private readonly ISitesDialogFactory _sitesDialogFactory;
     private readonly ILogger<MainViewModel> _logger;
@@ -89,66 +88,40 @@ public sealed class MainViewModel : ObservableObject
     private LocalAppSettings _settings;
     private CancellationTokenSource? _checkCancellation;
     private string _statusText = "准备就绪";
-    private string _currentProvider = "未读取";
+    private string _currentProvider = "未应用";
     private string _recommendedProvider = "等待检查";
     private string _lastCheckedText = "尚未检查";
     private ProviderChoice? _selectedProvider;
-    private string? _selectedWorkingDirectory;
     private PricingRefreshResult? _lastResult;
-    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, SwitchAndStartUseCase switchAndStart, IOmpCurrentProviderQuery currentProviderQuery, IPricingSnapshotQuery snapshotQuery, IPricingAdapterRegistry adapterRegistry, LocalAppSettings settings, ISitesDialogFactory sitesDialogFactory, IUserNotificationService notifications, ILogger<MainViewModel> logger)
+    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, ApplyActiveRouteUseCase applyActiveRoute, IActiveRouteController activeRoute, IPricingSnapshotQuery snapshotQuery, LocalAppSettings settings, ISitesDialogFactory sitesDialogFactory, IUserNotificationService notifications, ILogger<MainViewModel> logger)
     {
-        _pricingCheck = pricingCheck; _settingsUseCase = settingsUseCase; _switchAndStart = switchAndStart; _currentProviderQuery = currentProviderQuery; _snapshotQuery = snapshotQuery; _adapterRegistry = adapterRegistry; _settings = settings; _sitesDialogFactory = sitesDialogFactory; _notifications = notifications; _logger = logger;
-        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError); CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null); CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null); SwitchAndStartCommand = new AsyncCommand(SwitchAndStartAsync, HandleCommandError, () => SelectedProvider is not null && !string.IsNullOrWhiteSpace(SelectedWorkingDirectory)); ManageSitesCommand = new RelayCommand(ManageSites); SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError); SyncSettings();
+        _pricingCheck = pricingCheck; _settingsUseCase = settingsUseCase; _applyActiveRoute = applyActiveRoute; _activeRoute = activeRoute; _snapshotQuery = snapshotQuery; _settings = settings; _sitesDialogFactory = sitesDialogFactory; _notifications = notifications; _logger = logger;
+        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError); CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null); CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null); ApplyRouteCommand = new AsyncCommand(ApplyRouteAsync, HandleCommandError, () => SelectedProvider is not null); ManageSitesCommand = new RelayCommand(ManageSites); SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
     }
 
     public ObservableCollection<PriceRow> Rows { get; } = [];
     public ObservableCollection<ProviderChoice> ProviderChoices { get; } = [];
-    public ObservableCollection<string> WorkingDirectories { get; } = [];
     public AsyncCommand InitializeCommand { get; }
     public AsyncCommand CheckCommand { get; }
     public RelayCommand CancelCommand { get; }
-    public AsyncCommand SwitchAndStartCommand { get; }
+    public AsyncCommand ApplyRouteCommand { get; }
     public RelayCommand ManageSitesCommand { get; }
     public AsyncCommand SettingsCommand { get; }
     public string StatusText { get => _statusText; private set => SetProperty(ref _statusText, value); }
     public string CurrentProvider { get => _currentProvider; private set => SetProperty(ref _currentProvider, value); }
     public string RecommendedProvider { get => _recommendedProvider; private set => SetProperty(ref _recommendedProvider, value); }
     public string LastCheckedText { get => _lastCheckedText; private set => SetProperty(ref _lastCheckedText, value); }
-    public ProviderChoice? SelectedProvider { get => _selectedProvider; set { if (SetProperty(ref _selectedProvider, value)) { OnPropertyChanged(nameof(SelectionHint)); SwitchAndStartCommand.RaiseCanExecuteChanged(); } } }
-    public string? SelectedWorkingDirectory { get => _selectedWorkingDirectory; set { if (SetProperty(ref _selectedWorkingDirectory, value)) SwitchAndStartCommand.RaiseCanExecuteChanged(); } }
-    public static string SelectionHint => "低分组仅为价格提示，不阻止切换。";
+    public ProviderChoice? SelectedProvider { get => _selectedProvider; set { if (SetProperty(ref _selectedProvider, value)) { OnPropertyChanged(nameof(SelectionHint)); ApplyRouteCommand.RaiseCanExecuteChanged(); } } }
+    public static string SelectionHint => "仅当前绑定分组可应用；最低价分组只读比较。";
 
     public async Task InitializeAsync()
     {
-        await ReadCurrentProviderAsync();
+        var restored = await _applyActiveRoute.RestoreAsync(_settings);
+        _settings = restored.Settings;
+        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
         LoadPersistedPrices();
-    }
-
-    private async Task ReadCurrentProviderAsync()
-    {
-        try
-        {
-            var result = await _currentProviderQuery.ReadAsync(_settings.OmpRootDirectory, _checkCancellation?.Token ?? CancellationToken.None);
-            CurrentProvider = result.Status switch
-            {
-                OmpCurrentProviderStatus.Identified => result.ProviderId!,
-                OmpCurrentProviderStatus.ConfigurationFileMissing => "配置文件不存在",
-                OmpCurrentProviderStatus.Unrecognized => "未识别",
-                _ => "读取失败"
-            };
-            if (result.Status == OmpCurrentProviderStatus.ReadFailed)
-            {
-                StatusText = UserErrorMessages.ConfigurationReadFailed;
-                LogUiFailure(_logger, "ConfigurationReadFailed", null);
-            }
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception)
-        {
-            CurrentProvider = "读取失败";
-            StatusText = UserErrorMessages.ConfigurationReadFailed;
-            LogUiFailure(_logger, "ConfigurationReadFailed", null);
-        }
+        if (!restored.Succeeded)
+            StatusText = UserErrorMessages.ForApplyRouteStatus(restored.Status);
     }
 
     private async Task CheckAsync()
@@ -157,8 +130,7 @@ public sealed class MainViewModel : ObservableObject
         _checkCancellation = new CancellationTokenSource(); CheckCommand.RaiseCanExecuteChanged(); CancelCommand.RaiseCanExecuteChanged(); StatusText = "正在检查已启用站点的价格…";
         try
         {
-            await ReadCurrentProviderAsync();
-            var outcome = await _pricingCheck.ExecuteAsync(_settings, CurrentProvider, _checkCancellation.Token);
+            var outcome = await _pricingCheck.ExecuteAsync(_settings, _activeRoute.CurrentProviderId, _checkCancellation.Token);
             _settings = outcome.Settings;
             _lastResult = outcome.RefreshResult;
             MapResult(_lastResult, LocalAppSettings.DefaultUsageProfile);
@@ -166,7 +138,7 @@ public sealed class MainViewModel : ObservableObject
         }
         catch (OperationCanceledException) { StatusText = "已取消检查。"; }
         catch (Exception) { throw; }
-        finally { _checkCancellation.Dispose(); _checkCancellation = null; CheckCommand.RaiseCanExecuteChanged(); CancelCommand.RaiseCanExecuteChanged(); SwitchAndStartCommand.RaiseCanExecuteChanged(); }
+        finally { _checkCancellation.Dispose(); _checkCancellation = null; CheckCommand.RaiseCanExecuteChanged(); CancelCommand.RaiseCanExecuteChanged(); ApplyRouteCommand.RaiseCanExecuteChanged(); }
     }
 
     private void MapResult(PricingRefreshResult result, UsageProfile usage)
@@ -243,25 +215,36 @@ public sealed class MainViewModel : ObservableObject
 
 
 
-    private async Task SwitchAndStartAsync()
+    private async Task ApplyRouteAsync()
     {
         var choice = SelectedProvider;
-        if (choice is null || string.IsNullOrWhiteSpace(SelectedWorkingDirectory)) return;
+        if (choice is null) return;
         try
         {
-            var outcome = await _switchAndStart.ExecuteAsync(_settings, choice.ProviderId, SelectedWorkingDirectory);
+            var outcome = await _applyActiveRoute.ExecuteAsync(_settings, choice.ProviderId);
             _settings = outcome.Settings;
-            SyncSettings();
-            StatusText = UserErrorMessages.ForSwitchStatus(outcome.Status, choice.ProviderId);
+            CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+            StatusText = UserErrorMessages.ForApplyRouteStatus(outcome.Status);
         }
         catch (Exception)
         {
             StatusText = UserErrorMessages.Unexpected;
-            LogUiFailure(_logger, "SwitchAndStartUnexpected", null);
+            LogUiFailure(_logger, "ApplyRouteUnexpected", null);
         }
     }
 
-    private async Task EditSettingsAsync() { var dialog = new SettingsDialog(_settings); if (dialog.ShowDialog() == true) { _settings = _settingsUseCase.Save(dialog.Settings); SyncSettings(); await ReadCurrentProviderAsync(); LoadPersistedPrices(); } }
+    private async Task EditSettingsAsync()
+    {
+        var dialog = new SettingsDialog(_settings);
+        if (dialog.ShowDialog() == true)
+        {
+            _settings = _settingsUseCase.Save(dialog.Settings);
+            CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+            LoadPersistedPrices();
+        }
+        await Task.CompletedTask;
+    }
+
     private void HandleCommandError(Exception exception)
     {
         if (exception is OperationCanceledException) return;
@@ -275,8 +258,16 @@ public sealed class MainViewModel : ObservableObject
         foreach (var providerId in _settings.Sites.Where(x => x.Enabled).Select(x => x.ProviderId).Distinct(StringComparer.Ordinal)) ProviderChoices.Add(new ProviderChoice(providerId));
         SelectedProvider = ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, preferredProvider, StringComparison.Ordinal)) ?? ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, CurrentProvider, StringComparison.Ordinal));
     }
-    private void ManageSites() { var previousSelection = SelectedProvider?.ProviderId; var dialog = _sitesDialogFactory.Create(_settings, CurrentProvider); dialog.ShowDialog(); _settings = dialog.Settings; SyncSettings(); LoadPersistedPrices(previousSelection); }
-    private void SyncSettings() { WorkingDirectories.Clear(); foreach (var item in _settings.OmpWorkingDirectories.Distinct(StringComparer.OrdinalIgnoreCase)) WorkingDirectories.Add(item); SelectedWorkingDirectory = WorkingDirectories.FirstOrDefault(x => string.Equals(x, _settings.LastOmpWorkingDirectory, StringComparison.OrdinalIgnoreCase)) ?? WorkingDirectories.FirstOrDefault(); }
+
+    private void ManageSites()
+    {
+        var previousSelection = SelectedProvider?.ProviderId;
+        var dialog = _sitesDialogFactory.Create(_settings, CurrentProvider);
+        dialog.ShowDialog();
+        _settings = dialog.Settings;
+        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+        LoadPersistedPrices(previousSelection);
+    }
 }
 
 public sealed record ProviderChoice(string ProviderId) { public string Display => ProviderId; }

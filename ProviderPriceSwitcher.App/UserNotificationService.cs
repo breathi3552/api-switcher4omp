@@ -35,6 +35,22 @@ public static class UserErrorMessages
         _ => Unexpected
     };
 
+    public static string ForApplyRouteStatus(ProviderPriceSwitcher.Application.ApplyActiveRouteStatus status) => status switch
+    {
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.Applied => "供应商已应用；只影响后续新请求。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.NoActiveRoute => "当前没有活动供应商。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.Cleared => "活动供应商已清除。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.ProviderNotFound => "目标供应商不存在。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.ProviderDisabled => "已禁用的供应商不能应用。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.InferenceKeyMissing => "目标供应商没有模型推理 API key。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.InferenceKeyUnavailable => "暂时无法读取目标供应商的模型推理 API key。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.BindingMismatch => "模型推理 API key 与当前绑定分组不一致。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.SidecarFailed => "活动路由未应用，私有路由服务不可用。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.PersistenceFailed => "活动路由未提交到本地设置，请重试。",
+        ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.RollbackFailed => "活动路由回滚失败，当前路由状态需要重新检查。",
+        _ => Unexpected
+    };
+
     public static string ForProbeFailure(ProviderPriceSwitcher.Application.PricingAdapterFailure failure) => failure switch
     {
         ProviderPriceSwitcher.Application.PricingAdapterFailure.Authentication => "需要重新绑定凭据。",

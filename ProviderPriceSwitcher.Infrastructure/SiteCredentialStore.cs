@@ -174,7 +174,9 @@ public sealed class WindowsInferenceBindingStore : IInferenceBindingStore
         _rootDirectory = AppDataPaths.GetRoot(rootDirectory);
     }
 
-    public void Recover()
+    public void Recover() => _settingsRepository.ExecuteLocked(RecoverLocked);
+
+    private void RecoverLocked()
     {
         var transactionDirectory = TransactionDirectory;
         if (!Directory.Exists(transactionDirectory)) return;
@@ -194,28 +196,31 @@ public sealed class WindowsInferenceBindingStore : IInferenceBindingStore
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(boundGroup);
-        Recover();
-        var settings = _settingsRepository.Load();
-        var siteIndex = settings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, providerId, StringComparison.Ordinal));
-        if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{providerId}' 不存在。");
-        var record = new InferenceApiKeyRecord
+        return _settingsRepository.ExecuteLocked(() =>
         {
-            ProviderId = providerId,
-            KeyHandle = Guid.NewGuid().ToString("N"),
-            ApiKey = apiKey,
-            BoundGroup = boundGroup
-        };
-        var sites = settings.Sites.ToArray();
-        sites[siteIndex] = sites[siteIndex] with { CurrentGroup = boundGroup };
-        var updatedSettings = settings with { Sites = sites };
-        var transactionDirectory = TransactionDirectory;
-        Directory.CreateDirectory(transactionDirectory);
-        var protectedKey = WindowsInferenceApiKeyStore.Protect(record);
-        WriteDurable(Path.Combine(transactionDirectory, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(updatedSettings, AtomicJsonFile.Options));
-        WriteDurable(Path.Combine(transactionDirectory, "key.bin"), protectedKey);
-        WriteDurable(Path.Combine(transactionDirectory, "provider-id.txt"), Encoding.UTF8.GetBytes(providerId));
-        CommitPrepared(transactionDirectory, providerId);
-        return _keyStore.GetSummary(providerId) ?? throw new InvalidOperationException("inference_binding_commit_failed");
+            RecoverLocked();
+            var settings = _settingsRepository.Load();
+            var siteIndex = settings.Sites.ToList().FindIndex(site => string.Equals(site.ProviderId, providerId, StringComparison.Ordinal));
+            if (siteIndex < 0) throw new InvalidOperationException($"供应商 '{providerId}' 不存在。");
+            var record = new InferenceApiKeyRecord
+            {
+                ProviderId = providerId,
+                KeyHandle = Guid.NewGuid().ToString("N"),
+                ApiKey = apiKey,
+                BoundGroup = boundGroup
+            };
+            var sites = settings.Sites.ToArray();
+            sites[siteIndex] = sites[siteIndex] with { CurrentGroup = boundGroup };
+            var updatedSettings = settings with { Sites = sites };
+            var transactionDirectory = TransactionDirectory;
+            Directory.CreateDirectory(transactionDirectory);
+            var protectedKey = WindowsInferenceApiKeyStore.Protect(record);
+            WriteDurable(Path.Combine(transactionDirectory, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(updatedSettings, AtomicJsonFile.Options));
+            WriteDurable(Path.Combine(transactionDirectory, "key.bin"), protectedKey);
+            WriteDurable(Path.Combine(transactionDirectory, "provider-id.txt"), Encoding.UTF8.GetBytes(providerId));
+            CommitPrepared(transactionDirectory, providerId);
+            return _keyStore.GetSummary(providerId) ?? throw new InvalidOperationException("inference_binding_commit_failed");
+        });
     }
 
     private string TransactionDirectory => Path.Combine(_rootDirectory, TransactionDirectoryName);

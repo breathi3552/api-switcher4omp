@@ -22,6 +22,7 @@ public sealed record LocalAppSettings
         init => _ompWorkingDirectories = value is null ? ImmutableArray<string>.Empty : value.ToImmutableArray();
     }
     public string? LastOmpWorkingDirectory { get; init; }
+    public string? ActiveProviderId { get; init; }
 
     public static UsageProfile DefaultUsageProfile { get; } = new()
     {

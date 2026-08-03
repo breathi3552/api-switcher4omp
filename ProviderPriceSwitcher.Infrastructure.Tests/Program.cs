@@ -28,8 +28,8 @@ try
     var expectedRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".omp");
     Assert(defaults.OmpRootDirectory == expectedRoot && new AppPathDefaults().OmpConfigPath(defaults.OmpRootDirectory) == Path.Combine(expectedRoot, "agent", "config.yml"), "OMP root defaults and derived config path");
 
-    settingsRepo.Save(defaults with { Sites = [new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://p.example"), Model = defaults.Model, CurrentGroup = "g" }] });
-    Assert(settingsRepo.Load().Sites.Single().ProviderId == "p" && settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/keys", "settings roundtrip and default configuration API address");
+    settingsRepo.Save(defaults with { ActiveProviderId = "p", Sites = [new SiteConfiguration { ProviderId = "p", ConfigurationKey = "k", BaseUrl = new Uri("https://p.example"), Model = defaults.Model, CurrentGroup = "g" }] });
+    Assert(settingsRepo.Load().ActiveProviderId == "p" && settingsRepo.Load().Sites.Single().ProviderId == "p" && settingsRepo.Load().Sites.Single().ConfigurationApiAddress == "/keys", "settings roundtrip, active provider identity and default configuration API address");
     File.WriteAllText(settingsRepo.FilePath, """
         {
           "model": "gpt-5.6-sol",
@@ -265,7 +265,34 @@ try
     var secondUpstreamTask = ServeResponsesAsync(secondUpstream, "synthetic-sidecar-secret-B", "resp_B", upstreamCancellation.Token);
     await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N")), new SyntheticResolver()))
     {
-        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        var emptyRouteSettings = new MemorySettingsRepository(new LocalAppSettings());
+        var emptyRouteState = new ActiveRouteState();
+        var emptyRoute = new ApplyActiveRouteUseCase(emptyRouteSettings, supervisor, new SyntheticInferenceKeyStore(), emptyRouteState);
+        var emptyOutcome = await emptyRoute.RestoreAsync(emptyRouteSettings.Load());
+        Assert(emptyOutcome.Status == ApplyActiveRouteStatus.NoActiveRoute && supervisor.Status.IsReady, "empty active route must start the sidecar and expose its stable no-route response");
+        var activeRouteSettings = new MemorySettingsRepository(new LocalAppSettings
+        {
+            Sites =
+            [
+                new SiteConfiguration
+                {
+                    ProviderId = "loopback",
+                    ConfigurationKey = "loopback-key",
+                    BaseUrl = new Uri($"http://127.0.0.1:{upstreamPort}"),
+                    Model = "gpt-5.6-sol",
+                    CurrentGroup = "g"
+                }
+            ]
+        });
+        var activeRouteKeys = new SyntheticInferenceKeyStore();
+        activeRouteKeys.Save(new InferenceApiKeyRecord { ProviderId = "loopback", KeyHandle = "synthetic-handle", ApiKey = "synthetic-sidecar-secret", BoundGroup = "g" });
+        var activeRouteState = new ActiveRouteState();
+        var routeApply = new ApplyActiveRouteUseCase(activeRouteSettings, supervisor, activeRouteKeys, activeRouteState);
+        var applied = await routeApply.ExecuteAsync(activeRouteSettings.Load(), "loopback");
+        Assert(applied.Status == ApplyActiveRouteStatus.Applied && activeRouteSettings.Load().ActiveProviderId == "loopback" && activeRouteState.CurrentProviderId == "loopback", "application route use case must atomically apply and persist the sidecar snapshot");
+        var disabledRestore = await routeApply.RestoreAsync(activeRouteSettings.Load() with { ActiveProviderId = "loopback", Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = false }] });
+        Assert(disabledRestore.Status == ApplyActiveRouteStatus.Cleared && disabledRestore.Settings.ActiveProviderId is null && activeRouteState.CurrentProviderId is null, "restart restore must clear a disabled persisted provider without fallback");
+        await routeApply.ExecuteAsync(activeRouteSettings.Load() with { Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = true }] }, "loopback");
         var ompAgentRoot = Path.Combine(root, "omp-agent");
         Directory.CreateDirectory(ompAgentRoot);
         await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:8080/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
@@ -318,4 +345,28 @@ finally { Directory.Delete(root, true); }
 sealed class SyntheticResolver : IInferenceApiKeyResolver
 {
     public ValueTask<string?> ResolveAsync(string keyHandle, CancellationToken cancellationToken = default) => ValueTask.FromResult<string?>(keyHandle switch { "synthetic-handle" => "synthetic-sidecar-secret", "synthetic-handle-B" => "synthetic-sidecar-secret-B", _ => null });
+}
+sealed class MemorySettingsRepository(LocalAppSettings value) : ISettingsRepository
+{
+    public LocalAppSettings Value { get; private set; } = value;
+    public LocalAppSettings Load() => Value;
+    public void Save(LocalAppSettings settings) => Value = settings;
+    public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        var updated = update(Value);
+        Value = updated;
+        return updated;
+    }
+}
+
+sealed class SyntheticInferenceKeyStore : IInferenceApiKeyStore
+{
+    private readonly Dictionary<string, InferenceApiKeyRecord> _records = new(StringComparer.Ordinal);
+    public InferenceApiKeyRecord? Load(string providerId) => _records.GetValueOrDefault(providerId);
+    public void Save(InferenceApiKeyRecord record) => _records[record.ProviderId] = record;
+    public void Clear(string providerId) => _records.Remove(providerId);
+    public InferenceApiKeySummary? GetSummary(string providerId) => Load(providerId) is { } record
+        ? new InferenceApiKeySummary { ProviderId = record.ProviderId, KeyHandle = record.KeyHandle, BoundGroup = record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey), UpdatedAt = record.UpdatedAt }
+        : null;
 }

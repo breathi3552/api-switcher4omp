@@ -14,6 +14,7 @@ public interface ISettingsRepository
 {
     LocalAppSettings Load();
     void Save(LocalAppSettings settings);
+    LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update);
 }
 
 public interface IInferenceBindingStore
@@ -69,18 +70,54 @@ public interface IPricingSnapshotQuery
 
 public interface IActiveRouteController
 {
+    RouteSnapshot? Current { get; }
     string? CurrentProviderId { get; }
+    Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default);
     void Apply(RouteSnapshot snapshot);
     void ClearIfProvider(string providerId);
 }
 
-public sealed class ActiveRouteState : IActiveRouteController
+public sealed class ActiveRouteState : IActiveRouteController, IDisposable
 {
-    private readonly object _gate = new();
+    private readonly object _stateGate = new();
+    private readonly SemaphoreSlim _operationGate = new(1, 1);
     private RouteSnapshot? _current;
 
-    public RouteSnapshot? Current { get { lock (_gate) return _current; } }
+    public RouteSnapshot? Current { get { lock (_stateGate) return _current; } }
     public string? CurrentProviderId => Current?.ProviderId;
-    public void Apply(RouteSnapshot snapshot) { ArgumentNullException.ThrowIfNull(snapshot); lock (_gate) _current = snapshot; }
-    public void ClearIfProvider(string providerId) { ArgumentException.ThrowIfNullOrWhiteSpace(providerId); lock (_gate) { if (string.Equals(_current?.ProviderId, providerId, StringComparison.Ordinal)) _current = null; } }
+
+    public async Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default)
+    {
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return new RouteLease(_operationGate);
+    }
+
+    public void Apply(RouteSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        lock (_stateGate) _current = snapshot;
+    }
+
+    public void ClearIfProvider(string providerId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        lock (_stateGate)
+        {
+            if (string.Equals(_current?.ProviderId, providerId, StringComparison.Ordinal))
+                _current = null;
+        }
+    }
+
+    public void Dispose() => _operationGate.Dispose();
+
+    private sealed class RouteLease(SemaphoreSlim operationGate) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+                operationGate.Release();
+        }
+    }
 }

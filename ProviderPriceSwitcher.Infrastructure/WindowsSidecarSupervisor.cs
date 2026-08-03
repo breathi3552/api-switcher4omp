@@ -32,6 +32,7 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
     private CancellationTokenSource? _sessionCancellation;
     private Task? _receiveTask;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(15);
 
     public WindowsSidecarSupervisor(SidecarBinaryOptions options, IInferenceApiKeyResolver resolver)
     {
@@ -108,19 +109,62 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
     }
     public async ValueTask DisposeAsync() { await StopAsync().ConfigureAwait(false); _lifecycleGate.Dispose(); _sessionGate.Dispose(); _writeGate.Dispose(); }
     private async Task EnsureReady(CancellationToken ct) { if (!Status.IsReady) await StartAsync(ct).ConfigureAwait(false); }
-    private async Task<WireMessage> SendAsync(WireMessage message, CancellationToken ct)
+    private async Task<WireMessage> SendAsync(WireMessage message, CancellationToken cancellationToken)
     {
-        await _sessionGate.WaitAsync(ct).ConfigureAwait(false);
+        await _sessionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var abortSession = false;
         try
         {
-            var pipe = _pipe ?? throw new InvalidOperationException("sidecar_disconnected");
-            await WriteLockedAsync(pipe, message, ct).ConfigureAwait(false);
-            return await _responses.Reader.ReadAsync(ct).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var pipe = _pipe ?? throw new InvalidOperationException("sidecar_disconnected");
+                using var timeout = new CancellationTokenSource(CommandTimeout);
+                using var commandCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+                try
+                {
+                    await WriteLockedAsync(pipe, message, commandCancellation.Token).ConfigureAwait(false);
+                    return await _responses.Reader.ReadAsync(commandCancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException("sidecar_command_timeout");
+                }
+            }
+            catch
+            {
+                abortSession = true;
+                throw;
+            }
         }
         finally
         {
-            _sessionGate.Release();
+            try
+            {
+                if (abortSession) AbortSession();
+            }
+            finally
+            {
+                _sessionGate.Release();
+            }
         }
+    }
+
+    private void AbortSession()
+    {
+        _sessionCancellation?.Cancel();
+        var pipe = _pipe;
+        _pipe = null;
+        pipe?.Dispose();
+        var process = _process;
+        _process = null;
+        if (process is { HasExited: false })
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+        }
+        process?.Dispose();
+        _responses.Writer.TryComplete(new IOException("sidecar_session_aborted"));
+        SetStatus(new(SidecarConnectionStatus.Disconnected, "sidecar_session_aborted"));
     }
     private async Task ReceiveLoopAsync(Stream stream, CancellationToken ct)
     {

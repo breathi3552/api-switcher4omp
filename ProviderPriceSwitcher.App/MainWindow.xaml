@@ -53,11 +53,10 @@
                 </DataGrid.Columns>
             </DataGrid>
             <Border Grid.Row="2" Padding="16" Margin="0,16,0,0" Background="White" BorderBrush="#D9DEE7" BorderThickness="1" CornerRadius="5">
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="220"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="280"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="220"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <TextBlock Text="目标 Provider" Margin="0,0,10,0"/><ComboBox Grid.Column="1" ItemsSource="{Binding ProviderChoices}" SelectedItem="{Binding SelectedProvider}" DisplayMemberPath="Display"/>
-                    <TextBlock Grid.Column="2" Text="OMP 工作目录" Margin="22,0,10,0"/><ComboBox Grid.Column="3" ItemsSource="{Binding WorkingDirectories}" Text="{Binding SelectedWorkingDirectory, UpdateSourceTrigger=PropertyChanged}" IsEditable="True"/>
-                    <TextBlock Grid.Column="4" Text="{Binding SelectionHint}" Foreground="#9A6700" Margin="18,0" TextWrapping="Wrap"/>
-                    <Button Grid.Column="5" Content="切换并启动 OMP" Command="{Binding SwitchAndStartCommand}" Style="{StaticResource PrimaryButton}" Margin="0"/>
+                    <TextBlock Grid.Column="2" Text="应用只影响后续新请求；价格检查和推荐不会自动应用。" Foreground="#9A6700" Margin="18,0" TextWrapping="Wrap"/>
+                    <Button Grid.Column="3" Content="应用供应商" Command="{Binding ApplyRouteCommand}" Style="{StaticResource PrimaryButton}" Margin="0"/>
                 </Grid>
             </Border>
         </Grid>

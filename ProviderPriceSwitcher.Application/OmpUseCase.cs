@@ -48,13 +48,12 @@ public sealed class SwitchAndStartUseCase(
         string workingDirectory,
         CancellationToken cancellationToken = default)
     {
+        using var routeLease = activeRoute is null ? null : await activeRoute.AcquireAsync(cancellationToken).ConfigureAwait(false);
         var configuration = await configurationService.SwitchAsync(settings.OmpRootDirectory, OmpSidecarProvider.Id, cancellationToken).ConfigureAwait(false);
         if (!configuration.Succeeded)
             return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
-
         var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var updated = settings with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory };
-        settingsRepository.Save(updated);
+        var updated = settingsRepository.Update(current => current with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory });
         if (routeController is not null && inferenceApiKeyStore is not null)
         {
             var site = settings.Sites.FirstOrDefault(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));

@@ -84,6 +84,7 @@ public sealed class JsonSettingsRepository : ISettingsRepository
 {
     public string FilePath { get; }
     private readonly IAppPathDefaults _pathDefaults;
+    private readonly object _gate = new();
     public JsonSettingsRepository(string? rootDirectory = null, IAppPathDefaults? pathDefaults = null)
     {
         FilePath = AppDataPaths.SettingsFile(rootDirectory);
@@ -173,10 +174,32 @@ public sealed class JsonSettingsRepository : ISettingsRepository
         return settings with { OmpRootDirectory = root, OmpWorkingDirectories = directories, LastOmpWorkingDirectory = last, Sites = settings.Sites.ToArray() };
     }
 
+    public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        lock (_gate)
+        {
+            var updated = update(Load());
+            Save(updated);
+            return updated;
+        }
+    }
+    internal void ExecuteLocked(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_gate) action();
+    }
+
+    internal T ExecuteLocked<T>(Func<T> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_gate) return action();
+    }
+
     public void Save(LocalAppSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        AtomicJsonFile.Write(FilePath, settings);
+        lock (_gate) AtomicJsonFile.Write(FilePath, settings);
     }
 }
 

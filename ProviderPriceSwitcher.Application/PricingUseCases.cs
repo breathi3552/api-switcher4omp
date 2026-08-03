@@ -32,10 +32,12 @@ public sealed class PricingCheckUseCase(PricingRefreshService refreshService, IS
         }).ToList();
 
         if (!changed)
-            return new PricingCheckOutcome(settings, result);
+        {
+            var latest = settingsRepository.Load();
+            return new PricingCheckOutcome(settings with { ActiveProviderId = latest.ActiveProviderId }, result);
+        }
 
-        var updated = settings with { Sites = sites };
-        settingsRepository.Save(updated);
+        var updated = settingsRepository.Update(current => settings with { Sites = sites.ToArray(), ActiveProviderId = current.ActiveProviderId });
         return new PricingCheckOutcome(updated, result);
     }
 }
