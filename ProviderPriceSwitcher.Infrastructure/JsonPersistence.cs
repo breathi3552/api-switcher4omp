@@ -165,13 +165,36 @@ public sealed class JsonSettingsRepository : ISettingsRepository
             throw new JsonDataException(FilePath, ex);
         }
     }
+    private static bool IsValidPort(int port) => port is >= 1 and <= 65535;
+
+    private static void ValidatePortsForSave(LocalAppSettings settings)
+    {
+        if (!IsValidPort(settings.GatewayPort))
+            throw new ArgumentOutOfRangeException(nameof(settings), settings.GatewayPort, "gateway_port_invalid");
+        if (!IsValidPort(settings.CurrentGatewayPort))
+            throw new ArgumentOutOfRangeException(nameof(settings), settings.CurrentGatewayPort, "current_gateway_port_invalid");
+    }
     private LocalAppSettings ApplyDefaults(LocalAppSettings settings)
     {
         var root = string.IsNullOrWhiteSpace(settings.OmpRootDirectory) ? _pathDefaults.OmpRootDirectory : settings.OmpRootDirectory;
         var agent = _pathDefaults.OmpAgentDirectory(root);
         var directories = settings.OmpWorkingDirectories.Count == 0 ? new[] { agent } : settings.OmpWorkingDirectories.ToArray();
         var last = string.IsNullOrWhiteSpace(settings.LastOmpWorkingDirectory) ? directories[0] : settings.LastOmpWorkingDirectory;
-        return settings with { OmpRootDirectory = root, OmpWorkingDirectories = directories, LastOmpWorkingDirectory = last, Sites = settings.Sites.ToArray() };
+        if (!IsValidPort(settings.GatewayPort))
+            throw new JsonDataException(FilePath, new FormatException("gateway_port_invalid"));
+        if (!IsValidPort(settings.CurrentGatewayPort))
+            throw new JsonDataException(FilePath, new FormatException("current_gateway_port_invalid"));
+        var port = settings.GatewayPort;
+        var currentPort = settings.CurrentGatewayPort;
+        return settings with
+        {
+            OmpRootDirectory = root,
+            OmpWorkingDirectories = directories,
+            LastOmpWorkingDirectory = last,
+            GatewayPort = port,
+            CurrentGatewayPort = currentPort,
+            Sites = settings.Sites.ToArray()
+        };
     }
 
     public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update)
@@ -195,10 +218,10 @@ public sealed class JsonSettingsRepository : ISettingsRepository
         ArgumentNullException.ThrowIfNull(action);
         lock (_gate) return action();
     }
-
     public void Save(LocalAppSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        ValidatePortsForSave(settings);
         lock (_gate) AtomicJsonFile.Write(FilePath, settings);
     }
 }

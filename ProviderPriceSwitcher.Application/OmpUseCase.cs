@@ -1,86 +1,163 @@
-﻿using ProviderPriceSwitcher.Core;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 
 namespace ProviderPriceSwitcher.Application;
 
 public static class OmpSidecarProvider
 {
     public const string Id = "provider-price-switcher";
+    public const string Host = "127.0.0.1";
+    public const int DefaultPort = 15722;
 }
-public sealed record OmpConfigurationOperationResult(bool Succeeded);
-public sealed record OmpLaunchResult(bool Succeeded, bool ExistingProcess);
 
-public interface IOmpConfigurationService
+public enum OmpTakeoverStatus
 {
-    Task<OmpConfigurationOperationResult> SwitchAsync(string ompRootDirectory, string providerId, CancellationToken cancellationToken = default);
+    TakenOver,
+    NotTakenOver,
+    ReadFailed
 }
+
+public sealed record OmpTakeoverCheckResult(OmpTakeoverStatus Status, string? CurrentProviderId = null, int? CurrentGatewayPort = null);
+public enum OmpTakeoverFailureKind
+{
+    None,
+    InvalidPort,
+    Configuration,
+    RollbackFailed
+}
+public sealed record OmpTakeoverOperationResult(
+    bool Succeeded,
+    OmpTakeoverFailureKind FailureKind = OmpTakeoverFailureKind.None,
+    bool BackupRetentionSucceeded = true);
+
+public interface IOmpTakeoverService
+{
+    Task<OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default);
+    Task<OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default);
+}
+
+public sealed record OmpLaunchResult(bool Succeeded);
 
 public interface IOmpProcessLauncher
 {
     OmpLaunchResult Launch(string workingDirectory);
 }
 
-public enum SwitchAndStartStatus
+public enum OmpLaunchStatus
 {
-    ConfigurationFailed,
     Started,
-    StartedWithExistingProcess,
-    LaunchFailedAfterSwitch
+    TakeoverRequired,
+    TakeoverFailed,
+    TakeoverReadFailed,
+    SettingsPersistenceFailed,
+    LaunchFailed
 }
 
-public sealed record SwitchAndStartOutcome(SwitchAndStartStatus Status, LocalAppSettings Settings);
+public sealed record OmpLaunchOutcome(
+    OmpLaunchStatus Status,
+    LocalAppSettings Settings,
+    OmpTakeoverFailureKind TakeoverFailureKind = OmpTakeoverFailureKind.None,
+    bool BackupRetentionSucceeded = true)
+{
+    public bool Succeeded => Status == OmpLaunchStatus.Started;
+}
 
-public sealed class SwitchAndStartUseCase(
+public sealed class OmpLaunchUseCase(
     ISettingsRepository settingsRepository,
-    IOmpConfigurationService configurationService,
+    IOmpTakeoverService takeoverService,
     IOmpProcessLauncher processLauncher,
-    ILogger<SwitchAndStartUseCase> logger,
-    IRouteController? routeController = null,
-    IInferenceApiKeyStore? inferenceApiKeyStore = null,
-    IActiveRouteController? activeRoute = null)
+    ILogger<OmpLaunchUseCase> logger)
 {
     private static readonly Action<ILogger, string, Exception?> LogLaunchFailure =
-        LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed after configuration switch: {FailureKind}");
+        LoggerMessage.Define<string>(LogLevel.Error, new EventId(1, "OmpLaunchFailure"), "OMP launch failed: {FailureKind}");
 
-    public async Task<SwitchAndStartOutcome> ExecuteAsync(
+    public Task<OmpTakeoverCheckResult> CheckTakeoverAsync(
         LocalAppSettings settings,
-        string providerId,
+        CancellationToken cancellationToken = default) =>
+        takeoverService.CheckAsync(settings.OmpRootDirectory, cancellationToken);
+
+    public async Task<OmpLaunchOutcome> LaunchAsync(
+        LocalAppSettings settings,
         string workingDirectory,
         CancellationToken cancellationToken = default)
     {
-        using var routeLease = activeRoute is null ? null : await activeRoute.AcquireAsync(cancellationToken).ConfigureAwait(false);
-        var configuration = await configurationService.SwitchAsync(settings.OmpRootDirectory, OmpSidecarProvider.Id, cancellationToken).ConfigureAwait(false);
-        if (!configuration.Succeeded)
-            return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
-        var directories = settings.OmpWorkingDirectories.Append(workingDirectory).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var updated = settingsRepository.Update(current => current with { OmpWorkingDirectories = directories, LastOmpWorkingDirectory = workingDirectory });
-        if (routeController is not null && inferenceApiKeyStore is not null)
+        ArgumentNullException.ThrowIfNull(settings);
+        var takeover = await takeoverService.CheckAsync(settings.OmpRootDirectory, cancellationToken).ConfigureAwait(false);
+        if (takeover.Status == OmpTakeoverStatus.NotTakenOver)
+            return new(OmpLaunchStatus.TakeoverRequired, settings);
+        if (takeover.Status == OmpTakeoverStatus.ReadFailed)
+            return new(OmpLaunchStatus.TakeoverReadFailed, settings);
+        return LaunchProcess(settings, workingDirectory, backupRetentionSucceeded: true, cancellationToken);
+    }
+
+    public async Task<OmpLaunchOutcome> TakeOverAndLaunchAsync(
+        LocalAppSettings settings,
+        string workingDirectory,
+        int gatewayPort,
+        CancellationToken cancellationToken = default)
+    {
+        var takeover = await takeoverService.TakeOverAsync(settings.OmpRootDirectory, gatewayPort, cancellationToken).ConfigureAwait(false);
+        if (!takeover.Succeeded)
+            return new(OmpLaunchStatus.TakeoverFailed, settings, takeover.FailureKind, takeover.BackupRetentionSucceeded);
+        LocalAppSettings takeoverSettings;
+        try
         {
-            var site = settings.Sites.FirstOrDefault(x => string.Equals(x.ProviderId, providerId, StringComparison.Ordinal));
-            var key = site is null ? null : inferenceApiKeyStore.Load(providerId);
-            if (site is null || !site.Enabled || key is null || !string.Equals(key.BoundGroup, site.CurrentGroup, StringComparison.Ordinal))
+            cancellationToken.ThrowIfCancellationRequested();
+            takeoverSettings = settingsRepository.Update(current => current with { CurrentGatewayPort = gatewayPort });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            LogLaunchFailure(logger, OmpLaunchStatus.SettingsPersistenceFailed.ToString(), exception);
+            return new(OmpLaunchStatus.SettingsPersistenceFailed, settings, BackupRetentionSucceeded: takeover.BackupRetentionSucceeded);
+        }
+        return LaunchProcess(
+            takeoverSettings,
+            workingDirectory,
+            takeover.BackupRetentionSucceeded,
+            cancellationToken);
+    }
+
+    private OmpLaunchOutcome LaunchProcess(
+        LocalAppSettings settings,
+        string workingDirectory,
+        bool backupRetentionSucceeded,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var directories = settings.OmpWorkingDirectories
+            .Append(workingDirectory)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        LocalAppSettings updated;
+        try
+        {
+            updated = settingsRepository.Update(current => current with
             {
-                if (activeRoute?.CurrentProviderId is { } active && string.Equals(active, providerId, StringComparison.Ordinal))
-                {
-                    await routeController.ClearAsync(cancellationToken).ConfigureAwait(false);
-                    activeRoute.ClearIfProvider(providerId);
-                }
-                return new SwitchAndStartOutcome(SwitchAndStartStatus.ConfigurationFailed, settings);
-            }
-            var snapshot = new ProviderPriceSwitcher.Core.RouteSnapshot(providerId, site.BaseUrl.ToString(), key.KeyHandle);
-            await routeController.ApplyAsync(snapshot, cancellationToken).ConfigureAwait(false);
-            activeRoute?.Apply(snapshot);
+                OmpWorkingDirectories = directories,
+                LastOmpWorkingDirectory = workingDirectory
+            });
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            LogLaunchFailure(logger, OmpLaunchStatus.SettingsPersistenceFailed.ToString(), exception);
+            return new(OmpLaunchStatus.SettingsPersistenceFailed, settings, BackupRetentionSucceeded: backupRetentionSucceeded);
         }
 
         var launch = processLauncher.Launch(workingDirectory);
         if (!launch.Succeeded)
         {
-            LogLaunchFailure(logger, SwitchAndStartStatus.LaunchFailedAfterSwitch.ToString(), null);
-            return new SwitchAndStartOutcome(SwitchAndStartStatus.LaunchFailedAfterSwitch, updated);
+            LogLaunchFailure(logger, OmpLaunchStatus.LaunchFailed.ToString(), null);
+            return new(OmpLaunchStatus.LaunchFailed, updated, BackupRetentionSucceeded: backupRetentionSucceeded);
         }
 
-        return new SwitchAndStartOutcome(
-            launch.ExistingProcess ? SwitchAndStartStatus.StartedWithExistingProcess : SwitchAndStartStatus.Started,
-            updated);
+        return new(OmpLaunchStatus.Started, updated, BackupRetentionSucceeded: backupRetentionSucceeded);
     }
 }

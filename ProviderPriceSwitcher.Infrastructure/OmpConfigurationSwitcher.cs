@@ -53,13 +53,15 @@ public sealed class OmpConfigurationSwitchResult
         string path,
         string? backupPath,
         OmpConfigurationPreview preview,
-        Exception? exception)
+        Exception? exception,
+        Exception? backupRetentionException = null)
     {
         Succeeded = succeeded;
         Path = path;
         BackupPath = backupPath;
         Preview = preview;
         Exception = exception;
+        BackupRetentionException = backupRetentionException;
     }
 
     public bool Succeeded { get; }
@@ -70,12 +72,15 @@ public sealed class OmpConfigurationSwitchResult
     public OmpConfigurationPreview Preview { get; }
     public IReadOnlyList<OmpConfigurationChange> Changes => Preview.Changes;
     public Exception? Exception { get; }
+    public Exception? BackupRetentionException { get; }
+    public bool BackupRetentionSucceeded => BackupRetentionException is null;
     public string? Error => Exception?.Message ?? Preview.Error;
 }
 
 /// <summary>Creates previews and safely applies OMP provider changes.</summary>
 public sealed class OmpConfigurationSwitcher
 {
+    internal const string BootstrapConfiguration = "modelRoles:\n  default: bootstrap/gpt-5.6-sol\n";
     private static readonly Regex SafeProviderId = new("^[A-Za-z0-9][A-Za-z0-9._-]*$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private readonly OmpConfigurationAnalyzer _analyzer;
 
@@ -117,21 +122,31 @@ public sealed class OmpConfigurationSwitcher
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         cancellationToken.ThrowIfCancellationRequested();
-        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        var encoding = DetectEncoding(bytes, out var preambleLength);
-        var text = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
+        var exists = File.Exists(path);
+        var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        byte[] bytes = exists ? await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false) : [];
+        var preambleLength = 0;
+        if (exists)
+            encoding = DetectEncoding(bytes, out preambleLength);
+        var text = exists
+            ? encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength)
+            : BootstrapConfiguration;
         var preview = Preview(text, targetProvider);
         if (!preview.IsValid)
             return new OmpConfigurationSwitchResult(false, path, null, preview, null);
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        Directory.CreateDirectory(directory);
         var fileName = Path.GetFileName(path);
-        var backupPath = path + ".bak-" + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + ".yml";
+        var backupPath = exists ? CreateBackupPath(path) : null;
         var tempPath = Path.Combine(directory, "." + fileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        Exception? backupRetentionException = null;
+        OmpConfigurationSwitchResult result;
         try
         {
             // The backup is a complete copy made before touching the source.
-            File.Copy(path, backupPath, overwrite: false);
+            if (backupPath is not null)
+                File.Copy(path, backupPath, overwrite: false);
             cancellationToken.ThrowIfCancellationRequested();
             var output = encoding.GetPreamble().Concat(encoding.GetBytes(preview.NewText)).ToArray();
             await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
@@ -142,18 +157,38 @@ public sealed class OmpConfigurationSwitcher
             }
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(tempPath, path, overwrite: true);
-            return new OmpConfigurationSwitchResult(true, path, backupPath, preview, null);
+            result = new OmpConfigurationSwitchResult(true, path, backupPath, preview, null);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
         {
             TryDelete(tempPath);
-            return new OmpConfigurationSwitchResult(false, path, backupPath, preview, exception);
+            result = new OmpConfigurationSwitchResult(false, path, backupPath, preview, exception);
         }
         catch
         {
             TryDelete(tempPath);
             throw;
         }
+        finally
+        {
+            try
+            {
+                PruneBackups(directory, fileName);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                backupRetentionException = exception;
+            }
+        }
+        return backupRetentionException is null
+            ? result
+            : new OmpConfigurationSwitchResult(
+                result.Succeeded,
+                result.Path,
+                result.BackupPath,
+                result.Preview,
+                result.Exception,
+                backupRetentionException);
     }
 
     public Task<OmpConfigurationSwitchResult> SwitchAsync(string path, string targetProvider, CancellationToken cancellationToken = default) => SwitchFileAsync(path, targetProvider, cancellationToken);
@@ -169,6 +204,30 @@ public sealed class OmpConfigurationSwitcher
             builder.Remove(replacement.ValueStart, replacement.ValueEnd - replacement.ValueStart)
                 .Insert(replacement.ValueStart, replacement.Value);
         return builder.ToString();
+    }
+
+    internal static string CreateBackupPath(string path)
+    {
+        var stamp = DateTime.UtcNow;
+        for (var attempt = 0; attempt < 1000; attempt++)
+        {
+            var candidate = path + ".bak-" + stamp.AddMilliseconds(attempt).ToString("yyyyMMddHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + ".yml";
+            if (!File.Exists(candidate))
+                return candidate;
+        }
+        throw new IOException("Unable to allocate a unique OMP configuration backup path.");
+    }
+
+    internal static void PruneBackups(string directory, string fileName)
+    {
+        var prefix = fileName + ".bak-";
+        var backups = Directory.EnumerateFiles(directory, prefix + "*.yml")
+            .Where(path => Path.GetFileName(path).StartsWith(prefix, StringComparison.Ordinal)
+                && Regex.IsMatch(Path.GetFileName(path), "^" + Regex.Escape(fileName) + @"\.bak-\d{17}\.yml$", RegexOptions.CultureInvariant))
+            .OrderByDescending(Path.GetFileName, StringComparer.Ordinal)
+            .ToArray();
+        foreach (var old in backups.Skip(5))
+            File.Delete(old);
     }
 
     private static UTF8Encoding DetectEncoding(byte[] bytes, out int preambleLength)

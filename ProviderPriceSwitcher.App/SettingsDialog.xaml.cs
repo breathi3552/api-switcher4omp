@@ -11,7 +11,7 @@ namespace ProviderPriceSwitcher.App;
 public sealed partial class SettingsDialog : Window
 {
     private readonly LocalAppSettings _source;
-    private readonly TextBox _timeout = new(), _ompRoot = new();
+    private readonly TextBox _timeout = new(), _ompRoot = new(), _gatewayPort = new();
     private readonly ListBox _directoryList = new() { MinHeight = 140, DisplayMemberPath = nameof(WorkingDirectoryRow.Display) };
     private readonly Button _deleteDirectory = new() { Content = "删除" };
     private readonly Button _setDefaultDirectory = new() { Content = "设为默认" };
@@ -44,9 +44,15 @@ public sealed partial class SettingsDialog : Window
         var content = new Grid();
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         content.RowDefinitions.Add(new RowDefinition());
 
+        _gatewayPort.Text = settings.GatewayPort.ToString(CultureInfo.InvariantCulture);
+        var gatewayPortRow = Row("网关端口（仅 127.0.0.1；下次完整启动生效）", _gatewayPort, _gatewayPort.Text);
+        content.Children.Add(gatewayPortRow);
+
         var timeoutRow = Row("请求超时（秒）", _timeout, settings.RequestTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+        Grid.SetRow(timeoutRow, 1);
         content.Children.Add(timeoutRow);
 
         var rootRow = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
@@ -61,7 +67,7 @@ public sealed partial class SettingsDialog : Window
         Grid.SetColumn(browseRoot, 1);
         rootInput.Children.Add(browseRoot);
         rootRow.Children.Add(rootInput);
-        Grid.SetRow(rootRow, 1);
+        Grid.SetRow(rootRow, 2);
         content.Children.Add(rootRow);
 
         var directoriesPanel = new Grid();
@@ -81,7 +87,7 @@ public sealed partial class SettingsDialog : Window
         directoryButtons.Children.Add(_setDefaultDirectory);
         Grid.SetRow(directoryButtons, 2);
         directoriesPanel.Children.Add(directoryButtons);
-        Grid.SetRow(directoriesPanel, 2);
+        Grid.SetRow(directoriesPanel, 3);
         content.Children.Add(directoriesPanel);
         root.Children.Add(content);
 
@@ -168,12 +174,18 @@ public sealed partial class SettingsDialog : Window
             MessageBox.Show("超时必须为非负整数。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
+        if (!int.TryParse(_gatewayPort.Text, out var gatewayPort) || gatewayPort is < 1 or > 65535)
+        {
+            MessageBox.Show("网关端口必须为 1 到 65535 之间的整数。", "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         Settings = _source with
         {
             RequestTimeoutSeconds = timeout,
             OmpRootDirectory = _ompRoot.Text.Trim(),
             OmpWorkingDirectories = _directories.ToList(),
-            LastOmpWorkingDirectory = _defaultDirectory
+            LastOmpWorkingDirectory = _defaultDirectory,
+            GatewayPort = gatewayPort
         };
         DialogResult = true;
     }

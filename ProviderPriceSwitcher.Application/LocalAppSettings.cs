@@ -21,6 +21,8 @@ public sealed record LocalAppSettings
         get => _ompWorkingDirectories;
         init => _ompWorkingDirectories = value is null ? ImmutableArray<string>.Empty : value.ToImmutableArray();
     }
+    public int GatewayPort { get; init; } = OmpSidecarProvider.DefaultPort;
+    public int CurrentGatewayPort { get; init; } = OmpSidecarProvider.DefaultPort;
     public string? LastOmpWorkingDirectory { get; init; }
     public string? ActiveProviderId { get; init; }
 

@@ -13,6 +13,7 @@
                     <Button Content="检查价格" Command="{Binding CheckCommand}" IsDefault="True"/>
                     <Button Content="取消检查" Command="{Binding CancelCommand}"/>
                     <Button Content="管理站点" Command="{Binding ManageSitesCommand}"/>
+                    <Button Content="启动 OMP" Command="{Binding StartOmpCommand}" Style="{StaticResource PrimaryButton}"/>
                     <Button Content="设置" Command="{Binding SettingsCommand}"/>
                 </StackPanel>
                 <TextBlock Grid.Column="1" Text="{Binding StatusText}" Foreground="#52606D"/>
@@ -21,10 +22,12 @@
         <Grid Margin="20">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Border Padding="16" Background="White" BorderBrush="#D9DEE7" BorderThickness="1" CornerRadius="5" Margin="0,0,0,16">
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                     <StackPanel><TextBlock Text="当前 OMP Provider" Foreground="#6B7280"/><TextBlock Text="{Binding CurrentProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                     <StackPanel Grid.Column="1"><TextBlock Text="推荐 Provider" Foreground="#6B7280"/><TextBlock Text="{Binding RecommendedProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
-                    <StackPanel Grid.Column="2"><TextBlock Text="最近检查" Foreground="#6B7280"/><TextBlock Text="{Binding LastCheckedText}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="2"><TextBlock Text="OMP 接管" Foreground="#6B7280"/><TextBlock Text="{Binding TakeoverStatus}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="3"><TextBlock Text="网关端口" Foreground="#6B7280"/><TextBlock Text="{Binding GatewayPortStatus}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="4"><TextBlock Text="最近检查" Foreground="#6B7280"/><TextBlock Text="{Binding LastCheckedText}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                 </Grid>
             </Border>
             <DataGrid Grid.Row="1" MouseDoubleClick="PriceGrid_MouseDoubleClick" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderBrush="#D9DEE7" BorderThickness="1" Background="White">

@@ -17,7 +17,6 @@ await Task.Delay(100);
 Assert(errors.Count == 0 && canceled.CanExecute(null), "cancellation must not notify and must restore CanExecute");
 const string syntheticFailure = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
 var publicMessages = Enum.GetValues<ProviderPriceSwitcher.Application.PricingRefreshFailureKind>().Select(kind => UserErrorMessages.ForPricingFailure(kind))
-    .Concat(Enum.GetValues<ProviderPriceSwitcher.Application.SwitchAndStartStatus>().Select(status => UserErrorMessages.ForSwitchStatus(status, "provider")))
     .Concat(Enum.GetValues<ProviderPriceSwitcher.Application.PricingAdapterFailure>().Select(UserErrorMessages.ForProbeFailure))
     .Append(UserErrorMessages.Unexpected)
     .ToArray();
@@ -35,7 +34,12 @@ var startupKeyStore = new StartupKeyStore();
 var startupResolver = new ProviderPriceSwitcher.Application.InferenceApiKeyResolverBridge(startupKeyStore);
 App.RegisterAvailableInferenceKeys(startupSettings, startupKeyStore, startupResolver, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
 Assert(await startupResolver.ResolveAsync("healthy-handle") == "healthy-secret", "one corrupt inference key must not prevent healthy keys or application startup");
-Assert(UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.ConfigurationFailed, "provider").StartsWith("配置未切换，OMP 未启动", StringComparison.Ordinal) && UserErrorMessages.ForSwitchStatus(ProviderPriceSwitcher.Application.SwitchAndStartStatus.LaunchFailedAfterSwitch, "provider").StartsWith("配置已切换，但 OMP 启动失败", StringComparison.Ordinal), "switch failure mapping mismatch");
+Assert(UserErrorMessages.ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus.Started).Contains("活动供应商未改变", StringComparison.Ordinal), "launch status mapping mismatch");
+var warningOutcome = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
+    ProviderPriceSwitcher.Application.OmpLaunchStatus.Started,
+    new ProviderPriceSwitcher.Application.LocalAppSettings(),
+    BackupRetentionSucceeded: false);
+Assert(UserErrorMessages.ForOmpLaunchStatus(warningOutcome).Contains("备份保留失败", StringComparison.Ordinal), "backup retention warning mapping mismatch");
 var probeAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
 var registry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
     new FakeAdapter(new("one", "One", false, ["无"])),
@@ -65,6 +69,7 @@ var windowThread = new Thread(() =>
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
         var settings = settingsRepository.Load();
+        settings = settings with { GatewayPort = 16222, CurrentGatewayPort = 15722 };
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
         var snapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(snapshots);
@@ -76,10 +81,29 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
+        var fakeTakeover = new FakeTakeover();
+        var fakeOmpLauncher = new FakeOmpLauncher();
+        var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
+            settingsRepository,
+            fakeTakeover,
+            fakeOmpLauncher,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.OmpLaunchUseCase>.Instance);
         var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         var window = new MainWindow(viewModel);
         window.Show();
+        WaitFor(() => viewModel.TakeoverStatus != "检查中");
+        activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
+        var activeBeforeLaunch = activeRoute.Current;
+        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver;
+        notifications.ConfirmResult = false;
+        viewModel.StartOmpCommand.Execute(null);
+        WaitFor(() => viewModel.StatusText == "已取消启动。");
+        Assert(fakeOmpLauncher.Calls == 0 && activeRoute.Current == activeBeforeLaunch, "cancelled first takeover must not launch or change the active route");
+        notifications.ConfirmResult = true;
+        viewModel.StartOmpCommand.Execute(null);
+        WaitFor(() => viewModel.StatusText.Contains("活动供应商未改变", StringComparison.Ordinal));
+        Assert(fakeTakeover.TakeoverCalls == 1 && fakeTakeover.LastPort == 15722 && fakeOmpLauncher.Calls == 1 && viewModel.TakeoverStatus == "OMP 已接管" && activeRoute.Current == activeBeforeLaunch, "takeover and launch must preserve the active supplier and current port");
 
         var site = new ProviderPriceSwitcher.Core.SiteConfiguration
         {
@@ -106,6 +130,7 @@ var windowThread = new Thread(() =>
             new ProviderPriceSwitcher.Application.PricingCheckUseCase(pricingRefresh, settingsRepository, snapshots),
             settingsUseCase,
             applyActiveRoute,
+            ompLaunch,
             activeRoute,
             snapshotQuery,
             pricingSettings,
@@ -340,6 +365,31 @@ sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteContr
     public Task ApplyAsync(ProviderPriceSwitcher.Core.RouteSnapshot snapshot, CancellationToken cancellationToken = default) => Task.CompletedTask;
     public Task ClearAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
+sealed class FakeTakeover : ProviderPriceSwitcher.Application.IOmpTakeoverService
+{
+    public ProviderPriceSwitcher.Application.OmpTakeoverStatus Status { get; set; } = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
+    public int TakeoverCalls { get; private set; }
+    public int LastPort { get; private set; }
+    public Task<ProviderPriceSwitcher.Application.OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverCheckResult(Status));
+    public Task<ProviderPriceSwitcher.Application.OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default)
+    {
+        TakeoverCalls++;
+        LastPort = gatewayPort;
+        return Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverOperationResult(true));
+    }
+}
+
+sealed class FakeOmpLauncher : ProviderPriceSwitcher.Application.IOmpProcessLauncher
+{
+    public int Calls { get; private set; }
+    public ProviderPriceSwitcher.Application.OmpLaunchResult Launch(string workingDirectory)
+    {
+        Calls++;
+        return new(true);
+    }
+}
+
 
 sealed class FakeUriLauncher : IExternalUriLauncher
 {

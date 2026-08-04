@@ -24,7 +24,7 @@ try
 {
     var settingsRepo = new JsonSettingsRepository(root);
     var defaults = settingsRepo.Load();
-    Assert(defaults.Model == "gpt-5.6-sol" && defaults.RequestTimeoutSeconds == 10, "defaults");
+    Assert(defaults.Model == "gpt-5.6-sol" && defaults.RequestTimeoutSeconds == 10 && defaults.GatewayPort == 15722 && defaults.CurrentGatewayPort == 15722, "defaults");
     var expectedRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".omp");
     Assert(defaults.OmpRootDirectory == expectedRoot && new AppPathDefaults().OmpConfigPath(defaults.OmpRootDirectory) == Path.Combine(expectedRoot, "agent", "config.yml"), "OMP root defaults and derived config path");
 
@@ -143,10 +143,15 @@ try
     Assert(SiteConfigurationKey.Create("provider", "new-api", new Uri("https://example.com/base"), "model", "group") != SiteConfigurationKey.Create("provider", "pawsai", new Uri("https://example.com/base"), "model", "group"), "old snapshot key mismatch");
     settingsRepo.Save(migrated);
     var savedSettings = File.ReadAllText(settingsRepo.FilePath);
-    Assert(savedSettings.Contains("ompRootDirectory", StringComparison.Ordinal) && !savedSettings.Contains("resultTtl", StringComparison.Ordinal) && !savedSettings.Contains("ompModelsPath", StringComparison.Ordinal) && !savedSettings.Contains("ompConfigPath", StringComparison.Ordinal), "retired settings must disappear after save");
+    Assert(savedSettings.Contains("ompRootDirectory", StringComparison.Ordinal) && savedSettings.Contains("gatewayPort", StringComparison.Ordinal) && savedSettings.Contains("currentGatewayPort", StringComparison.Ordinal) && !savedSettings.Contains("resultTtl", StringComparison.Ordinal) && !savedSettings.Contains("ompModelsPath", StringComparison.Ordinal) && !savedSettings.Contains("ompConfigPath", StringComparison.Ordinal), "settings port persistence and retired fields");
     Assert(!Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any(), "atomic settings write");
     settingsRepo.Save(defaults);
+    try { settingsRepo.Save(defaults with { GatewayPort = 0 }); throw new InvalidOperationException("invalid gateway port was saved"); } catch (ArgumentOutOfRangeException) { }
+    try { settingsRepo.Save(defaults with { CurrentGatewayPort = 0 }); throw new InvalidOperationException("invalid current gateway port was saved"); } catch (ArgumentOutOfRangeException) { }
     Assert(File.Exists(settingsRepo.FilePath + ".bak") && !Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any(), "atomic settings write and backup");
+    File.WriteAllText(settingsRepo.FilePath, "{\"gatewayPort\":0,\"currentGatewayPort\":15722}");
+    try { settingsRepo.Load(); throw new InvalidOperationException("invalid gateway port accepted"); } catch (JsonDataException) { }
+    settingsRepo.Save(defaults);
     File.WriteAllText(settingsRepo.FilePath, "{ invalid");
     try { settingsRepo.Load(); throw new InvalidOperationException("corrupt settings accepted"); } catch (JsonDataException) { }
     settingsRepo.Save(defaults);
@@ -263,7 +268,8 @@ try
     }
     var upstreamTask = ServeResponsesAsync(upstream, "synthetic-sidecar-secret", "resp_A", upstreamCancellation.Token);
     var secondUpstreamTask = ServeResponsesAsync(secondUpstream, "synthetic-sidecar-secret-B", "resp_B", upstreamCancellation.Token);
-    await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N")), new SyntheticResolver()))
+    const int sidecarPort = ProviderPriceSwitcher.Application.OmpSidecarProvider.DefaultPort;
+    await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N"), sidecarPort), new SyntheticResolver()))
     {
         var emptyRouteSettings = new MemorySettingsRepository(new LocalAppSettings());
         var emptyRouteState = new ActiveRouteState();
@@ -295,7 +301,7 @@ try
         await routeApply.ExecuteAsync(activeRouteSettings.Load() with { Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = true }] }, "loopback");
         var ompAgentRoot = Path.Combine(root, "omp-agent");
         Directory.CreateDirectory(ompAgentRoot);
-        await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:8080/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
+        await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:15722/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
         await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "config.yml"), "modelRoles:\n  default: provider-price-switcher/gpt-5.6-sol\n");
         var ompInfo = new System.Diagnostics.ProcessStartInfo("D:\\.Pi Projects\\omp.exe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = root };
         ompInfo.ArgumentList.Add("--model"); ompInfo.ArgumentList.Add("provider-price-switcher/gpt-5.6-sol"); ompInfo.ArgumentList.Add("--no-tools"); ompInfo.ArgumentList.Add("--no-session"); ompInfo.ArgumentList.Add("-p"); ompInfo.ArgumentList.Add("Return loopback-ok.");
@@ -307,32 +313,46 @@ try
         await ompProcess.WaitForExitAsync();
         Assert(ompProcess.ExitCode == 0 && ompRequestCount > 0, $"real OMP sidecar request failed: exit={ompProcess.ExitCode}, requests={ompRequestCount}, stdout={ompOutput}, stderr={ompError}");
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        using var nonStream = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup\"}]}", System.Text.Encoding.UTF8, "application/json"));
+        using var nonStream = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup\"}]}", System.Text.Encoding.UTF8, "application/json"));
         var nonStreamBody = await nonStream.Content.ReadAsStringAsync();
         Assert(nonStream.IsSuccessStatusCode && nonStreamBody.Contains("function_call", StringComparison.Ordinal) && nonStreamBody.Contains("reasoning", StringComparison.Ordinal), "sidecar non-stream/tools/reasoning matrix failed");
-        using var stream = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"stream\":true}", System.Text.Encoding.UTF8, "application/json"));
+        using var stream = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"stream\":true}", System.Text.Encoding.UTF8, "application/json"));
         var streamBody = await stream.Content.ReadAsStringAsync();
         Assert(stream.IsSuccessStatusCode && stream.Content.Headers.ContentType?.MediaType == "text/event-stream" && streamBody.Contains("response.completed", StringComparison.Ordinal) && streamBody.Contains("response.function_call_arguments.delta", StringComparison.Ordinal), "sidecar SSE matrix failed");
         await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
-        var inFlightTask = client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"in-flight\"}", System.Text.Encoding.UTF8, "application/json"));
+        var inFlightTask = client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"in-flight\"}", System.Text.Encoding.UTF8, "application/json"));
         await inFlightStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
-        using var postSwitch = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"new-route\"}", System.Text.Encoding.UTF8, "application/json"));
+        using var postSwitch = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"new-route\"}", System.Text.Encoding.UTF8, "application/json"));
         releaseInFlight.TrySetResult();
         using var inFlight = await inFlightTask;
         Assert((await inFlight.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal) && (await postSwitch.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "in-flight request must retain its original route snapshot while new requests use the replacement route");
         await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
-        using var switched = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
+        using var switched = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
         Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
         await supervisor.ClearAsync();
-        using var noRoute = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
+        using var noRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(noRoute.StatusCode == System.Net.HttpStatusCode.BadRequest && (await noRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal), "sidecar no-route contract failed");
         await supervisor.StopAsync();
         Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop must publish a stable stopped state");
         await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
-        using var afterRestart = await client.PostAsync("http://127.0.0.1:8080/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-restart\"}", System.Text.Encoding.UTF8, "application/json"));
+        using var afterRestart = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-restart\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(afterRestart.IsSuccessStatusCode && (await afterRestart.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal), "sidecar restart must require and accept an explicitly confirmed route snapshot");
     }
+    using var conflictListener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    conflictListener.Start();
+    var conflictPort = ((System.Net.IPEndPoint)conflictListener.LocalEndpoint).Port;
+    await using (var conflictSupervisor = new WindowsSidecarSupervisor(
+        new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-conflict-" + Guid.NewGuid().ToString("N"), conflictPort),
+        new SyntheticResolver()))
+    {
+        Exception? conflictError = null;
+        try { await conflictSupervisor.StartAsync(); }
+        catch (Exception exception) { conflictError = exception; }
+        Assert(conflictError is GatewayPortUnavailableException && !conflictSupervisor.Status.IsReady, "busy gateway port must fail with a structured port error without accepting an unknown listener");
+        await conflictSupervisor.StopAsync();
+    }
+    conflictListener.Stop();
     upstreamCancellation.Cancel(); upstream.Stop(); secondUpstream.Stop(); await Task.WhenAll(upstreamTask, secondUpstreamTask);
     var sidecarExitDeadline = DateTime.UtcNow.AddSeconds(5);
     while (System.Diagnostics.Process.GetProcessesByName("bifrost-sidecar").Length != 0 && DateTime.UtcNow < sidecarExitDeadline)

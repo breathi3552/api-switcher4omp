@@ -1,4 +1,6 @@
 ﻿using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
@@ -14,7 +16,14 @@ using ProviderPriceSwitcher.Core;
 
 namespace ProviderPriceSwitcher.Infrastructure;
 
-public sealed record SidecarBinaryOptions(string ExecutablePath, string Sha256, string PipeName);
+public sealed record SidecarBinaryOptions(string ExecutablePath, string Sha256, string PipeName, int Port = OmpSidecarProvider.DefaultPort);
+public sealed class GatewayPortUnavailableException : IOException
+{
+    public GatewayPortUnavailableException(int port, SocketException innerException)
+        : base($"Local gateway port {port} is unavailable.", innerException) => Port = port;
+
+    public int Port { get; }
+}
 
 [SupportedOSPlatform("windows")]
 public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteController, ISidecarStatus
@@ -53,7 +62,14 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
             await CleanupSessionAsync(CancellationToken.None).ConfigureAwait(false);
             SetStatus(new(SidecarConnectionStatus.Starting));
             ValidateBinary();
+            if (_options.Port is < 1 or > 65535)
+                throw new InvalidOperationException("gateway_port_invalid");
+            EnsurePortAvailable(_options.Port);
             var psi = new ProcessStartInfo(_options.ExecutablePath) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(_options.ExecutablePath) ?? Environment.CurrentDirectory };
+            psi.ArgumentList.Add("--host");
+            psi.ArgumentList.Add(OmpSidecarProvider.Host);
+            psi.ArgumentList.Add("--port");
+            psi.ArgumentList.Add(_options.Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
             psi.ArgumentList.Add("--control-pipe");
             psi.ArgumentList.Add($@"\\.\pipe\{_options.PipeName}");
             _process = Process.Start(psi) ?? throw new InvalidOperationException("sidecar_start_failed");
@@ -234,6 +250,18 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
         return JsonSerializer.Deserialize<WireMessage>(bytes, _json) ?? throw new InvalidDataException("sidecar_message_invalid");
     }
     private static async Task ReadExact(Stream stream, byte[] buffer, CancellationToken ct) { var offset = 0; while (offset < buffer.Length) { var n = await stream.ReadAsync(buffer.AsMemory(offset), ct).ConfigureAwait(false); if (n == 0) throw new EndOfStreamException(); offset += n; } }
+    private static void EnsurePortAvailable(int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+        }
+        catch (SocketException exception)
+        {
+            throw new GatewayPortUnavailableException(port, exception);
+        }
+    }
     private void ValidateBinary() { if (!File.Exists(_options.ExecutablePath)) throw new FileNotFoundException("sidecar_binary_missing", _options.ExecutablePath); using var sha = SHA256.Create(); using var stream = File.OpenRead(_options.ExecutablePath); var actual = Convert.ToHexString(sha.ComputeHash(stream)); if (!string.Equals(actual, _options.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("sidecar_binary_hash_mismatch"); }
     private static void ValidateRoute(RouteSnapshot route) { if (string.IsNullOrWhiteSpace(route.ProviderId) || !Uri.TryCreate(route.BaseUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(route.KeyHandle)) throw new ArgumentException("invalid_route"); }
     private static void EnsureOk(WireMessage reply) { if (!string.Equals(reply.Type, "ok", StringComparison.Ordinal)) throw new InvalidOperationException(reply.Type ?? "sidecar_request_failed"); }

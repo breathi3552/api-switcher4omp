@@ -44,17 +44,32 @@ try
     Assert(written == preview.NewText, "atomic result differs from preview");
     Assert(written.Contains("unrelated: old-provider/untouched", StringComparison.Ordinal), "unrelated field changed");
     var service = new OmpConfigurationService(new OmpConfigurationSwitcher(), new TestPaths(ompRoot));
+    File.Delete(path);
+    var bootstrapResult = await service.TakeOverAsync(ompRoot, 15722);
+    Assert(bootstrapResult.Succeeded && File.Exists(path), "first takeover must bootstrap a missing OMP config");
+    var bootstrapped = await File.ReadAllTextAsync(path);
+    Assert(bootstrapped.Contains("provider-price-switcher/gpt-5.6-sol", StringComparison.Ordinal), "bootstrap config must point model roles to the fixed local provider");
     await File.WriteAllTextAsync(path, yaml, new System.Text.UTF8Encoding(false));
-    var serviceResult = await service.SwitchAsync(ompRoot, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+    var serviceResult = await service.TakeOverAsync(ompRoot, 15722);
     Assert(serviceResult.Succeeded, "sidecar provider configuration failed");
+    var takeoverStatus = await service.CheckAsync(ompRoot);
+    Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver && takeoverStatus.CurrentProviderId == ProviderPriceSwitcher.Application.OmpSidecarProvider.Id && takeoverStatus.CurrentGatewayPort == 15722, "takeover status must compare the current model role provider and endpoint");
     var models = await File.ReadAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"));
-    Assert(models.Contains("provider-price-switcher:", StringComparison.Ordinal) && models.Contains("baseUrl: http://127.0.0.1:8080/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && models.Contains("apiKey: PPS_SIDECAR_PLACEHOLDER", StringComparison.Ordinal) && models.Contains("id: gpt-5.6-sol", StringComparison.Ordinal), "fixed sidecar provider missing");
+    Assert(models.Contains("provider-price-switcher:", StringComparison.Ordinal) && models.Contains("baseUrl: http://127.0.0.1:15722/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && models.Contains("apiKey: PPS_SIDECAR_PLACEHOLDER", StringComparison.Ordinal) && models.Contains("id: gpt-5.6-sol", StringComparison.Ordinal) && !models.Contains("existing:", StringComparison.Ordinal), "fixed sidecar provider missing or old providers retained");
     Assert(!models.Contains("sk-", StringComparison.Ordinal), "raw key leaked into OMP provider config");
     await File.WriteAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  provider-price-switcher:\r\n    baseUrl: https://malicious.example/v1\r\n    apiKey: SHOULD_NOT_SURVIVE\r\n    api: openai-completions\r\n", new System.Text.UTF8Encoding(false));
-    serviceResult = await service.SwitchAsync(ompRoot, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+    serviceResult = await service.TakeOverAsync(ompRoot, 15722);
     Assert(serviceResult.Succeeded, "existing sidecar provider correction failed");
     models = await File.ReadAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"));
-    Assert(models.Contains("baseUrl: http://127.0.0.1:8080/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && !models.Contains("malicious.example", StringComparison.Ordinal) && !models.Contains("SHOULD_NOT_SURVIVE", StringComparison.Ordinal), "existing sidecar provider was not forced to fixed local definition");
+    Assert(models.Contains("baseUrl: http://127.0.0.1:15722/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && !models.Contains("malicious.example", StringComparison.Ordinal) && !models.Contains("SHOULD_NOT_SURVIVE", StringComparison.Ordinal), "existing sidecar provider was not forced to fixed local definition");
+    for (var index = 0; index < 8; index++)
+    {
+        await Task.Delay(2);
+        var repeated = await new OmpConfigurationSwitcher().SwitchFileAsync(path, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+        Assert(repeated.Succeeded, "repeated takeover rewrite failed");
+    }
+    var retainedBackups = Directory.GetFiles(ompRoot, "config.yml.bak-*.yml");
+    Assert(retainedBackups.Length == 5, "OMP configuration backup retention must keep exactly the newest five tool backups");
     foreach (var sentinel in sentinels) Assert(File.ReadAllText(sentinel) == runId, "isolation sentinel changed");
     Console.WriteLine("OMP configuration runner passed.");
 }

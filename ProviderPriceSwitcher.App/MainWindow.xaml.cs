@@ -80,23 +80,53 @@ public sealed class MainViewModel : ObservableObject
     private readonly PricingCheckUseCase _pricingCheck;
     private readonly SettingsUseCase _settingsUseCase;
     private readonly ApplyActiveRouteUseCase _applyActiveRoute;
+    private readonly OmpLaunchUseCase _ompLaunch;
     private readonly IUserNotificationService _notifications;
     private readonly ISitesDialogFactory _sitesDialogFactory;
     private readonly ILogger<MainViewModel> _logger;
     private static readonly Action<ILogger, string, Exception?> LogUiFailure =
         LoggerMessage.Define<string>(LogLevel.Error, new EventId(200, "UiFailure"), "UI operation failed: {FailureKind}");
     private LocalAppSettings _settings;
+    private readonly CancellationToken _lifetimeCancellationToken;
     private CancellationTokenSource? _checkCancellation;
     private string _statusText = "准备就绪";
     private string _currentProvider = "未应用";
     private string _recommendedProvider = "等待检查";
     private string _lastCheckedText = "尚未检查";
+    private string _takeoverStatus = "检查中";
     private ProviderChoice? _selectedProvider;
     private PricingRefreshResult? _lastResult;
-    public MainViewModel(PricingCheckUseCase pricingCheck, SettingsUseCase settingsUseCase, ApplyActiveRouteUseCase applyActiveRoute, IActiveRouteController activeRoute, IPricingSnapshotQuery snapshotQuery, LocalAppSettings settings, ISitesDialogFactory sitesDialogFactory, IUserNotificationService notifications, ILogger<MainViewModel> logger)
+    public MainViewModel(
+        PricingCheckUseCase pricingCheck,
+        SettingsUseCase settingsUseCase,
+        ApplyActiveRouteUseCase applyActiveRoute,
+        OmpLaunchUseCase ompLaunch,
+        IActiveRouteController activeRoute,
+        IPricingSnapshotQuery snapshotQuery,
+        LocalAppSettings settings,
+        ISitesDialogFactory sitesDialogFactory,
+        IUserNotificationService notifications,
+        ILogger<MainViewModel> logger,
+        CancellationToken lifetimeCancellationToken = default)
     {
-        _pricingCheck = pricingCheck; _settingsUseCase = settingsUseCase; _applyActiveRoute = applyActiveRoute; _activeRoute = activeRoute; _snapshotQuery = snapshotQuery; _settings = settings; _sitesDialogFactory = sitesDialogFactory; _notifications = notifications; _logger = logger;
-        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError); CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null); CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null); ApplyRouteCommand = new AsyncCommand(ApplyRouteAsync, HandleCommandError, () => SelectedProvider is not null); ManageSitesCommand = new RelayCommand(ManageSites); SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
+        _pricingCheck = pricingCheck;
+        _settingsUseCase = settingsUseCase;
+        _applyActiveRoute = applyActiveRoute;
+        _ompLaunch = ompLaunch;
+        _activeRoute = activeRoute;
+        _snapshotQuery = snapshotQuery;
+        _settings = settings;
+        _sitesDialogFactory = sitesDialogFactory;
+        _notifications = notifications;
+        _logger = logger;
+        _lifetimeCancellationToken = lifetimeCancellationToken;
+        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
+        CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
+        CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
+        ApplyRouteCommand = new AsyncCommand(ApplyRouteAsync, HandleCommandError, () => SelectedProvider is not null);
+        StartOmpCommand = new AsyncCommand(StartOmpAsync, HandleCommandError);
+        ManageSitesCommand = new RelayCommand(ManageSites);
+        SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
     }
 
     public ObservableCollection<PriceRow> Rows { get; } = [];
@@ -105,23 +135,69 @@ public sealed class MainViewModel : ObservableObject
     public AsyncCommand CheckCommand { get; }
     public RelayCommand CancelCommand { get; }
     public AsyncCommand ApplyRouteCommand { get; }
+    public AsyncCommand StartOmpCommand { get; }
     public RelayCommand ManageSitesCommand { get; }
     public AsyncCommand SettingsCommand { get; }
     public string StatusText { get => _statusText; private set => SetProperty(ref _statusText, value); }
     public string CurrentProvider { get => _currentProvider; private set => SetProperty(ref _currentProvider, value); }
     public string RecommendedProvider { get => _recommendedProvider; private set => SetProperty(ref _recommendedProvider, value); }
     public string LastCheckedText { get => _lastCheckedText; private set => SetProperty(ref _lastCheckedText, value); }
+    public string TakeoverStatus { get => _takeoverStatus; private set => SetProperty(ref _takeoverStatus, value); }
+    public string GatewayPortStatus => _settings.GatewayPort == _settings.CurrentGatewayPort
+        ? $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}"
+        : $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}；下次启动：{_settings.GatewayPort}";
     public ProviderChoice? SelectedProvider { get => _selectedProvider; set { if (SetProperty(ref _selectedProvider, value)) { OnPropertyChanged(nameof(SelectionHint)); ApplyRouteCommand.RaiseCanExecuteChanged(); } } }
     public static string SelectionHint => "仅当前绑定分组可应用；最低价分组只读比较。";
 
     public async Task InitializeAsync()
     {
         var restored = await _applyActiveRoute.RestoreAsync(_settings);
-        _settings = restored.Settings;
+        _settings = restored.Settings with { CurrentGatewayPort = _settings.CurrentGatewayPort };
         CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+        await RefreshTakeoverStatusAsync();
         LoadPersistedPrices();
         if (!restored.Succeeded)
             StatusText = UserErrorMessages.ForApplyRouteStatus(restored.Status);
+    }
+    private async Task RefreshTakeoverStatusAsync()
+    {
+        var takeover = await _ompLaunch.CheckTakeoverAsync(_settings);
+        TakeoverStatus = takeover.Status switch
+        {
+            OmpTakeoverStatus.TakenOver => "OMP 已接管",
+            OmpTakeoverStatus.NotTakenOver => "OMP 未接管",
+            _ => "OMP 接管状态不可读取"
+        };
+    }
+
+    private async Task StartOmpAsync()
+    {
+        _lifetimeCancellationToken.ThrowIfCancellationRequested();
+        var workingDirectory = _settings.LastOmpWorkingDirectory
+            ?? (_settings.OmpWorkingDirectories.Count > 0 ? _settings.OmpWorkingDirectories[0] : null)
+            ?? _settings.OmpRootDirectory;
+        var outcome = await _ompLaunch.LaunchAsync(_settings, workingDirectory, _lifetimeCancellationToken);
+        if (outcome.Status == OmpLaunchStatus.TakeoverRequired)
+        {
+            var confirmed = _notifications.Confirm(
+                "OMP 尚未接管。继续将备份现有配置，并将受管 model roles 指向固定本地 Provider；真实供应商和 API key 不会写入 OMP 配置。\n\n选择“是”执行“设置并启动”，选择“否”取消。",
+                "接管 OMP");
+            if (!confirmed)
+            {
+                StatusText = "已取消启动。";
+                return;
+            }
+            outcome = await _ompLaunch.TakeOverAndLaunchAsync(
+                _settings,
+                workingDirectory,
+                _settings.CurrentGatewayPort,
+                _lifetimeCancellationToken);
+        }
+        if (outcome.Status is OmpLaunchStatus.Started or OmpLaunchStatus.LaunchFailed or OmpLaunchStatus.SettingsPersistenceFailed)
+            TakeoverStatus = "OMP 已接管";
+        _settings = outcome.Settings;
+        StatusText = UserErrorMessages.ForOmpLaunchStatus(outcome);
+        OnPropertyChanged(nameof(GatewayPortStatus));
     }
 
     private async Task CheckAsync()
@@ -238,7 +314,9 @@ public sealed class MainViewModel : ObservableObject
         var dialog = new SettingsDialog(_settings);
         if (dialog.ShowDialog() == true)
         {
-            _settings = _settingsUseCase.Save(dialog.Settings);
+            _settings = _settingsUseCase.Save(dialog.Settings) with { CurrentGatewayPort = _settings.CurrentGatewayPort };
+            OnPropertyChanged(nameof(GatewayPortStatus));
+            await RefreshTakeoverStatusAsync();
             CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
             LoadPersistedPrices();
         }

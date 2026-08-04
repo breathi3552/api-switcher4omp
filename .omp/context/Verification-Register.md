@@ -3,7 +3,7 @@
 
 > **共享实际验证证据（2026-08-04）。** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成静态清单与依赖检查、solution build（0 警告、0 错误）、格式检查和全部 runner。Adapters runner 证明 AIHub、SevnX 在配置存在旧正倍率时仍采用最新成功响应并输出自动倍率；App runner 通过真实 `MainViewModel.CheckCommand`、`SiteEditorViewModel.ProbeCommand`、AIHub adapter、合成 HTTP handler 和临时 settings/snapshot root，覆盖成功覆盖旧倍率、当前组也是最低组、失败或缺少当前组时保留旧倍率，以及选择探测候选后采用对应倍率。
 >
-> `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 成功生成并验收 `artifacts/publish/framework-dependent`（exe 173568 bytes）和 `artifacts/publish/self-contained`（exe 106175089 bytes）；两个阶段均验证可执行文件存在且发布 sidecar 与 manifest SHA-256 一致。全部证据只使用合成凭据、内存/loopback HTTP 和临时 data root；未访问真实 Provider、真实凭据、真实用户配置或真实 OMP root。
+> `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 成功生成并验收 `artifacts/publish/framework-dependent`（exe 173568 bytes）和 `artifacts/publish/self-contained`（exe 106183996 bytes）；两个阶段均验证可执行文件存在且发布 sidecar 与 manifest SHA-256 一致。全部证据只使用合成凭据、内存/loopback HTTP 和临时 data root；未访问真实 Provider、真实凭据、真实用户配置或真实 OMP root。
 
 ## Quality debt register
 
@@ -179,8 +179,19 @@
 - **dependencies:** QD-07-001; QD-07-002; QD-07-003; QD-07-004
 - **last_verified:** `2026-07-26`（已验证）
 
+## Issue #5 takeover and repeat-launch evidence
+
+- **status:** verified in isolation
+- **last_verified:** `2026-08-04`
+- **Application runner:** `OmpLaunchUseCase` proves an un-taken-over OMP cannot be bypassed, “cancel” performs no launch, explicit takeover-and-start launches once, repeated launch attempts are independent, launching never applies or clears `ActiveRoute`, and a canceled launch performs no settings write or process launch.
+- **OMP configuration runner:** fixed `provider-price-switcher` is the only generated model provider; its loopback endpoint uses `127.0.0.1:15722`, a missing `config.yml` is bootstrapped on first takeover, no real provider or API key is written, takeover status compares the current model-role ProviderId and endpoint, and only the newest five `config.yml.bak-<timestamp>.yml` backups remain.
+- **Infrastructure runner:** real Windows sidecar/OMP loopback smoke uses the default loopback port, verifies Responses/SSE/tool/reasoning and request-level route behavior, rejects a busy target port without selecting another port, and rejects invalid persisted gateway ports on both load and save.
+- **App runner:** WPF main-page launch/takeover interaction proves cancel and setup-and-start behavior, repeated launch is not coupled to routing, and the active supplier remains unchanged.
+- **Cross-layer command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` passed static manifest/dependency checks, solution build (0 warnings, 0 errors), format verification, and all registered runners.
+- **Isolation boundary:** all scenario roots, OMP configuration files, working directories, credentials, upstreams and sidecar requests were synthetic, loopback or temporary; real user configuration and real credentials were not touched.
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
- - 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 当前路径不负责 OMP 接管或进程生命周期。
-> **底部证据索引（2026-08-03）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。
+ - 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 路径不负责 OMP 接管或进程生命周期；Issue #5 的接管、端口、配置备份和重复启动证据见上节。
+> **底部证据索引（2026-08-04）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。

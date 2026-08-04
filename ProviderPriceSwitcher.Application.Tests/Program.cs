@@ -66,24 +66,32 @@ var normalized = new SettingsUseCase(settingsRepo).Save(new LocalAppSettings { O
 Assert(normalized.OmpWorkingDirectories.SequenceEqual(["C:\\Work", "D:\\Other"]) && normalized.LastOmpWorkingDirectory == "C:\\Work" && settingsRepo.SaveCount == 1, "settings normalization mismatch");
 
 settingsRepo.SaveCount = 0;
-var configuration = new FakeConfiguration(true);
-var launcher = new FakeLauncher(new OmpLaunchResult(true, false));
-var switchUseCase = new SwitchAndStartUseCase(settingsRepo, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance);
-var switchSettings = new LocalAppSettings { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] };
-var started = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
-Assert(started.Status == SwitchAndStartStatus.Started && settingsRepo.SaveCount == 1 && launcher.Calls == 1 && started.Settings.LastOmpWorkingDirectory == "C:\\Two", "started outcome/order mismatch");
-configuration.Result = new OmpConfigurationOperationResult(false);
-settingsRepo.SaveCount = 0; launcher.Calls = 0;
-var configurationFailed = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
-Assert(configurationFailed.Status == SwitchAndStartStatus.ConfigurationFailed && settingsRepo.SaveCount == 0 && launcher.Calls == 0, "configuration failure must stop pipeline");
-configuration.Result = new OmpConfigurationOperationResult(true);
-launcher.Result = new OmpLaunchResult(true, true);
-var existing = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
-Assert(existing.Status == SwitchAndStartStatus.StartedWithExistingProcess, "existing process outcome mismatch");
-launcher.Result = new OmpLaunchResult(false, false);
+var takeover = new FakeTakeover { Status = OmpTakeoverStatus.TakenOver };
+var launcher = new FakeLauncher(new OmpLaunchResult(true));
+var launchUseCase = new OmpLaunchUseCase(settingsRepo, takeover, launcher, NullLogger<OmpLaunchUseCase>.Instance);
+var launchSettings = new LocalAppSettings { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] };
+var started = await launchUseCase.LaunchAsync(launchSettings, "C:\\Two");
+Assert(started.Status == OmpLaunchStatus.Started && settingsRepo.SaveCount == 1 && launcher.Calls == 1 && started.Settings.LastOmpWorkingDirectory == "C:\\Two", "launch outcome/order mismatch");
+
+takeover.Status = OmpTakeoverStatus.NotTakenOver;
 settingsRepo.SaveCount = 0;
-var launchFailed = await switchUseCase.ExecuteAsync(switchSettings, "provider", "C:\\Two");
-Assert(launchFailed.Status == SwitchAndStartStatus.LaunchFailedAfterSwitch && settingsRepo.SaveCount == 1 && configuration.Calls == 4, "launch failure must preserve switched settings without rollback");
+launcher.Calls = 0;
+var takeoverRequired = await launchUseCase.LaunchAsync(launchSettings, "C:\\Two");
+Assert(takeoverRequired.Status == OmpLaunchStatus.TakeoverRequired && settingsRepo.SaveCount == 0 && launcher.Calls == 0, "launch must not bypass OMP takeover");
+
+takeover.Status = OmpTakeoverStatus.TakenOver;
+launcher.Result = new OmpLaunchResult(true);
+var secondLaunch = await launchUseCase.LaunchAsync(launchSettings, "C:\\Three");
+Assert(secondLaunch.Succeeded && launcher.Calls == 1, "every launch request must create a new OMP attempt");
+
+takeover.TakeoverResult = new OmpTakeoverOperationResult(false);
+launcher.Calls = 0;
+var failedTakeover = await launchUseCase.TakeOverAndLaunchAsync(launchSettings, "C:\\Four", 15722);
+Assert(failedTakeover.Status == OmpLaunchStatus.TakeoverFailed && launcher.Calls == 0, "failed takeover must not launch OMP");
+
+takeover.TakeoverResult = new OmpTakeoverOperationResult(true);
+var takeoverLaunch = await launchUseCase.TakeOverAndLaunchAsync(launchSettings, "C:\\Five", 15722);
+Assert(takeoverLaunch.Succeeded && takeover.LastPort == 15722 && launcher.Calls == 1, "takeover and launch must be one explicit workflow");
 Console.WriteLine("Application contract tests passed.");
 
 var keyStore = new MemoryInferenceKeyStore();
@@ -103,21 +111,21 @@ bindingStore.ThrowOnSave = false;
 Assert(keyStore.Record?.ApiKey == "replacement-inference-key" && keyStore.Record.BoundGroup == "updated-group" && keySettings.Value.Sites.Single().CurrentGroup == "updated-group", "binding save failure must retain the previous key and group");
 var routeController = new FakeRouteController();
 var launchRouteState = new ActiveRouteState();
-launcher.Result = new OmpLaunchResult(true, true);
-var routedSwitch = new SwitchAndStartUseCase(keySettings, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance, routeController, keyStore, launchRouteState);
-var routedStart = await routedSwitch.ExecuteAsync(keySettings.Value with { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] }, "p", "C:\\Two");
-Assert(routedStart.Status == SwitchAndStartStatus.StartedWithExistingProcess && routeController.Applied?.ProviderId == "p" && launchRouteState.CurrentProviderId == "p", "route must apply without restarting an existing OMP process");
-var disabledSettings = keySettings.Value with { Sites = [keySettings.Value.Sites.Single() with { Enabled = false }] };
-var clearCountBeforeInvalidRoute = routeController.ClearCount;
-var disabledStart = await routedSwitch.ExecuteAsync(disabledSettings, "p", "C:\\Two");
-Assert(disabledStart.Status == SwitchAndStartStatus.ConfigurationFailed && routeController.Applied?.ProviderId == "p" && routeController.ClearCount == clearCountBeforeInvalidRoute + 1 && launchRouteState.CurrentProviderId is null, "disabled active supplier must clear the sidecar route instead of leaving the old target active");
-var mismatchedGroupStore = new MemoryInferenceKeyStore();
-mismatchedGroupStore.Save(keyStore.Record! with { BoundGroup = "other-group" });
-launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", keyStore.Record!.KeyHandle));
-clearCountBeforeInvalidRoute = routeController.ClearCount;
-var mismatchedSwitch = new SwitchAndStartUseCase(keySettings, configuration, launcher, NullLogger<SwitchAndStartUseCase>.Instance, routeController, mismatchedGroupStore, launchRouteState);
-var mismatchedStart = await mismatchedSwitch.ExecuteAsync(keySettings.Value, "p", "C:\\Two");
-Assert(mismatchedStart.Status == SwitchAndStartStatus.ConfigurationFailed && routeController.ClearCount == clearCountBeforeInvalidRoute + 1 && launchRouteState.CurrentProviderId is null, "key bound to another group must clear an existing active route");
+launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", "active-handle"));
+var routeBeforeLaunch = launchRouteState.Current;
+takeover.Status = OmpTakeoverStatus.TakenOver;
+launcher.Result = new OmpLaunchResult(true);
+launcher.Calls = 0;
+var independentLaunch = await launchUseCase.LaunchAsync(launchSettings, "C:\\Six");
+Assert(independentLaunch.Succeeded && launcher.Calls == 1 && launchRouteState.Current == routeBeforeLaunch, "launch must not apply, clear or change the active route");
+settingsRepo.SaveCount = 0;
+launcher.Calls = 0;
+using (var canceledLaunch = new CancellationTokenSource())
+{
+    canceledLaunch.Cancel();
+    try { await launchUseCase.LaunchAsync(launchSettings, "C:\\Canceled", canceledLaunch.Token); throw new InvalidOperationException("canceled launch accepted"); } catch (OperationCanceledException) { }
+}
+Assert(settingsRepo.SaveCount == 0 && launcher.Calls == 0, "canceled launch must not save settings or start OMP");
 launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", keyStore.Record!.KeyHandle));
 var management = new SiteManagementUseCase(keySettings, new MemorySnapshots(), null, keyStore, launchRouteState, routeController, resolver);
 var clearCountBeforeDelete = routeController.ClearCount;
@@ -252,11 +260,18 @@ sealed class MemorySnapshots : IPricingSnapshotRepository
     public void Save(PricingSnapshot snapshot) => _values[snapshot.ProviderId] = snapshot;
     public void Delete(string providerId) => _values.Remove(providerId);
 }
-sealed class FakeConfiguration(bool succeeded) : IOmpConfigurationService
+sealed class FakeTakeover : IOmpTakeoverService
 {
-    public OmpConfigurationOperationResult Result { get; set; } = new(succeeded);
-    public int Calls { get; private set; }
-    public Task<OmpConfigurationOperationResult> SwitchAsync(string ompRootDirectory, string providerId, CancellationToken cancellationToken = default) { Calls++; return Task.FromResult(Result); }
+    public OmpTakeoverStatus Status { get; set; } = OmpTakeoverStatus.TakenOver;
+    public OmpTakeoverOperationResult TakeoverResult { get; set; } = new(true);
+    public int LastPort { get; private set; }
+    public Task<OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new OmpTakeoverCheckResult(Status));
+    public Task<OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default)
+    {
+        LastPort = gatewayPort;
+        return Task.FromResult(TakeoverResult);
+    }
 }
 sealed class FakeLauncher(OmpLaunchResult result) : IOmpProcessLauncher
 {

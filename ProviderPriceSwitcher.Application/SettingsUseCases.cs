@@ -88,6 +88,9 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
     public LocalAppSettings Save(LocalAppSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        if (settings.GatewayPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(settings), "Gateway port must be between 1 and 65535.");
+
         var directories = settings.OmpWorkingDirectories
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -99,7 +102,8 @@ public sealed class SettingsUseCase(ISettingsRepository settingsRepository)
             RequestTimeoutSeconds = normalized.RequestTimeoutSeconds,
             OmpRootDirectory = normalized.OmpRootDirectory,
             OmpWorkingDirectories = normalized.OmpWorkingDirectories,
-            LastOmpWorkingDirectory = normalized.LastOmpWorkingDirectory
+            LastOmpWorkingDirectory = normalized.LastOmpWorkingDirectory,
+            GatewayPort = normalized.GatewayPort
         });
     }
 }
