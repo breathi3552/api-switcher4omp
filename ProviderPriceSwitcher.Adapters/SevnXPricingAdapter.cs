@@ -120,11 +120,8 @@ public sealed class SevnXPricingAdapter : IPricingAdapter
             group => group.Name,
             group => userRates.TryGetValue(group.Id, out var userRate) ? userRate : group.Rate,
             StringComparer.Ordinal);
-        var groups = rateMap.Keys.ToHashSet(StringComparer.Ordinal);
-        if (!groups.Contains(site.CurrentGroup))
+        if (!rateMap.TryGetValue(site.CurrentGroup, out var currentRatio))
             throw new PricingAdapterException(PricingAdapterFailure.InvalidGroups, $"Current group '{site.CurrentGroup}' is not valid for model '{site.Model}' on platform '{provider}'.");
-
-        var currentRatio = site.CurrentGroupRatio is > 0 ? site.CurrentGroupRatio.Value : GroupRate(rateMap, site.CurrentGroup);
         const decimal perMillion = 1_000_000m;
         var input = RequiredDecimal(model, "input_cost_per_token") * perMillion;
         var cached = (OptionalDecimal(model, "cache_read_input_token_cost") ?? 0m) * perMillion;
@@ -132,8 +129,8 @@ public sealed class SevnXPricingAdapter : IPricingAdapter
         var basePrices = new TokenPrices { InputPerMillion = input, CachedInputPerMillion = cached, OutputPerMillion = output };
         basePrices.Validate();
 
-        var minimum = groups.OrderBy(group => GroupRate(rateMap, group)).First();
-        var minimumRatio = GroupRate(rateMap, minimum);
+        var minimum = rateMap.OrderBy(pair => pair.Value).First();
+        var minimumRatio = minimum.Value;
         return new SitePricingResult
         {
             Snapshot = new PricingSnapshot
@@ -144,15 +141,15 @@ public sealed class SevnXPricingAdapter : IPricingAdapter
                 CurrentGroup = site.CurrentGroup,
                 BasePrices = basePrices,
                 CurrentGroupRatio = currentRatio,
-                GroupRatioSource = site.CurrentGroupRatio is > 0 ? site.GroupRatioSource : "自动",
+                GroupRatioSource = "自动",
                 Prices = Scale(basePrices, currentRatio),
-                MinimumGroup = minimum,
+                MinimumGroup = minimum.Key,
                 MinimumGroupRatio = minimumRatio,
                 MinimumGroupPrices = Scale(basePrices, minimumRatio),
                 RefreshedAt = DateTimeOffset.UtcNow
             },
-            ValidGroups = groups,
-            MinimumValidGroup = minimum,
+            GroupRatios = rateMap,
+            MinimumValidGroup = minimum.Key,
             MinimumGroupRatio = minimumRatio,
             Warnings = []
         };

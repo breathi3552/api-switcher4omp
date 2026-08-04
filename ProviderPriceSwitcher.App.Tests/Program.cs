@@ -94,6 +94,43 @@ var windowThread = new Thread(() =>
             AuthenticationMode = "令牌"
         };
         settings = settings with { Sites = [site] };
+        var pricingSettings = settings with { Sites = [site with { SiteType = "aihub", BaseUrl = new Uri("https://example.test/") }] };
+        settingsRepository.Save(pricingSettings);
+        var pricingHandler = new CurrentRatioHandler();
+        using var pricingClient = new HttpClient(pricingHandler);
+        var pricingRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
+            new ProviderPriceSwitcher.Adapters.AiHubPricingAdapter(pricingClient, new PricingCredentialStore())
+        ]);
+        var pricingRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(pricingRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+        var currentRatioViewModel = new MainViewModel(
+            new ProviderPriceSwitcher.Application.PricingCheckUseCase(pricingRefresh, settingsRepository, snapshots),
+            settingsUseCase,
+            applyActiveRoute,
+            activeRoute,
+            snapshotQuery,
+            pricingSettings,
+            sitesFactory,
+            notifications,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        currentRatioViewModel.CheckCommand.Execute(null);
+        WaitFor(() => currentRatioViewModel.Rows.Count > 0);
+        var currentRatioRow = currentRatioViewModel.Rows.Single();
+        var persistedSite = settingsRepository.Load().Sites.Single();
+        Assert(currentRatioRow.Ratio == "0.1", $"home price check must render the latest successful current-group ratio; actual ratio/status/issue: {currentRatioRow.Ratio}/{currentRatioRow.Status}/{currentRatioRow.Issue}");
+        Assert(currentRatioRow.InputPrice == "0.5", $"home price check must price with the latest successful current-group ratio; actual input price: {currentRatioRow.InputPrice}");
+        Assert(currentRatioRow.Group == "group [当前][最低]", $"home price check must keep one row when the current group is also minimum; actual group: {currentRatioRow.Group}");
+        Assert(persistedSite.CurrentGroupRatio == 0.1m && persistedSite.GroupRatioSource == "自动", "home price check must persist the latest successful current-group ratio");
+        pricingHandler.Fail = true;
+        currentRatioViewModel.CheckCommand.Execute(null);
+        WaitFor(() => pricingHandler.RequestCount >= 4 && currentRatioViewModel.CheckCommand.CanExecute(null));
+        Assert(currentRatioViewModel.Rows.Single().Ratio == "0.1" && settingsRepository.Load().Sites.Single().CurrentGroupRatio == 0.1m, "failed home price check must preserve the last successful current-group ratio");
+        pricingHandler.Fail = false;
+        pricingHandler.OmitCurrentGroup = true;
+        currentRatioViewModel.CheckCommand.Execute(null);
+        WaitFor(() => pricingHandler.RequestCount >= 6 && currentRatioViewModel.CheckCommand.CanExecute(null));
+        Assert(currentRatioViewModel.Rows.Single().Ratio == "0.1" && settingsRepository.Load().Sites.Single().CurrentGroupRatio == 0.1m, "home price check missing the current group must preserve the last successful ratio");
+
+
         var launcher = new FakeUriLauncher();
         var navigationWindow = new MainWindow(viewModel, launcher);
         navigationWindow.Show();
@@ -149,9 +186,24 @@ var windowThread = new Thread(() =>
         editorVm.CancelProbeCommand.Execute(null);
         WaitFor(() => !editorVm.IsProbing);
         WaitFor(() => editorVm.ProbeCommand.CanExecute(null));
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.CurrentGroup == "edited-during-probe" && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must preserve group edits and restore commands without an error notification");
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.CurrentGroup == "edited-during-probe" && editorVm.CurrentGroupRatio == "1" && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must preserve group and ratio edits and restore commands without an error notification");
         probeAdapter.Block = false;
-        probeAdapter.ReturnedGroups = new HashSet<string>(["different-group"]);
+        probeAdapter.ReturnedFailure = ProviderPriceSwitcher.Application.PricingAdapterFailure.Request;
+        editorVm.ProbeCommand.Execute(null);
+        WaitFor(() => probeAdapter.FetchCalls == 2);
+        WaitFor(() => !editorVm.IsProbing);
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Failed && editorVm.CurrentGroupRatio == "1", "failed probe must preserve the previous current-group ratio");
+        probeAdapter.ReturnedFailure = null;
+        probeAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["different-group"] = 0.05m };
+        editorVm.ProbeCommand.Execute(null);
+        WaitFor(() => probeAdapter.FetchCalls == 3);
+        WaitFor(() => !editorVm.IsProbing);
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && editorVm.CurrentGroupRatio == "1", "successful probe missing the current group must preserve the previous ratio");
+        probeAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
+        {
+            ["edited-during-probe"] = 0.2m,
+            ["different-group"] = 0.05m
+        };
         var currentGroupBox = (System.Windows.Controls.TextBox)dialog.FindName("CurrentGroupBox");
         var groupOptionsBox = (System.Windows.Controls.ComboBox)dialog.FindName("GroupOptionsBox");
         Assert(currentGroupBox.Text == "edited-during-probe" && !groupOptionsBox.IsEditable, "current group must use an independent text input and read-only candidate selector");
@@ -164,12 +216,14 @@ var windowThread = new Thread(() =>
         editorVm.GroupOptions.CollectionChanged += (_, _) => groupMissingDuringRefresh |= !editorVm.GroupOptions.Contains("edited-during-probe", StringComparer.OrdinalIgnoreCase);
         probeButton.Focus();
         probeButton.Command.Execute(probeButton.CommandParameter);
-        WaitFor(() => probeAdapter.FetchCalls == 2);
+        WaitFor(() => probeAdapter.FetchCalls == 4);
         WaitFor(() => !editorVm.IsProbing);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 2 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the independent current group input after focus moves to the probe button");
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 4 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the independent current group input after focus moves to the probe button");
+        Assert(editorVm.CurrentGroupRatio == "0.2", $"successful probe must replace the current group's stale ratio; actual ratio: {editorVm.CurrentGroupRatio}");
         groupOptionsBox.SelectedItem = "different-group";
         Assert(editorVm.CurrentGroup == "different-group" && currentGroupBox.Text == "different-group" && groupOptionsBox.SelectedItem is null, "explicit candidate selection must update the independent current group input without retaining selection coupling");
+        Assert(editorVm.CurrentGroupRatio == "0.05", $"selecting a probed group must use that group's latest ratio; actual ratio: {editorVm.CurrentGroupRatio}");
         dialog.Close();
         var saveDialog = editorFactoryForDialog.Create(site, settings, window);
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
@@ -219,15 +273,57 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
 {
     public ProviderPriceSwitcher.Application.PricingAdapterDescriptor Descriptor { get; } = descriptor;
     public bool Block { get; set; }
-    public IReadOnlySet<string>? ReturnedGroups { get; set; }
+    public IReadOnlyDictionary<string, decimal>? ReturnedGroupRatios { get; set; }
+    public ProviderPriceSwitcher.Application.PricingAdapterFailure? ReturnedFailure { get; set; }
     public int FetchCalls { get; private set; }
     public async Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default)
     {
         FetchCalls++;
         if (Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        var groups = ReturnedGroups ?? new HashSet<string>([site.CurrentGroup]);
-        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = 1, RefreshedAt = DateTimeOffset.UtcNow }, ValidGroups = groups, MinimumValidGroup = groups.First(), MinimumGroupRatio = 1, Warnings = [] };
+        if (ReturnedFailure is { } failure) throw new ProviderPriceSwitcher.Application.PricingAdapterException(failure, "synthetic failure");
+        var groupRatios = ReturnedGroupRatios ?? new Dictionary<string, decimal>(StringComparer.Ordinal) { [site.CurrentGroup] = 1m };
+        var currentRatio = groupRatios.GetValueOrDefault(site.CurrentGroup, 1m);
+        var minimum = groupRatios.OrderBy(pair => pair.Value).First();
+        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = currentRatio, RefreshedAt = DateTimeOffset.UtcNow }, GroupRatios = groupRatios, MinimumValidGroup = minimum.Key, MinimumGroupRatio = minimum.Value, Warnings = [] };
     }
+}
+
+sealed class CurrentRatioHandler : HttpMessageHandler
+{
+    private int _requestCount;
+    public bool Fail { get; set; }
+    public bool OmitCurrentGroup { get; set; }
+    public int RequestCount => Volatile.Read(ref _requestCount);
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _requestCount);
+        if (Fail)
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+        var body = request.RequestUri?.AbsolutePath switch
+        {
+            "/api/v1/groups/available" => OmitCurrentGroup
+                ? "{\"data\":[{\"id\":1,\"name\":\"other-group\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.1}]}"
+                : "{\"data\":[{\"id\":1,\"name\":\"group\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.1}]}",
+            "/api/v1/groups/rates" => "{\"data\":{\"1\":0.1}}",
+            _ => "{}"
+        };
+        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) });
+    }
+}
+
+sealed class PricingCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredentialStore
+{
+    public ProviderPriceSwitcher.Core.SiteCredentialRecord? LoadCredential(string providerId) => new()
+    {
+        ProviderId = providerId,
+        SiteType = "aihub",
+        AuthorizationScheme = "Bearer",
+        AccessToken = "synthetic-token",
+        CookieHeader = "session=synthetic"
+    };
+    public void SaveCredential(ProviderPriceSwitcher.Core.SiteCredentialRecord credential) => throw new NotSupportedException();
+    public void ClearCredential(string providerId) => throw new NotSupportedException();
+    public ProviderPriceSwitcher.Core.SiteCredentialSummary GetSummary(string providerId) => new() { ProviderId = providerId, Status = ProviderPriceSwitcher.Core.SiteCredentialStatus.Available };
 }
 
 sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore

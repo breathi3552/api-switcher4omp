@@ -47,7 +47,7 @@ public sealed class PawsAiPricingAdapter : IPricingAdapter
             return new SitePricingResult
             {
                 Snapshot = new PricingSnapshot { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, BasePrices = null, CurrentGroupRatio = current.Multiplier, GroupRatioSource = "公开价格", Prices = ReadPrices(current.Element), MinimumGroup = minimum.Name, MinimumGroupRatio = minimum.Multiplier, MinimumGroupPrices = ReadPrices(minimum.Element), RefreshedAt = DateTimeOffset.UtcNow },
-                ValidGroups = groups.Select(g => g.Name).ToHashSet(StringComparer.Ordinal),
+                GroupRatios = groups.ToDictionary(group => group.Name, group => group.Multiplier, StringComparer.Ordinal),
                 MinimumValidGroup = minimum.Name,
                 MinimumGroupRatio = minimum.Multiplier,
                 BillingExpression = TryString(current.Element, "billing_expression") ?? TryString(current.Element, "billing_expr"),

@@ -1,9 +1,9 @@
 # Verification Register and Runner Scenario Matrix
 
 
-> **共享实际验证证据（2026-08-03）。** 最近一次 `eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成 solution build（0 警告、0 错误）、格式检查和八个 runner。Application runner 覆盖价格检查无路由副作用、显式应用/恢复、空路由清除、删除活动 Provider 时清除 sidecar、持久化失败补偿和结构化回滚失败；Infrastructure runner 使用临时 OMP/data root、两个 loopback upstream 和合成 key，验证真实 OMP 请求经固定 sidecar、空路由启动、Route Snapshot 切换、在途请求保持旧路由、无活动路由错误和进程清理。固定 fork `ppscontrol` Go tests 通过；framework-dependent/self-contained publish self-check 通过且 sidecar SHA-256 均为 `38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491`。
+> **共享实际验证证据（2026-08-04）。** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 使用固定 SDK `8.0.423` 完成静态清单与依赖检查、solution build（0 警告、0 错误）、格式检查和全部 runner。Adapters runner 证明 AIHub、SevnX 在配置存在旧正倍率时仍采用最新成功响应并输出自动倍率；App runner 通过真实 `MainViewModel.CheckCommand`、`SiteEditorViewModel.ProbeCommand`、AIHub adapter、合成 HTTP handler 和临时 settings/snapshot root，覆盖成功覆盖旧倍率、当前组也是最低组、失败或缺少当前组时保留旧倍率，以及选择探测候选后采用对应倍率。
 >
-> 证据使用合成数据、loopback 和临时 data/OMP/work root；未访问真实 Provider、真实凭据或真实用户配置。
+> `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 成功生成并验收 `artifacts/publish/framework-dependent`（exe 173568 bytes）和 `artifacts/publish/self-contained`（exe 106175089 bytes）；两个阶段均验证可执行文件存在且发布 sidecar 与 manifest SHA-256 一致。全部证据只使用合成凭据、内存/loopback HTTP 和临时 data root；未访问真实 Provider、真实凭据、真实用户配置或真实 OMP root。
 
 ## Quality debt register
 

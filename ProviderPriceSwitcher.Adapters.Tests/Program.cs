@@ -58,7 +58,9 @@ static async Task<(SitePricingResult Result, AiHubHandler Handler)> FetchAiHub(s
         BaseUrl = new Uri("https://example.test/"),
         SiteType = "aihub",
         Model = "gpt-5.6-sol",
-        CurrentGroup = group
+        CurrentGroup = group,
+        CurrentGroupRatio = 1m,
+        GroupRatioSource = "手动"
     });
     return (result, handler);
 }
@@ -76,7 +78,7 @@ var simpleJson = """
 var (simple, simpleHandler) = await Fetch(simpleJson);
 Assert(simpleHandler.Requested == "https://example.test/root/api/pricing", "URL was not joined correctly");
 Assert(simple.Prices.InputPerMillion == 5m && simple.Prices.OutputPerMillion == 30m, "DeepKey prices mismatch");
-Assert(simple.ValidGroups.SetEquals(["standard", "fast"]), "Group intersection mismatch");
+Assert(simple.GroupRatios.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(["standard", "fast"]) && simple.GroupRatios["standard"] == 1m && simple.GroupRatios["fast"] == 2m, "Group intersection mismatch");
 Assert(simple.MinimumValidGroup == "standard", "Minimum group mismatch");
 
 var ektiJson = """
@@ -85,7 +87,7 @@ var ektiJson = """
 var (ekti, _) = await Fetch(ektiJson, "gpt-plus");
 Assert(ekti.Prices.InputPerMillion == 0.75m && ekti.Prices.CachedInputPerMillion == 0.075m && ekti.Prices.OutputPerMillion == 4.5m, "Ekti standard-tier prices mismatch");
 Assert(ekti.Warnings.Count == 0, "Ekti standard tier must not emit a priority warning");
-Assert(ekti.ValidGroups.SetEquals(["gpt-plus", "gpt-pro"]), "Ekti auto group was not included");
+Assert(ekti.GroupRatios.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(["gpt-plus", "gpt-pro"]) && ekti.GroupRatios["gpt-plus"] == 0.15m, "Ekti auto group was not included");
 
 var code28Json = """
 {"success":true,"group_ratio":{"codex-超低价(随时拉闸)":0.045,"codex特惠分组":0.1},"data":[{"model_name":"gpt-5.6-sol","quota_type":0,"model_ratio":2.5,"completion_ratio":6,"cache_ratio":0.1,"billing_mode":"tiered_expr","billing_expr":"len <= 272000 ? tier(\"standard\", p * 5 + c * 30 + cr * 0.5 + cc * 6.25) : tier(\"long_context\", p * 10 + c * 45 + cr * 1 + cc * 12.5)","enable_groups":["codex特惠分组","codex-超低价(随时拉闸)"]}]}
@@ -112,7 +114,7 @@ Assert(pawsHandler.Requested == "https://example.test/root/pawsai-pricing.json",
 Assert(paws.Prices.InputPerMillion == 0.2m && paws.Prices.CachedInputPerMillion == 0.02m && paws.Prices.OutputPerMillion == 1.2m, "PawsAI direct prices mismatch");
 Assert(paws.Snapshot.BasePrices is null && paws.Snapshot.CurrentGroupRatio == 0.04m, "PawsAI prices must not be rescaled");
 Assert(paws.MinimumValidGroup == "GPT混合池（GPT5.4卡顿）" && paws.MinimumGroupRatio == 0.04m, "PawsAI exclusive group became minimum");
-Assert(paws.ValidGroups.SetEquals(["GPT混合池（GPT5.4卡顿）", "免费专用", "GPT 稳定分组"]), "PawsAI group names were not normalized");
+Assert(paws.GroupRatios.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(["GPT混合池（GPT5.4卡顿）", "免费专用", "GPT 稳定分组"]) && paws.GroupRatios["GPT 稳定分组"] == 0.11m, "PawsAI group names or ratios were not normalized");
 var (exclusiveCurrent, _) = await FetchPaws(pawsJson, "免费专用");
 Assert(exclusiveCurrent.Prices.InputPerMillion == 0.005m && exclusiveCurrent.MinimumValidGroup == "GPT混合池（GPT5.4卡顿）", "PawsAI exclusive current group handling mismatch");
 
@@ -227,10 +229,13 @@ using (var subClient = new HttpClient(subHandler))
         BaseUrl = new Uri("https://example.test/"),
         SiteType = "sevnx",
         Model = "gpt-5.6-sol",
-        CurrentGroup = "gpt-plus"
+        CurrentGroup = "gpt-plus",
+        CurrentGroupRatio = 1m,
+        GroupRatioSource = "手动"
     });
     Assert(result.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "SevnX base price conversion mismatch");
     Assert(result.Prices.InputPerMillion == 0.5m && result.Prices.CachedInputPerMillion == 0.05m && result.Prices.OutputPerMillion == 3m, "SevnX group prices mismatch");
+    Assert(result.Snapshot.CurrentGroupRatio == 0.1m && result.Snapshot.GroupRatioSource == "自动", "SevnX successful query must replace a stale configured ratio");
     Assert(result.MinimumValidGroup == "gpt-plus" && result.MinimumGroupRatio == 0.1m, "SevnX minimum group mismatch");
     Assert(subHandler.Requests.Count == 3 && subHandler.Requests.Contains("https://example.test/api/v1/groups/available?timezone=Asia%2FShanghai"), "SevnX request paths mismatch");
     Assert(subHandler.Authorization == "Bearer access-token", "SevnX authorization header mismatch");
@@ -245,6 +250,7 @@ Assert(new AiHubPricingAdapter(new HttpClient(new AiHubHandler()), new MemoryCre
 var (aihub, aihubHandler) = await FetchAiHub();
 Assert(aihub.Snapshot.BasePrices is { InputPerMillion: 5m, CachedInputPerMillion: 0.5m, OutputPerMillion: 30m }, "AIHub base prices mismatch");
 Assert(aihub.Prices.InputPerMillion == 0.5m && aihub.Prices.CachedInputPerMillion == 0.05m && aihub.Prices.OutputPerMillion == 3m, "AIHub account ratio prices mismatch");
+Assert(aihub.Snapshot.CurrentGroupRatio == 0.1m && aihub.Snapshot.GroupRatioSource == "自动", "AIHub successful query must replace a stale configured ratio");
 Assert(aihub.MinimumValidGroup == "gpt-free" && aihub.MinimumGroupRatio == 0.05m, "AIHub minimum group mismatch");
 Assert(aihubHandler.Requests.SetEquals(["https://example.test/api/v1/groups/available?timezone=Asia%2FShanghai", "https://example.test/api/v1/groups/rates?timezone=Asia%2FShanghai"]), "AIHub endpoint contract mismatch");
 Assert(aihubHandler.Authorization == "Bearer synthetic-aihub-token" && aihubHandler.Cookie == "session=synthetic" && aihubHandler.UiRequestHeader == "1" && aihubHandler.Referrer == "https://example.test/keys", "AIHub request headers mismatch");

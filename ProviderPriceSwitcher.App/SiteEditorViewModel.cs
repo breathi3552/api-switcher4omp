@@ -24,6 +24,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     private SiteEditorProbeState _probeState;
     private string _probeMessage = string.Empty;
     private string _providerId = string.Empty, _displayName = string.Empty, _baseUrl = string.Empty, _model = string.Empty, _group = string.Empty, _ratio = string.Empty;
+    private IReadOnlyDictionary<string, decimal>? _probedGroupRatios;
     private string? _lastKeyActionMessage;
     public SiteEditorViewModel(PricingProbeUseCase probe, IPricingAdapterRegistry registry, ISiteAccessCredentialStore credentials, IUserNotificationService notifications, LocalAppSettings settings, SiteConfiguration? original = null, IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
     {
@@ -37,7 +38,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     public string DisplayName { get => _displayName; set => SetProperty(ref _displayName, value); }
     public string BaseUrl { get => _baseUrl; set { if (SetProperty(ref _baseUrl, value)) RaiseCommands(); } }
     public string ConfigurationApiAddress { get; set; } = "/keys";
-    public string CurrentGroup { get => _group; set { if (SetProperty(ref _group, value)) { if (!string.IsNullOrWhiteSpace(value) && !GroupOptions.Contains(value, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(value); RaiseCommands(); } } }
+    public string CurrentGroup { get => _group; set { if (SetProperty(ref _group, value)) { ApplyProbedGroupRatio(value); if (!string.IsNullOrWhiteSpace(value) && !GroupOptions.Contains(value, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(value); RaiseCommands(); } } }
     public string Model { get => _model; set { if (SetProperty(ref _model, value)) RaiseCommands(); } }
     public string CurrentGroupRatio { get => _ratio; set { if (SetProperty(ref _ratio, value)) RaiseCommands(); } }
     public string Currency { get; set; } = string.Empty;
@@ -105,7 +106,8 @@ public sealed class SiteEditorViewModel : ObservableObject
         {
             var result = await _probe.ExecuteAsync(site, _settings.RequestTimeoutSeconds, _cancel.Token);
             var boundGroup = CurrentGroup;
-            var desiredGroups = result.ValidGroups
+            _probedGroupRatios = result.GroupRatios;
+            var desiredGroups = result.GroupRatios.Keys
                 .Append(boundGroup)
                 .Where(group => !string.IsNullOrWhiteSpace(group))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -115,6 +117,7 @@ public sealed class SiteEditorViewModel : ObservableObject
                 if (!GroupOptions.Contains(group, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(group);
             for (var index = GroupOptions.Count - 1; index >= 0; index--)
                 if (!desiredGroups.Contains(GroupOptions[index], StringComparer.OrdinalIgnoreCase)) GroupOptions.RemoveAt(index);
+            ApplyProbedGroupRatio(boundGroup);
             ProbeState = SiteEditorProbeState.Succeeded; ProbeMessage = $"成功：当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）。";
         }
         catch (OperationCanceledException) { ProbeState = SiteEditorProbeState.Canceled; ProbeMessage = "已取消价格查询。"; }
@@ -124,6 +127,11 @@ public sealed class SiteEditorViewModel : ObservableObject
     }
     private void Save() { if (TryBuild(out var site)) { SavedSite = site; Saved?.Invoke(this, EventArgs.Empty); } }
     private bool TryBuild(out SiteConfiguration site) { site = null!; if (string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(Model) || string.IsNullOrWhiteSpace(CurrentGroup) || Descriptor is null || !Uri.TryCreate(BaseUrl.Trim(), UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https") || !decimal.TryParse(CurrentGroupRatio, NumberStyles.Number, CultureInfo.InvariantCulture, out var ratio) || ratio <= 0) return false; decimal? conversion = decimal.TryParse(CnyConversionRate, NumberStyles.Number, CultureInfo.InvariantCulture, out var c) && c > 0 ? c : null; uri = new Uri(uri.AbsoluteUri.TrimEnd('/') + "/"); site = new SiteConfiguration { ProviderId = ProviderId.Trim(), DisplayName = DisplayName.Trim(), ConfigurationApiAddress = ConfigurationApiAddress.Trim(), BaseUrl = uri, SiteType = Descriptor.SiteType, Enabled = _original?.Enabled ?? true, Model = Model.Trim(), CurrentGroup = CurrentGroup.Trim(), CurrentGroupRatio = ratio, GroupRatioSource = "手动", AuthenticationMode = AuthenticationMode ?? "无需认证", Currency = Currency.Trim(), CnyConversionRate = conversion, ConfigurationKey = SiteConfigurationKey.Create(ProviderId.Trim(), Descriptor.SiteType, uri, Model.Trim(), CurrentGroup.Trim()) }; return true; }
+    private void ApplyProbedGroupRatio(string group)
+    {
+        if (_probedGroupRatios?.TryGetValue(group, out var ratio) == true && ratio > 0)
+            CurrentGroupRatio = ratio.ToString(CultureInfo.InvariantCulture);
+    }
     private void HandleError(Exception ex) { if (ex is not OperationCanceledException) _notifications.ShowError(UserErrorMessages.Unexpected, "站点编辑"); }
     private void RaiseCommands() { ProbeCommand?.RaiseCanExecuteChanged(); SaveCommand?.RaiseCanExecuteChanged(); CancelProbeCommand?.RaiseCanExecuteChanged(); OnPropertyChanged(nameof(CanSave)); OnPropertyChanged(nameof(CanProbe)); }
 }

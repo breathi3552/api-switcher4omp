@@ -43,7 +43,7 @@ public sealed class PricingAdapterException : Exception
 public sealed record SitePricingResult
 {
     public required PricingSnapshot Snapshot { get; init; }
-    public required IReadOnlySet<string> ValidGroups { get; init; }
+    public required IReadOnlyDictionary<string, decimal> GroupRatios { get; init; }
     public required string MinimumValidGroup { get; init; }
     public required decimal MinimumGroupRatio { get; init; }
     public string? BillingExpression { get; init; }

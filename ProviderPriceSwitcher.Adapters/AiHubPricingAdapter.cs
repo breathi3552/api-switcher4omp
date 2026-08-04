@@ -86,7 +86,7 @@ public sealed class AiHubPricingAdapter : IPricingAdapter
         if (!rateMap.TryGetValue(site.CurrentGroup, out var automaticCurrentRatio))
             throw new PricingAdapterException(PricingAdapterFailure.InvalidGroups, $"Current group '{site.CurrentGroup}' is not valid for platform 'openai'.");
 
-        var currentRatio = site.CurrentGroupRatio is > 0 ? site.CurrentGroupRatio.Value : automaticCurrentRatio;
+        var currentRatio = automaticCurrentRatio;
         var minimum = rateMap.OrderBy(x => x.Value).First();
         const decimal input = 5m;
         const decimal cached = 0.5m;
@@ -103,14 +103,14 @@ public sealed class AiHubPricingAdapter : IPricingAdapter
                 CurrentGroup = site.CurrentGroup,
                 BasePrices = basePrices,
                 CurrentGroupRatio = currentRatio,
-                GroupRatioSource = site.CurrentGroupRatio is > 0 ? site.GroupRatioSource : "自动",
+                GroupRatioSource = "自动",
                 Prices = Scale(basePrices, currentRatio),
                 MinimumGroup = minimum.Key,
                 MinimumGroupRatio = minimum.Value,
                 MinimumGroupPrices = Scale(basePrices, minimum.Value),
                 RefreshedAt = DateTimeOffset.UtcNow
             },
-            ValidGroups = rateMap.Keys.ToHashSet(StringComparer.Ordinal),
+            GroupRatios = rateMap,
             MinimumValidGroup = minimum.Key,
             MinimumGroupRatio = minimum.Value,
             Warnings = []

@@ -31,7 +31,7 @@ static PricingSnapshot Snapshot(string id, decimal price) => new()
 static SitePricingResult Pricing(string id, decimal price) => new()
 {
     Snapshot = Snapshot(id, price),
-    ValidGroups = new HashSet<string>(["standard"]),
+    GroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["standard"] = 1m },
     MinimumValidGroup = "standard",
     MinimumGroupRatio = 1,
     Warnings = []

@@ -92,12 +92,14 @@ public sealed class NewApiPricingAdapter : IPricingAdapter
             }
             if (input < 0 || output < 0 || cached < 0)
                 throw new PricingAdapterException(PricingAdapterFailure.InvalidPrice, "Pricing coefficients cannot be negative.");
-            var ratio = GroupRatio(root, site.CurrentGroup);
+            var groupRatios = groups.ToDictionary(group => group, group => GroupRatio(root, group), StringComparer.Ordinal);
+            var ratio = groupRatios[site.CurrentGroup];
             var basePrices = new TokenPrices { InputPerMillion = input, OutputPerMillion = output, CachedInputPerMillion = cached };
             var prices = Scale(basePrices, ratio);
             prices.Validate();
-            var min = groups.OrderBy(g => GroupRatio(root, g)).First();
-            var minimumRatio = GroupRatio(root, min);
+            var minimum = groupRatios.OrderBy(pair => pair.Value).First();
+            var min = minimum.Key;
+            var minimumRatio = minimum.Value;
             return new SitePricingResult
             {
                 Snapshot = new PricingSnapshot
@@ -115,7 +117,7 @@ public sealed class NewApiPricingAdapter : IPricingAdapter
                     MinimumGroupPrices = Scale(basePrices, minimumRatio),
                     RefreshedAt = DateTimeOffset.UtcNow
                 },
-                ValidGroups = groups,
+                GroupRatios = groupRatios,
                 MinimumValidGroup = min,
                 MinimumGroupRatio = minimumRatio,
                 BillingExpression = expression,
