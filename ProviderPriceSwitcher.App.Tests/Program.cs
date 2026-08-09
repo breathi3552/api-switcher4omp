@@ -70,8 +70,26 @@ var windowThread = new Thread(() =>
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
         var settings = settingsRepository.Load();
         settings = settings with { GatewayPort = 16222, CurrentGatewayPort = 15722 };
+        settings = settings with
+        {
+            OmpWorkingDirectories = [root, Path.Combine(root, "other-working")],
+            LastOmpWorkingDirectory = Path.Combine(root, "other-working"),
+            Sites =
+            [
+                new ProviderPriceSwitcher.Core.SiteConfiguration
+                {
+                    ProviderId = "healthy",
+                    ConfigurationKey = "healthy-key",
+                    BaseUrl = new Uri("https://healthy.example"),
+                    Model = "model",
+                    CurrentGroup = "group"
+                }
+            ]
+        };
+        settingsRepository.Save(settings);
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
+        var sidecarStatus = new FakeSidecarStatus();
         var snapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(snapshots);
         var activeRoute = new ProviderPriceSwitcher.Application.ActiveRouteState();
         var routeController = new FakeRouteController();
@@ -80,7 +98,8 @@ var windowThread = new Thread(() =>
         var siteManagement = new ProviderPriceSwitcher.Application.SiteManagementUseCase(settingsRepository, snapshots);
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
-        var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
+        var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
+        var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original, fakeInferenceKeys));
         var fakeTakeover = new FakeTakeover();
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
@@ -88,8 +107,8 @@ var windowThread = new Thread(() =>
             fakeTakeover,
             fakeOmpLauncher,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.OmpLaunchUseCase>.Instance);
-        var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, notifications));
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance, sidecarStatus: sidecarStatus);
         var window = new MainWindow(viewModel);
         window.Show();
         WaitFor(() => viewModel.TakeoverStatus != "检查中");
@@ -103,7 +122,31 @@ var windowThread = new Thread(() =>
         notifications.ConfirmResult = true;
         viewModel.StartOmpCommand.Execute(null);
         WaitFor(() => viewModel.StatusText.Contains("活动供应商未改变", StringComparison.Ordinal));
-        Assert(fakeTakeover.TakeoverCalls == 1 && fakeTakeover.LastPort == 15722 && fakeOmpLauncher.Calls == 1 && viewModel.TakeoverStatus == "OMP 已接管" && activeRoute.Current == activeBeforeLaunch, "takeover and launch must preserve the active supplier and current port");
+        Assert(fakeTakeover.TakeoverCalls == 1 && fakeTakeover.LastPort == 15722 && fakeOmpLauncher.Calls == 1 && fakeOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(root, "other-working") && !viewModel.IsStartingOmp && viewModel.TakeoverStatus == "OMP 已接管" && activeRoute.Current == activeBeforeLaunch, "takeover and launch must preserve the active supplier, selected working directory, current port, and independent start busy state");
+
+        Assert(viewModel.OmpWorkingDirectoryChoices.SequenceEqual([root, Path.Combine(root, "other-working")])
+            && viewModel.SelectedOmpWorkingDirectory == Path.Combine(root, "other-working")
+            && window.FindName("OmpWorkingDirectoryBox") is System.Windows.Controls.ComboBox
+            && window.FindName("GatewayStatusDot") is System.Windows.Shapes.Ellipse gatewayDot
+            && window.FindName("TakeoverStatusDot") is System.Windows.Shapes.Ellipse
+            && Equals(gatewayDot.Fill, System.Windows.Media.Brushes.SeaGreen),
+            "main page must expose the selected OMP working directory and read-only gateway/takeover status dots");
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
+        WaitFor(() => Equals(viewModel.GatewayStatusBrush, System.Windows.Media.Brushes.IndianRed));
+        Assert(Equals(((System.Windows.Shapes.Ellipse)window.FindName("GatewayStatusDot")).Fill, System.Windows.Media.Brushes.IndianRed), "gateway status dot must follow the sidecar lifecycle status instead of only validating the configured port");
+        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
+        viewModel.SelectedProvider = new ProviderChoice("healthy");
+        routeController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        viewModel.ApplyRouteCommand.Execute(null);
+        WaitFor(() => viewModel.IsApplyingRoute);
+        var launchesBeforeIndependentStart = fakeOmpLauncher.Calls;
+        viewModel.StartOmpCommand.Execute(null);
+        WaitFor(() => fakeOmpLauncher.Calls == launchesBeforeIndependentStart + 1 && !viewModel.IsStartingOmp);
+        Assert(viewModel.IsApplyingRoute && !viewModel.IsStartingOmp, "application and OMP start commands must keep independent busy states");
+        routeController.ApplyGate.SetResult();
+        WaitFor(() => !viewModel.IsApplyingRoute);
+        Assert(activeRoute.CurrentProviderId == "healthy", "application command must commit the selected target after its independent busy period");
+        activeRoute.Apply(activeBeforeLaunch!);
 
         var site = new ProviderPriceSwitcher.Core.SiteConfiguration
         {
@@ -139,6 +182,10 @@ var windowThread = new Thread(() =>
             Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         currentRatioViewModel.CheckCommand.Execute(null);
         WaitFor(() => currentRatioViewModel.Rows.Count > 0);
+        Assert(currentRatioViewModel.RecommendedProvider == "synthetic-provider"
+            && currentRatioViewModel.SelectedProvider?.ProviderId == "synthetic-provider"
+            && activeRoute.CurrentProviderId == "active",
+            "a completed price check must select the recommendation as pending target while leaving the active provider unchanged");
         var currentRatioRow = currentRatioViewModel.Rows.Single();
         var persistedSite = settingsRepository.Load().Sites.Single();
         Assert(currentRatioRow.Ratio == "0.1", $"home price check must render the latest successful current-group ratio; actual ratio/status/issue: {currentRatioRow.Ratio}/{currentRatioRow.Status}/{currentRatioRow.Issue}");
@@ -154,6 +201,53 @@ var windowThread = new Thread(() =>
         currentRatioViewModel.CheckCommand.Execute(null);
         WaitFor(() => pricingHandler.RequestCount >= 6 && currentRatioViewModel.CheckCommand.CanExecute(null));
         Assert(currentRatioViewModel.Rows.Single().Ratio == "0.1" && settingsRepository.Load().Sites.Single().CurrentGroupRatio == 0.1m, "home price check missing the current group must preserve the last successful ratio");
+        var projectionRoot = Path.Combine(root, "projection");
+        var projectionSettingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(projectionRoot);
+        var projectionSnapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(projectionRoot);
+        var projectionSite = new ProviderPriceSwitcher.Core.SiteConfiguration
+        {
+            ProviderId = "projection-provider",
+            ConfigurationKey = "projection-key",
+            BaseUrl = new Uri("https://projection.example"),
+            SiteType = "projection",
+            Model = "model",
+            CurrentGroup = "group",
+            CurrentGroupRatio = 1m
+        };
+        var projectionSettings = new ProviderPriceSwitcher.Application.LocalAppSettings { Sites = [projectionSite] };
+        projectionSettingsRepository.Save(projectionSettings);
+        var projectionAdapter = new FakeAdapter(new("projection", "Projection", false, ["无"]))
+        {
+            ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
+            {
+                ["group"] = 0.2m,
+                ["minimum"] = 0.05m,
+                ["third"] = 0.1m
+            }
+        };
+        var projectionRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([projectionAdapter]);
+        var projectionRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(projectionRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+        var projectionViewModel = new MainViewModel(
+            new ProviderPriceSwitcher.Application.PricingCheckUseCase(projectionRefresh, projectionSettingsRepository, projectionSnapshots),
+            new ProviderPriceSwitcher.Application.SettingsUseCase(projectionSettingsRepository),
+            new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(projectionSettingsRepository, routeController, keyStore, activeRoute),
+            ompLaunch,
+            activeRoute,
+            new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(projectionSnapshots),
+            projectionSettings,
+            sitesFactory,
+            notifications,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        projectionViewModel.CheckCommand.Execute(null);
+        WaitFor(() => projectionViewModel.Rows.Count > 0 && projectionViewModel.CheckCommand.CanExecute(null));
+        var projectionRows = projectionViewModel.Rows.ToArray();
+        var projectionCurrent = projectionRows.Single(row => row.Group == "group [当前]");
+        var projectionMinimum = projectionRows.Single(row => row.Group == "minimum [最低]");
+        Assert(projectionRows.Length == 2
+            && projectionRows.All(row => !row.Group.Contains("third", StringComparison.Ordinal))
+            && projectionCurrent.IsSiteFirstRow && projectionCurrent.KeysUri is not null
+            && !projectionMinimum.IsSiteFirstRow && projectionMinimum.KeysUri is null,
+            "price table must project only current and minimum rows, leaving the minimum row read-only and hiding other groups");
 
 
         var launcher = new FakeUriLauncher();
@@ -182,16 +276,55 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var editorFactoryForDialog = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original));
-        var sitesDialog = new SitesDialog(settings, siteManagement, snapshotQuery, editorFactoryForDialog, null);
+        var editorFactoryForDialog = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original, fakeInferenceKeys));
+        var cascadeKeys = new CascadeInferenceKeyStore();
+        var cascadeSettings = settings with { ActiveProviderId = site.ProviderId };
+        settingsRepository.Save(cascadeSettings);
+        activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot(site.ProviderId, site.BaseUrl.ToString(), "cascade-handle"));
+        var cascadeSiteManagement = new ProviderPriceSwitcher.Application.SiteManagementUseCase(settingsRepository, snapshots, credentialStore, cascadeKeys, activeRoute, routeController);
+        var sitesDialog = new SitesDialog(cascadeSettings, cascadeSiteManagement, snapshotQuery, editorFactoryForDialog, null, notifications);
+        sitesDialog.Show();
+        sitesDialog.UpdateLayout();
         Assert(ReferenceEquals(GetField<ISiteEditorDialogFactory>(sitesDialog, "_editorFactory"), editorFactoryForDialog), "sites dialog must retain injected editor factory");
+        var deleteButton = Descendants(sitesDialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "删除"));
+        var confirmCallsBeforeDelete = notifications.ConfirmCalls;
+        notifications.ConfirmResult = false;
+        deleteButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(notifications.ConfirmCalls == confirmCallsBeforeDelete + 1 && sitesDialog.Settings.Sites.Count == 1 && cascadeKeys.ClearCalls == 0, "cancelled supplier deletion must preserve settings and credentials");
+        notifications.ConfirmResult = true;
+        deleteButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        WaitFor(() => cascadeKeys.ClearCalls == 1 && sitesDialog.Settings.Sites.Count == 0);
+        Assert(cascadeKeys.ClearCalls == 1 && credentialStore.ClearCalls == 1 && routeController.ClearCount > 0 && activeRoute.CurrentProviderId is null && snapshots.Load(site.ProviderId) is null, "confirmed supplier deletion must clear the snapshot, access credential, inference key and active route");
         sitesDialog.Close();
+        activeRoute.Apply(activeBeforeLaunch!);
+
+        fakeInferenceKeys.Summary = new ProviderPriceSwitcher.Core.InferenceApiKeySummary
+        {
+            ProviderId = site.ProviderId,
+            KeyHandle = "old-handle",
+            BoundGroup = site.CurrentGroup,
+            MaskedKey = "old-…key",
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var closeKeyDialog = editorFactoryForDialog.Create(site, settings, window);
+        closeKeyDialog.Show();
+        closeKeyDialog.UpdateLayout();
+        var closeKeyPlaceholder = (System.Windows.Controls.TextBlock)closeKeyDialog.FindName("InferenceKeyPlaceholder");
+        var closeKeyBox = (System.Windows.Controls.PasswordBox)closeKeyDialog.FindName("InferenceKeyBox");
+        Assert(closeKeyPlaceholder.Text == "old-…key" && closeKeyBox.Password.Length == 0,
+            $"opening the editor must show the saved inference-key summary without loading key material; actual text='{closeKeyPlaceholder.Text}', passwordLength={closeKeyBox.Password.Length}, summary='{fakeInferenceKeys.Summary?.MaskedKey}'");
+        closeKeyBox.Password = "unsaved-inference-secret";
+        closeKeyDialog.Close();
+        Assert(fakeInferenceKeys.SaveCalls == 0 && fakeInferenceKeys.DeleteCalls == 0 && fakeInferenceKeys.Summary?.MaskedKey == "old-…key", "closing the editor without update must preserve the existing inference-key summary");
 
         var dialog = editorFactoryForDialog.Create(site, settings, window);
         dialog.Show(); dialog.UpdateLayout();
+        var editorSections = Descendants(dialog).OfType<System.Windows.Controls.GroupBox>().Select(group => group.Header?.ToString()).ToArray();
+        Assert(editorSections.SequenceEqual(["基础配置", "价格查询", "模型推理"]), "supplier editor must expose exactly the three agreed sections");
         Assert(dialog.DataContext is SiteEditorViewModel, "editor dialog must bind the production view model");
         var editorVm = (SiteEditorViewModel)dialog.DataContext;
         Assert(editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null), "valid editor fields must enable probe/save and leave cancel disabled");
+        Assert(((System.Windows.Controls.ComboBox)dialog.FindName("CurrentGroupBox")).Text == site.CurrentGroup, "opening the editor must backfill the editable current-group ComboBox with the saved binding");
         var tokenBox = (System.Windows.Controls.PasswordBox)dialog.FindName("TokenBox");
         var cookieBox = (System.Windows.Controls.PasswordBox)dialog.FindName("CookieBox");
         tokenBox.Password = "synthetic-token-ui";
@@ -200,8 +333,17 @@ var windowThread = new Thread(() =>
         credentialStore.ExpectedCookie = cookieBox.Password;
         var credentialButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "绑定/更新站点凭据"));
         credentialButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput && tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0, "real credential bridge must save once and immediately clear both inputs");
-        Assert(credentialStore.LoadCalls == 0, "editor must never load credential material");
+        var tokenPlaceholder = (System.Windows.Controls.TextBlock)dialog.FindName("TokenPlaceholder");
+        var cookiePlaceholder = (System.Windows.Controls.TextBlock)dialog.FindName("CookiePlaceholder");
+        Assert(credentialStore.SaveCalls == 1 && credentialStore.LastSaveMatchedExpectedInput && tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0
+            && tokenPlaceholder.Text == "synt********n-ui" && cookiePlaceholder.Text == "cook********e-ui",
+            "credential inputs must clear and show storage-generated masked summaries in overlays");
+        Assert(credentialStore.LoadCalls == 0 && dialog.FindName("CredentialStatusText") is null, "editor must not load credential material or render a separate credential status line");
+        credentialStore.AccessTokenSummaryOverride = "********";
+        credentialStore.CookieSummaryOverride = "********";
+        editorVm.UpdateCredentialStatus();
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert(tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0 && tokenPlaceholder.Text == "********" && cookiePlaceholder.Text == "********", "short credential summaries must use the fixed mask in both empty overlays");
         probeAdapter.Block = true;
         editorVm.ProbeCommand.Execute(null);
         Assert(editorVm.IsProbing && !editorVm.ProbeCommand.CanExecute(null) && !editorVm.SaveCommand.CanExecute(null) && editorVm.CancelProbeCommand.CanExecute(null), "probe must become busy and prevent reentry while enabling cancel");
@@ -229,14 +371,12 @@ var windowThread = new Thread(() =>
             ["edited-during-probe"] = 0.2m,
             ["different-group"] = 0.05m
         };
-        var currentGroupBox = (System.Windows.Controls.TextBox)dialog.FindName("CurrentGroupBox");
-        var groupOptionsBox = (System.Windows.Controls.ComboBox)dialog.FindName("GroupOptionsBox");
-        Assert(currentGroupBox.Text == "edited-during-probe" && !groupOptionsBox.IsEditable, "current group must use an independent text input and read-only candidate selector");
+        var currentGroupBox = (System.Windows.Controls.ComboBox)dialog.FindName("CurrentGroupBox");
+        Assert(currentGroupBox.IsEditable && dialog.FindName("GroupOptionsBox") is null, "current group must use one editable ComboBox for both manual input and candidates");
         var probeButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "测试价格查询"));
         currentGroupBox.Focus();
-        currentGroupBox.SelectAll();
-        currentGroupBox.SelectedText = "edited-during-probe";
-        Assert(editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "real current group input must update before clicking probe");
+        currentGroupBox.Text = "edited-during-probe";
+        Assert(editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "editable current group ComboBox must update before clicking probe");
         var groupMissingDuringRefresh = false;
         editorVm.GroupOptions.CollectionChanged += (_, _) => groupMissingDuringRefresh |= !editorVm.GroupOptions.Contains("edited-during-probe", StringComparer.OrdinalIgnoreCase);
         probeButton.Focus();
@@ -244,16 +384,50 @@ var windowThread = new Thread(() =>
         WaitFor(() => probeAdapter.FetchCalls == 4);
         WaitFor(() => !editorVm.IsProbing);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 4 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the independent current group input after focus moves to the probe button");
+        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 4 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the editable current group after focus moves to the probe button");
         Assert(editorVm.CurrentGroupRatio == "0.2", $"successful probe must replace the current group's stale ratio; actual ratio: {editorVm.CurrentGroupRatio}");
-        groupOptionsBox.SelectedItem = "different-group";
-        Assert(editorVm.CurrentGroup == "different-group" && currentGroupBox.Text == "different-group" && groupOptionsBox.SelectedItem is null, "explicit candidate selection must update the independent current group input without retaining selection coupling");
-        Assert(editorVm.CurrentGroupRatio == "0.05", $"selecting a probed group must use that group's latest ratio; actual ratio: {editorVm.CurrentGroupRatio}");
+        currentGroupBox.Focus();
+        currentGroupBox.SelectedItem = "different-group";
+        Assert(editorVm.CurrentGroup == "different-group" && currentGroupBox.Text == "different-group" && editorVm.CurrentGroupRatio == "0.05", "explicit candidate selection must update the editable current group and its latest ratio");
+
+        var inferenceBox = (System.Windows.Controls.PasswordBox)dialog.FindName("InferenceKeyBox");
+        var inferencePlaceholder = (System.Windows.Controls.TextBlock)dialog.FindName("InferenceKeyPlaceholder");
+        var updateInferenceButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "更新 API key"));
+        inferenceBox.Password = "new-inference-secret";
+        updateInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(fakeInferenceKeys.SaveCalls == 1 && inferenceBox.Password.Length == 0 && inferencePlaceholder.Text == "new-…cret", "inference key update must clear input and show only its safe summary");
+        inferenceBox.Password = string.Empty;
+        updateInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(fakeInferenceKeys.SaveCalls == 1 && fakeInferenceKeys.Summary?.MaskedKey == "new-…cret", "empty inference key update must preserve the existing key");
+        notifications.ConfirmResult = false;
+        var deleteInferenceButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "删除 API key"));
+        deleteInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(fakeInferenceKeys.DeleteCalls == 0 && fakeInferenceKeys.Summary?.MaskedKey == "new-…cret", "cancelled inference key deletion must preserve the existing key");
+        notifications.ConfirmResult = true;
+        deleteInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        WaitFor(() => fakeInferenceKeys.DeleteCalls == 1);
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert(fakeInferenceKeys.Summary is null && inferencePlaceholder.Text == "未配置", $"confirmed inference key deletion must clear the saved key and summary; summary='{fakeInferenceKeys.Summary?.MaskedKey}', placeholder='{inferencePlaceholder.Text}', deletes={fakeInferenceKeys.DeleteCalls}");
         dialog.Close();
+
         var saveDialog = editorFactoryForDialog.Create(site, settings, window);
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
+        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver;
+        fakeTakeover.CurrentProviderId = ProviderPriceSwitcher.Application.OmpSidecarProvider.Id;
+        var statusViewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        statusViewModel.InitializeAsync().GetAwaiter().GetResult();
+        var statusWindow = new MainWindow(statusViewModel);
+        statusWindow.Show();
+        statusWindow.UpdateLayout();
+        var statusDot = (System.Windows.Shapes.Ellipse)statusWindow.FindName("TakeoverStatusDot");
+        Assert(statusViewModel.TakeoverStatus == "OMP 已接管" && Equals(statusDot.Fill, System.Windows.Media.Brushes.SeaGreen), "homepage takeover status point must compare only the default ProviderId and expose the taken-over color");
+        var takeoverCallsBeforePartialDriftLaunch = fakeTakeover.TakeoverCalls;
+        statusViewModel.StartOmpCommand.Execute(null);
+        WaitFor(() => fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1);
+        Assert(fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1, "partial-drift default status point must not bypass the launch-time takeover confirmation");
+        statusWindow.Close();
 
     }
     catch (Exception ex) { windowFailure = ex; }
@@ -309,7 +483,26 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
         var groupRatios = ReturnedGroupRatios ?? new Dictionary<string, decimal>(StringComparer.Ordinal) { [site.CurrentGroup] = 1m };
         var currentRatio = groupRatios.GetValueOrDefault(site.CurrentGroup, 1m);
         var minimum = groupRatios.OrderBy(pair => pair.Value).First();
-        return new() { Snapshot = new() { ProviderId = site.ProviderId, ConfigurationKey = site.ConfigurationKey, Model = site.Model, CurrentGroup = site.CurrentGroup, Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 }, CurrentGroupRatio = currentRatio, RefreshedAt = DateTimeOffset.UtcNow }, GroupRatios = groupRatios, MinimumValidGroup = minimum.Key, MinimumGroupRatio = minimum.Value, Warnings = [] };
+        return new()
+        {
+            Snapshot = new()
+            {
+                ProviderId = site.ProviderId,
+                ConfigurationKey = site.ConfigurationKey,
+                Model = site.Model,
+                CurrentGroup = site.CurrentGroup,
+                Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 },
+                CurrentGroupRatio = currentRatio,
+                MinimumGroup = minimum.Key,
+                MinimumGroupRatio = minimum.Value,
+                MinimumGroupPrices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 },
+                RefreshedAt = DateTimeOffset.UtcNow
+            },
+            GroupRatios = groupRatios,
+            MinimumValidGroup = minimum.Key,
+            MinimumGroupRatio = minimum.Value,
+            Warnings = []
+        };
     }
 }
 
@@ -351,6 +544,18 @@ sealed class PricingCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCred
     public ProviderPriceSwitcher.Core.SiteCredentialSummary GetSummary(string providerId) => new() { ProviderId = providerId, Status = ProviderPriceSwitcher.Core.SiteCredentialStatus.Available };
 }
 
+sealed class CascadeInferenceKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
+{
+    public int ClearCalls { get; private set; }
+    public ProviderPriceSwitcher.Core.InferenceApiKeyRecord? Load(string providerId) =>
+        providerId == "synthetic-provider"
+            ? new ProviderPriceSwitcher.Core.InferenceApiKeyRecord { ProviderId = providerId, KeyHandle = "cascade-handle", ApiKey = "cascade-secret", BoundGroup = "group" }
+            : null;
+    public void Save(ProviderPriceSwitcher.Core.InferenceApiKeyRecord record) { }
+    public void Clear(string providerId) => ClearCalls++;
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
+}
+
 sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
 {
     private static readonly ProviderPriceSwitcher.Core.InferenceApiKeyRecord Healthy = new() { ProviderId = "healthy", KeyHandle = "healthy-handle", ApiKey = "healthy-secret", BoundGroup = "group" };
@@ -360,18 +565,56 @@ sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
 }
 
+sealed class FakeInferenceApiKeyUseCase : ProviderPriceSwitcher.Application.IInferenceApiKeyUseCase
+{
+    public int SaveCalls { get; private set; }
+    public int DeleteCalls { get; private set; }
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? Summary { get; set; }
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => Summary;
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
+    {
+        SaveCalls++;
+        Summary = new ProviderPriceSwitcher.Core.InferenceApiKeySummary
+        {
+            ProviderId = providerId,
+            KeyHandle = "synthetic-handle",
+            BoundGroup = boundGroup,
+            MaskedKey = "new-…cret",
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        return Summary;
+    }
+    public Task DeleteAsync(string providerId, CancellationToken cancellationToken = default)
+    {
+        DeleteCalls++;
+        Summary = null;
+        return Task.CompletedTask;
+    }
+}
+
 sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteController
 {
-    public Task ApplyAsync(ProviderPriceSwitcher.Core.RouteSnapshot snapshot, CancellationToken cancellationToken = default) => Task.CompletedTask;
-    public Task ClearAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    public TaskCompletionSource? ApplyGate { get; set; }
+    public int ClearCount { get; private set; }
+    public async Task ApplyAsync(ProviderPriceSwitcher.Core.RouteSnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        if (ApplyGate is not null)
+            await ApplyGate.Task.WaitAsync(cancellationToken);
+    }
+    public Task ClearAsync(CancellationToken cancellationToken = default)
+    {
+        ClearCount++;
+        return Task.CompletedTask;
+    }
 }
 sealed class FakeTakeover : ProviderPriceSwitcher.Application.IOmpTakeoverService
 {
     public ProviderPriceSwitcher.Application.OmpTakeoverStatus Status { get; set; } = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
+    public string? CurrentProviderId { get; set; }
     public int TakeoverCalls { get; private set; }
     public int LastPort { get; private set; }
     public Task<ProviderPriceSwitcher.Application.OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverCheckResult(Status));
+        Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverCheckResult(Status, CurrentProviderId));
     public Task<ProviderPriceSwitcher.Application.OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default)
     {
         TakeoverCalls++;
@@ -380,12 +623,26 @@ sealed class FakeTakeover : ProviderPriceSwitcher.Application.IOmpTakeoverServic
     }
 }
 
+sealed class FakeSidecarStatus : ProviderPriceSwitcher.Application.ISidecarStatus
+{
+    public ProviderPriceSwitcher.Application.SidecarStatus Current { get; private set; } =
+        new(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready);
+    public event Action<ProviderPriceSwitcher.Application.SidecarStatus>? Changed;
+    public void Set(ProviderPriceSwitcher.Application.SidecarStatus status)
+    {
+        Current = status;
+        Changed?.Invoke(status);
+    }
+}
+
 sealed class FakeOmpLauncher : ProviderPriceSwitcher.Application.IOmpProcessLauncher
 {
     public int Calls { get; private set; }
-    public ProviderPriceSwitcher.Application.OmpLaunchResult Launch(string workingDirectory)
+    public ProviderPriceSwitcher.Application.OmpLaunchRequest? LastRequest { get; private set; }
+    public ProviderPriceSwitcher.Application.OmpLaunchResult Launch(ProviderPriceSwitcher.Application.OmpLaunchRequest request, CancellationToken cancellationToken = default)
     {
         Calls++;
+        LastRequest = request;
         return new(true);
     }
 }
@@ -402,10 +659,15 @@ sealed class FakeNotifications : IUserNotificationService
 {
     public int WarningCalls { get; private set; }
     public int ErrorCalls { get; private set; }
+    public int ConfirmCalls { get; private set; }
     public bool ConfirmResult { get; set; } = true;
     public void ShowWarning(string message, string title) => WarningCalls++;
     public void ShowError(string message, string title) => ErrorCalls++;
-    public bool Confirm(string message, string title) => ConfirmResult;
+    public bool Confirm(string message, string title)
+    {
+        ConfirmCalls++;
+        return ConfirmResult;
+    }
 }
 
 sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredentialStore
@@ -416,6 +678,8 @@ sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredent
     public int SummaryCalls { get; private set; }
     public string? ExpectedToken { get; set; }
     public string? ExpectedCookie { get; set; }
+    public string? AccessTokenSummaryOverride { get; set; }
+    public string? CookieSummaryOverride { get; set; }
     public bool LastSaveMatchedExpectedInput { get; private set; }
     public string? LastClearedProvider { get; private set; }
 
@@ -448,6 +712,8 @@ sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredent
             ProviderId = providerId,
             Status = ClearCalls == 0 ? ProviderPriceSwitcher.Core.SiteCredentialStatus.Available : ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured,
             StatusText = ClearCalls == 0 ? "已配置" : "未配置",
+            AccessTokenSummary = SaveCalls > 0 ? AccessTokenSummaryOverride ?? "synt********n-ui" : null,
+            CookieSummary = SaveCalls > 0 ? CookieSummaryOverride ?? "cook********e-ui" : null,
             UpdatedAt = DateTimeOffset.UtcNow
         };
     }

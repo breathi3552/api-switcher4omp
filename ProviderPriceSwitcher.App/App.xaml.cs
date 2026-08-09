@@ -17,6 +17,7 @@ public partial class App : System.Windows.Application
     private static readonly Action<ILogger, Exception?> LogApplicationStarted = LoggerMessage.Define(LogLevel.Information, new EventId(100, "ApplicationStarted"), "ProviderPriceSwitcher started");
     private WindowsSidecarSupervisor? _sidecar;
     private ActiveRouteState? _activeRoute;
+    private SettingsUseCase? _settingsUseCase;
     private CancellationTokenSource? _applicationCancellation;
     private static readonly Action<ILogger, string, Exception?> LogApplicationFailure = LoggerMessage.Define<string>(LogLevel.Error, new EventId(101, "ApplicationFailure"), "Application failure: {FailureKind}");
     private static readonly Action<ILogger, string, Exception?> LogInferenceKeyLoadFailure = LoggerMessage.Define<string>(LogLevel.Warning, new EventId(102, "InferenceKeyLoadFailure"), "Inference API key unavailable for provider {ProviderId}");
@@ -38,11 +39,11 @@ public partial class App : System.Windows.Application
             if (string.Equals(e.Args[index], "--data-root", StringComparison.Ordinal) && index + 1 < e.Args.Length)
                 dataRoot = e.Args[++index];
         _loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(new RollingFileLoggerProvider(new RollingFileLoggerOptions(Path.Combine(AppDataPaths.GetRoot(dataRoot), "logs")))));
-        JsonSettingsRepository? startupSettingsRepository = null;
         LocalAppSettings? startupSettings = null;
         try
         {
-            var settingsRepository = startupSettingsRepository = new JsonSettingsRepository(dataRoot);
+            var settingsRepository = new JsonSettingsRepository(dataRoot);
+            _settingsUseCase = new SettingsUseCase(settingsRepository);
             var settings = startupSettings = settingsRepository.Load();
             _httpClient = new HttpClient();
             var snapshotRepository = new JsonPricingSnapshotRepository(dataRoot);
@@ -51,12 +52,12 @@ public partial class App : System.Windows.Application
             var inferenceBindingStore = new WindowsInferenceBindingStore(settingsRepository, inferenceKeyStore, dataRoot);
             inferenceBindingStore.Recover();
             settings = startupSettings = settingsRepository.Load();
-            var currentGatewayPort = settings.CurrentGatewayPort is >= 1 and <= 65535
-                ? settings.CurrentGatewayPort
-                : OmpSidecarProvider.DefaultPort;
-            settings = settings with { CurrentGatewayPort = currentGatewayPort };
             var startupCancellation = _applicationCancellation?.Token ?? CancellationToken.None;
             var ompTakeover = new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults());
+            var ompStartup = new OmpStartupUseCase(
+                settingsRepository,
+                ompTakeover,
+                _loggerFactory.CreateLogger<OmpStartupUseCase>());
             var activeRoute = new ActiveRouteState();
             _activeRoute = activeRoute;
             var resolver = new InferenceApiKeyResolverBridge(inferenceKeyStore, settingsRepository);
@@ -69,26 +70,23 @@ public partial class App : System.Windows.Application
                     settings.GatewayPort),
                 resolver);
             await _sidecar.StartAsync(startupCancellation);
-            var takeoverStatus = await ompTakeover.CheckAsync(settings.OmpRootDirectory, startupCancellation);
-            if (takeoverStatus.Status == OmpTakeoverStatus.ReadFailed)
-                throw new OmpTakeoverStatusReadFailedException();
-            var targetPort = settings.GatewayPort;
-            var observedPort = takeoverStatus.CurrentGatewayPort ?? settings.CurrentGatewayPort;
-            if (takeoverStatus.Status == OmpTakeoverStatus.TakenOver && observedPort != targetPort)
+            var startupOutcome = await ompStartup.InitializeAsync(settings, startupCancellation);
+            if (!startupOutcome.Succeeded)
             {
-                var portMigration = await ompTakeover.TakeOverAsync(settings.OmpRootDirectory, targetPort, startupCancellation);
-                if (!portMigration.Succeeded)
-                    throw new InvalidOperationException("omp_takeover_port_migration_failed");
-                settings = settingsRepository.Update(current => current with { CurrentGatewayPort = targetPort });
+                LogApplicationFailure(
+                    _loggerFactory.CreateLogger<App>(),
+                    startupOutcome.Status.ToString(),
+                    null);
+                _notifications.ShowError(
+                    UserErrorMessages.ForOmpStartupOutcome(startupOutcome),
+                    "ProviderPriceSwitcher");
+                ShowSettingsRecovery(_settingsUseCase, startupSettings);
+                Shutdown(-1);
+                return;
             }
-            else if (takeoverStatus.Status == OmpTakeoverStatus.TakenOver && settings.CurrentGatewayPort != observedPort)
-            {
-                settings = settingsRepository.Update(current => current with { CurrentGatewayPort = observedPort });
-            }
-            else if (takeoverStatus.Status == OmpTakeoverStatus.NotTakenOver && settings.CurrentGatewayPort != targetPort)
-            {
-                settings = settingsRepository.Update(current => current with { CurrentGatewayPort = targetPort });
-            }
+            if (!startupOutcome.BackupRetentionSucceeded)
+                _notifications.ShowWarning(UserErrorMessages.OmpBackupRetentionFailed, "ProviderPriceSwitcher");
+            settings = startupSettings = startupOutcome.Settings;
             var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, inferenceBindingStore, activeRoute, _sidecar, resolver, settingsRepository);
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
             var adapterRegistry = new PricingAdapterRegistry([
@@ -102,36 +100,27 @@ public partial class App : System.Windows.Application
             var applyActiveRoute = new ApplyActiveRouteUseCase(settingsRepository, _sidecar, inferenceKeyStore, activeRoute);
             var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute, _sidecar, resolver);
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
-            var settingsUseCase = new SettingsUseCase(settingsRepository);
+            var settingsUseCase = _settingsUseCase!;
             var ompLaunch = new OmpLaunchUseCase(
                 settingsRepository,
                 ompTakeover,
-                new OmpProcessLauncher(new OmpProcessService()),
+                new OmpProcessLauncher(new OmpProcessService(), new AppPathDefaults()),
                 _loggerFactory.CreateLogger<OmpLaunchUseCase>());
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
-            var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider));
-            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), startupCancellation);
+            var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
+            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), _sidecar, startupCancellation);
             MainWindow = new MainWindow(viewModel);
             MainWindow.Show();
         }
         catch (OperationCanceledException) when (_applicationCancellation?.IsCancellationRequested == true)
         {
         }
-        catch (OmpTakeoverStatusReadFailedException exception)
-        {
-            var logger = _loggerFactory?.CreateLogger<App>();
-            if (logger is not null) LogApplicationFailure(logger, "OmpTakeoverStatusReadFailed", exception);
-            _notifications.ShowError(UserErrorMessages.ConfigurationReadFailed, "ProviderPriceSwitcher");
-            ShowSettingsRecovery(startupSettingsRepository, startupSettings);
-            Shutdown(-1);
-        }
         catch (GatewayPortUnavailableException exception)
         {
             var logger = _loggerFactory?.CreateLogger<App>();
             if (logger is not null) LogApplicationFailure(logger, "GatewayPortUnavailable", exception);
             _notifications.ShowError(UserErrorMessages.GatewayPortUnavailable, "ProviderPriceSwitcher");
-            ShowSettingsRecovery(startupSettingsRepository, startupSettings);
-            Shutdown(-1);
+            ShowSettingsRecovery(_settingsUseCase, startupSettings);
         }
         catch (Exception exception)
         {
@@ -142,20 +131,21 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private void ShowSettingsRecovery(JsonSettingsRepository? settingsRepository, LocalAppSettings? settings)
+    private void ShowSettingsRecovery(SettingsUseCase? settingsUseCase, LocalAppSettings? settings)
     {
-        if (settingsRepository is null || settings is null)
+        if (settingsUseCase is null || settings is null)
             return;
         try
         {
             var dialog = new SettingsDialog(settings);
             if (dialog.ShowDialog() == true)
-                settingsRepository.Save(dialog.Settings with { CurrentGatewayPort = settings.CurrentGatewayPort });
+                settingsUseCase.Save(dialog.Settings with { CurrentGatewayPort = settings.CurrentGatewayPort });
         }
         catch (Exception exception)
         {
             var logger = _loggerFactory?.CreateLogger<App>();
             if (logger is not null) LogApplicationFailure(logger, "SettingsRecovery", exception);
+            _notifications?.ShowError(UserErrorMessages.SettingsRecoveryFailed, "ProviderPriceSwitcher");
         }
     }
 

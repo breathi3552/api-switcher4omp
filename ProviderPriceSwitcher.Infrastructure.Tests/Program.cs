@@ -179,6 +179,20 @@ try
     File.WriteAllText(snapshots.FilePath, "not json");
     try { snapshots.LoadAll(); throw new InvalidOperationException("corrupt snapshots accepted"); } catch (JsonDataException) { }
     Assert(!Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Any(), "atomic snapshot write");
+    var credentialSummaryStore = new WindowsSiteCredentialStore(root);
+    credentialSummaryStore.SaveCredential(new SiteCredentialRecord
+    {
+        ProviderId = "summary-provider",
+        SiteType = "new-api",
+        AuthorizationScheme = "Bearer",
+        AccessToken = "abcdefgh12345678",
+        CookieHeader = "short"
+    });
+    var credentialSummary = credentialSummaryStore.GetSummary("summary-provider");
+    Assert(credentialSummary.AccessTokenSummary == "abcd********5678" && credentialSummary.CookieSummary == "********"
+        && !credentialSummary.StatusText.Contains("abcdefgh12345678", StringComparison.Ordinal)
+        && !credentialSummary.StatusText.Contains("short", StringComparison.Ordinal),
+        "credential storage boundary must generate fixed summaries without exposing token or Cookie material");
 
     var logRoot = Path.Combine(root, "logs");
     const string syntheticToken = "synthetic-token-DO-NOT-LOG";
@@ -236,6 +250,9 @@ try
     var ompRequestCount = 0;
     var inFlightStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var releaseInFlight = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var repeatedOmpRequestCount = 0;
+    var firstRepeatedOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseRepeatedOmpRequests = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     async Task ServeResponsesAsync(System.Net.HttpListener listener, string expectedKey, string responseId, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -254,11 +271,21 @@ try
                 inFlightStarted.TrySetResult();
                 await releaseInFlight.Task.WaitAsync(cancellationToken);
             }
+            var isRepeatedOmpLaunch = requestBody.Contains("repeat-launch", StringComparison.Ordinal);
+            if (isRepeatedOmpLaunch)
+            {
+                var requestCount = Interlocked.Increment(ref repeatedOmpRequestCount);
+                if (requestCount == 1)
+                    firstRepeatedOmpRequestStarted.TrySetResult();
+                await releaseRepeatedOmpRequests.Task.WaitAsync(cancellationToken);
+            }
             if (!requestBody.Contains("matrix", StringComparison.Ordinal)) Interlocked.Increment(ref ompRequestCount);
             var streaming = requestBody.Contains("\"stream\":true", StringComparison.Ordinal);
             var response = streaming
                 ? $"event: response.reasoning_summary_text.delta\ndata: {{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"reasoning\"}}\n\nevent: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{{}}\"}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{responseId}\"}}}}\n\n"
-                : $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"reason_1\",\"type\":\"reasoning\",\"summary\":[]}},{{\"id\":\"call_1\",\"type\":\"function_call\",\"status\":\"completed\",\"name\":\"lookup\",\"call_id\":\"call_1\",\"arguments\":\"{{}}\"}},{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}";
+                : isRepeatedOmpLaunch
+                    ? $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}"
+                    : $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"reason_1\",\"type\":\"reasoning\",\"summary\":[]}},{{\"id\":\"call_1\",\"type\":\"function_call\",\"status\":\"completed\",\"name\":\"lookup\",\"call_id\":\"call_1\",\"arguments\":\"{{}}\"}},{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}";
             context.Response.StatusCode = 200;
             context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
             var bytes = System.Text.Encoding.UTF8.GetBytes(response);
@@ -303,15 +330,74 @@ try
         Directory.CreateDirectory(ompAgentRoot);
         await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:15722/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
         await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "config.yml"), "modelRoles:\n  default: provider-price-switcher/gpt-5.6-sol\n");
-        var ompInfo = new System.Diagnostics.ProcessStartInfo("D:\\.Pi Projects\\omp.exe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = root };
-        ompInfo.ArgumentList.Add("--model"); ompInfo.ArgumentList.Add("provider-price-switcher/gpt-5.6-sol"); ompInfo.ArgumentList.Add("--no-tools"); ompInfo.ArgumentList.Add("--no-session"); ompInfo.ArgumentList.Add("-p"); ompInfo.ArgumentList.Add("Return loopback-ok.");
-        ompInfo.Environment["PI_CODING_AGENT_DIR"] = ompAgentRoot;
-        ompInfo.Environment["PPS_SIDECAR_PLACEHOLDER"] = "not-a-secret";
-        using var ompProcess = System.Diagnostics.Process.Start(ompInfo) ?? throw new InvalidOperationException("OMP loopback process did not start");
-        var ompOutput = await ompProcess.StandardOutput.ReadToEndAsync();
-        var ompError = await ompProcess.StandardError.ReadToEndAsync();
-        await ompProcess.WaitForExitAsync();
-        Assert(ompProcess.ExitCode == 0 && ompRequestCount > 0, $"real OMP sidecar request failed: exit={ompProcess.ExitCode}, requests={ompRequestCount}, stdout={ompOutput}, stderr={ompError}");
+        var firstOmpWorkingDirectory = Path.Combine(root, "omp-working-a");
+        var secondOmpWorkingDirectory = Path.Combine(root, "omp-working-b");
+        Directory.CreateDirectory(firstOmpWorkingDirectory);
+        Directory.CreateDirectory(secondOmpWorkingDirectory);
+        System.Diagnostics.ProcessStartInfo CreateOmpStartInfo(string workingDirectory)
+        {
+            var startInfo = new System.Diagnostics.ProcessStartInfo("D:\\.Pi Projects\\omp.exe")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = workingDirectory
+            };
+            startInfo.ArgumentList.Add("--model");
+            startInfo.ArgumentList.Add("provider-price-switcher/gpt-5.6-sol");
+            startInfo.ArgumentList.Add("--no-tools");
+            startInfo.ArgumentList.Add("--no-session");
+            startInfo.ArgumentList.Add("-p");
+            startInfo.ArgumentList.Add("Return loopback-ok. repeat-launch");
+            startInfo.Environment["PI_CODING_AGENT_DIR"] = ompAgentRoot;
+            startInfo.Environment["PPS_SIDECAR_PLACEHOLDER"] = "not-a-secret";
+            return startInfo;
+        }
+        var repeatedOmpProcesses = new List<System.Diagnostics.Process>();
+        try
+        {
+            var firstOmp = System.Diagnostics.Process.Start(CreateOmpStartInfo(firstOmpWorkingDirectory))
+                ?? throw new InvalidOperationException("Initial OMP loopback process did not start.");
+            repeatedOmpProcesses.Add(firstOmp);
+            await firstRepeatedOmpRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            Assert(!firstOmp.HasExited, "Initial OMP instance must remain active while repeat launches are requested.");
+            repeatedOmpProcesses.Add(System.Diagnostics.Process.Start(CreateOmpStartInfo(firstOmpWorkingDirectory))
+                ?? throw new InvalidOperationException("Repeated OMP process from the same working directory did not start."));
+            repeatedOmpProcesses.Add(System.Diagnostics.Process.Start(CreateOmpStartInfo(secondOmpWorkingDirectory))
+                ?? throw new InvalidOperationException("Repeated OMP process from a different working directory did not start."));
+            await Task.Delay(500);
+            Assert(repeatedOmpProcesses.All(process => !process.HasExited)
+                && repeatedOmpProcesses.Select(process => process.Id).Distinct().Count() == 3,
+                "Existing OMP instances must not block new instances from the same or a different working directory.");
+            var outputTasks = repeatedOmpProcesses.Select(async process =>
+                (Output: await process.StandardOutput.ReadToEndAsync(), Error: await process.StandardError.ReadToEndAsync())).ToArray();
+            releaseRepeatedOmpRequests.TrySetResult();
+            await Task.WhenAll(repeatedOmpProcesses.Select(process => process.WaitForExitAsync()))
+                .WaitAsync(TimeSpan.FromSeconds(30));
+            var processOutputs = await Task.WhenAll(outputTasks);
+            Assert(repeatedOmpProcesses.All(process => process.ExitCode == 0)
+                && repeatedOmpRequestCount >= 3
+                && ompRequestCount >= 3,
+                $"Every same/different-directory OMP launch must complete through the isolated sidecar; exits={string.Join(",", repeatedOmpProcesses.Select(process => process.ExitCode))}; repeatedRequests={repeatedOmpRequestCount}; requests={ompRequestCount}; stdout={string.Join(" | ", processOutputs.Select(output => output.Output))}; stderr={string.Join(" | ", processOutputs.Select(output => output.Error))}.");
+        }
+        finally
+        {
+            releaseRepeatedOmpRequests.TrySetResult();
+            foreach (var process in repeatedOmpProcesses)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+        }
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         using var nonStream = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup\"}]}", System.Text.Encoding.UTF8, "application/json"));
         var nonStreamBody = await nonStream.Content.ReadAsStringAsync();

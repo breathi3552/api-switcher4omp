@@ -1,14 +1,11 @@
 ﻿using ProviderPriceSwitcher.Application;
-using System.Text.RegularExpressions;
 
 namespace ProviderPriceSwitcher.Infrastructure;
-public sealed class OmpTakeoverStatusReadFailedException()
-    : IOException("omp_takeover_status_read_failed");
-
 
 public sealed class OmpConfigurationService(
     OmpConfigurationSwitcher switcher,
-    IAppPathDefaults pathDefaults) : IOmpTakeoverService
+    IAppPathDefaults pathDefaults,
+    Func<string, CancellationToken, Task<string>>? readTextAsync = null) : IOmpTakeoverService
 {
     private const string SidecarProviderTemplate = """
           provider-price-switcher:
@@ -34,18 +31,21 @@ public sealed class OmpConfigurationService(
             var path = pathDefaults.OmpConfigPath(ompRootDirectory);
             if (!File.Exists(path))
                 return new OmpTakeoverCheckResult(OmpTakeoverStatus.NotTakenOver);
-            cancellationToken.ThrowIfCancellationRequested();
-            var analysis = new OmpConfigurationAnalyzer().AnalyzeFile(path);
-            var provider = analysis.CurrentProvider;
-            var isTakenOver = string.Equals(provider, OmpSidecarProvider.Id, StringComparison.Ordinal);
+            var text = readTextAsync is null
+                ? await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false)
+                : await readTextAsync(path, cancellationToken).ConfigureAwait(false);
+            var analysis = switcher.Preview(text, OmpSidecarProvider.Id).Analysis;
+            var isTakenOver = analysis.IsValid
+                && analysis.ModelReferences.All(reference =>
+                    string.Equals(reference.Provider, OmpSidecarProvider.Id, StringComparison.Ordinal));
             var currentPort = isTakenOver
                 ? await ReadSidecarPortAsync(pathDefaults.OmpModelsPath(ompRootDirectory), cancellationToken).ConfigureAwait(false)
                 : null;
             if (isTakenOver && currentPort is null)
-                return new OmpTakeoverCheckResult(OmpTakeoverStatus.ReadFailed, provider);
+                return new OmpTakeoverCheckResult(OmpTakeoverStatus.ReadFailed, analysis.CurrentProvider);
             return new OmpTakeoverCheckResult(
                 isTakenOver ? OmpTakeoverStatus.TakenOver : OmpTakeoverStatus.NotTakenOver,
-                provider,
+                analysis.CurrentProvider,
                 currentPort);
         }
         catch (OperationCanceledException)
@@ -64,13 +64,58 @@ public sealed class OmpConfigurationService(
 
     private static async Task<int?> ReadSidecarPortAsync(string path, CancellationToken cancellationToken)
     {
-        if (!File.Exists(path)) return null;
+        if (!File.Exists(path))
+            return null;
+
         var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-        var match = Regex.Match(text, @"(?ms)^\s{2}provider-price-switcher:\s*$.*?^\s{4}baseUrl:\s*http://127\.0\.0\.1:(?<port>\d+)/v1\s*$", RegexOptions.CultureInvariant);
-        return int.TryParse(match.Groups["port"].Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var port)
-            && port is >= 1 and <= 65535
-            ? port
-            : null;
+        var inProvidersMapping = false;
+        var inSidecarProvider = false;
+        foreach (var line in text.Split(["\r\n", "\n", "\r"], StringSplitOptions.None))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+                continue;
+
+            var indentation = line.Length - line.TrimStart(' ').Length;
+            if (!inProvidersMapping)
+            {
+                if (indentation == 0 && trimmed.Equals("providers:", StringComparison.Ordinal))
+                    inProvidersMapping = true;
+                continue;
+            }
+
+            if (!inSidecarProvider)
+            {
+                if (indentation == 2 && trimmed.Equals("provider-price-switcher:", StringComparison.Ordinal))
+                    inSidecarProvider = true;
+                else if (indentation == 0)
+                    return null;
+                continue;
+            }
+
+            if (indentation <= 2)
+                return null;
+            if (indentation != 4 || !trimmed.StartsWith("baseUrl:", StringComparison.Ordinal))
+                continue;
+
+            var value = trimmed["baseUrl:".Length..].Trim();
+            if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+                || !string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.Ordinal)
+                || !string.Equals(uri.Host, "127.0.0.1", StringComparison.Ordinal)
+                || uri.AbsolutePath != "/v1"
+                || uri.UserInfo.Length != 0
+                || uri.Query.Length != 0
+                || uri.Fragment.Length != 0
+                || uri.Port is < 1 or > 65535)
+            {
+                return null;
+            }
+
+            return uri.Port;
+        }
+
+        return null;
     }
 
     public async Task<OmpTakeoverOperationResult> TakeOverAsync(
@@ -107,6 +152,7 @@ public sealed class OmpConfigurationService(
                 if (result.Exception is OperationCanceledException)
                 {
                     if (!restored) throw new IOException("omp_models_rollback_failed", result.Exception);
+                    modelsChanged = false;
                     throw new OperationCanceledException("omp_takeover_cancelled", result.Exception, cancellationToken);
                 }
                 return restored
@@ -199,11 +245,16 @@ public sealed class OmpConfigurationService(
     }
 }
 
-public sealed class OmpProcessLauncher(OmpProcessService processService) : IOmpProcessLauncher
+public sealed class OmpProcessLauncher(
+    OmpProcessService processService,
+    IAppPathDefaults pathDefaults) : IOmpProcessLauncher
 {
-    public OmpLaunchResult Launch(string workingDirectory)
+    public OmpLaunchResult Launch(OmpLaunchRequest request, CancellationToken cancellationToken = default)
     {
-        var result = processService.Start(new OmpProcessStartRequest(workingDirectory));
-        return new OmpLaunchResult(result.Succeeded);
+        ArgumentNullException.ThrowIfNull(request);
+        var result = processService.Start(new OmpProcessStartRequest(
+            request.WorkingDirectory,
+            OmpAgentDirectory: pathDefaults.OmpAgentDirectory(request.OmpRootDirectory)), cancellationToken);
+        return new OmpLaunchResult(result.Succeeded, result.FailureKind);
     }
 }

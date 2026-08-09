@@ -39,14 +39,15 @@ public sealed partial class SiteEditorDialog : Window
         try { _viewModel.SaveInferenceKey(InferenceKeyBox.Password); }
         finally { InferenceKeyBox.Clear(); }
     }
+    private void TokenBoxChanged(object sender, RoutedEventArgs e) => TokenPlaceholder.Visibility = TokenBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+    private void CookieBoxChanged(object sender, RoutedEventArgs e) => CookiePlaceholder.Visibility = CookieBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     private void InferenceKeyBoxChanged(object sender, RoutedEventArgs e) => InferenceKeyPlaceholder.Visibility = InferenceKeyBox.Password.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     private void GroupOptionSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
-        if (sender is System.Windows.Controls.ComboBox { SelectedItem: string selected })
-        {
+        if (sender is System.Windows.Controls.ComboBox combo
+            && combo.IsKeyboardFocusWithin
+            && e.AddedItems.OfType<string>().FirstOrDefault() is { } selected)
             _viewModel.CurrentGroup = selected;
-            ((System.Windows.Controls.ComboBox)sender).SelectedItem = null;
-        }
     }
     private async void DeleteInferenceKeyClick(object sender, RoutedEventArgs e)
     {

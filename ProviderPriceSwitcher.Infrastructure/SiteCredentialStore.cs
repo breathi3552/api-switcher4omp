@@ -70,6 +70,8 @@ public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore
                 ProviderId = providerId,
                 Status = expired ? SiteCredentialStatus.Expired : SiteCredentialStatus.Available,
                 StatusText = (expired ? "访问令牌已过期" : $"已绑定 {credential.AuthorizationScheme} 访问令牌") + cookieHint,
+                AccessTokenSummary = Mask(credential.AccessToken),
+                CookieSummary = MaskNullable(credential.CookieHeader),
                 ExpiresAt = credential.ExpiresAt,
                 UpdatedAt = credential.UpdatedAt
             };
@@ -87,6 +89,11 @@ public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore
     }
 
     private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
+    private static string Mask(string secret) =>
+        secret.Length > 8 ? $"{secret[..4]}********{secret[^4..]}" : "********";
+
+    private static string? MaskNullable(string? secret) =>
+        string.IsNullOrEmpty(secret) ? null : Mask(secret);
 }
 
 [SupportedOSPlatform("windows")]

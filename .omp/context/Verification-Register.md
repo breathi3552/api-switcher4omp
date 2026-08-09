@@ -174,24 +174,31 @@
 - **status:** `closed`
 - **priority:** `P0`
 - **evidence:** [`App runner`](../../ProviderPriceSwitcher.App.Tests/Program.cs)
-- **DoD:** 运行 App runner（`$dotnet run --project ProviderPriceSwitcher.App.Tests/ProviderPriceSwitcher.App.Tests.csproj`）并执行隔离 WPF smoke，断言 composition root 注入 repositories/ports、窗口只读 settings/snapshot 展示、旧 refresh API 零引用和隔离启动路径；使用临时 roots、合成 settings、fake/loopback adapter 并正常关闭无残留。
-- **scope:** App composition, MainViewModel/SitesDialog/SiteEditorDialog, isolated WPF behavior.
+- **DoD:** 运行 App runner（`$dotnet run --project ProviderPriceSwitcher.App.Tests/ProviderPriceSwitcher.App.Tests.csproj`）并执行隔离 WPF smoke，断言推荐供应商只进入待应用选择、活动供应商不变；底部目标供应商/应用供应商与 OMP 工作目录/启动 OMP 两组动作拥有独立状态；网关和接管状态点只读；编辑器包含基础、价格查询、模型推理三段，单一可编辑分组 ComboBox 在回填、探测刷新、焦点变化和重复探测中保留当前值；凭据摘要、推理 key 更新/删除/取消均不泄露原文；使用临时 roots、合成 settings、fake/loopback adapter 并正常关闭无残留。
+- **scope:** App composition, MainViewModel/SitesDialog/SiteEditorDialog, Issue #6 isolated WPF behavior.
 - **dependencies:** QD-07-001; QD-07-002; QD-07-003; QD-07-004
-- **last_verified:** `2026-07-26`（已验证）
+- **last_verified:** `2026-08-09`（Issue #6 实现后验证）
 
 ## Issue #5 takeover and repeat-launch evidence
 
 - **status:** verified in isolation
-- **last_verified:** `2026-08-04`
-- **Application runner:** `OmpLaunchUseCase` proves an un-taken-over OMP cannot be bypassed, “cancel” performs no launch, explicit takeover-and-start launches once, repeated launch attempts are independent, launching never applies or clears `ActiveRoute`, and a canceled launch performs no settings write or process launch.
-- **OMP configuration runner:** fixed `provider-price-switcher` is the only generated model provider; its loopback endpoint uses `127.0.0.1:15722`, a missing `config.yml` is bootstrapped on first takeover, no real provider or API key is written, takeover status compares the current model-role ProviderId and endpoint, and only the newest five `config.yml.bak-<timestamp>.yml` backups remain.
-- **Infrastructure runner:** real Windows sidecar/OMP loopback smoke uses the default loopback port, verifies Responses/SSE/tool/reasoning and request-level route behavior, rejects a busy target port without selecting another port, and rejects invalid persisted gateway ports on both load and save.
+- **last_verified:** `2026-08-09`
+- **Application runner:** `OmpStartupUseCase` owns startup takeover checks, target-port migration and effective-port settings persistence; `OmpLaunchUseCase` proves an un-taken-over OMP cannot be bypassed, launch cancellation performs no write or process launch, and `OmpProcessFailureKind` reaches the Application outcome without collapsing to a boolean.
+- **OMP configuration runner:** takeover requires every managed direct `modelRoles` and `agentModelOverrides` reference to use fixed `provider-price-switcher`; partial fast/override drift returns `NotTakenOver`. The runner also proves in-progress configuration reads honor cancellation, the sidecar endpoint parser stops at sibling providers and top-level mappings, no real provider or API key is written, and a complete backup created before a simulated replacement failure remains part of newest-five retention.
+- **OMP process and Infrastructure runners:** with an existing-process hint, fake process launches from the same and a different working directory each create a new attempt. The Application `OmpRootDirectory` is translated by `AppPathDefaults` to the managed agent directory at the process boundary. The real Windows OMP/sidecar smoke holds the first isolated OMP instance active, then starts distinct second and third PIDs from the same and a different temporary working directory; all three reach loopback and exit successfully without changing `ActiveRoute`.
 - **App runner:** WPF main-page launch/takeover interaction proves cancel and setup-and-start behavior, repeated launch is not coupled to routing, and the active supplier remains unchanged.
-- **Cross-layer command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` passed static manifest/dependency checks, solution build (0 warnings, 0 errors), format verification, and all registered runners.
-- **Isolation boundary:** all scenario roots, OMP configuration files, working directories, credentials, upstreams and sidecar requests were synthetic, loopback or temporary; real user configuration and real credentials were not touched.
+- **Cross-layer command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-09` 最终通过 static manifest/dependency checks、solution build（0 warnings / 0 errors）、format verification 和全部 8 个注册 runner。
+- **Publish command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 于 `2026-08-09` 成功生成 framework-dependent 与 self-contained 两个 win-x64 产物，并分别校验可执行文件和 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 针对 `69b64086a20d616d304949c001a0438071f3018c...HEAD` 的 Standards 与 Spec 审查均无阻塞发现。
+
+## Issue #6 homepage and editor evidence
+
+- **status:** implementation complete; isolated App/Infrastructure evidence, final CrossLayer, dual-axis review and release evidence complete
+- **scope:** MainWindow bottom action layout, recommendation pending selection, OMP working-directory selection, status dots, SiteEditorDialog sections, credential summaries, editable current-group candidates and inference key lifecycle.
+- **evidence:** App runner covers the WPF seam with temporary data/root and synthetic credentials, including current/minimum row projection, pending recommendation versus unchanged active route, independent apply/start busy states, read-only status points, ComboBox backfill/focus/repeated-probe retention, short and long credential summaries, inference-key close/cancel/empty-update/delete behavior, and takeover prompt behavior. Infrastructure runner covers storage-boundary token/Cookie summaries and secret exclusion. Real providers, credentials and user configuration are not touched.
 
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
  - 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 路径不负责 OMP 接管或进程生命周期；Issue #5 的接管、端口、配置备份和重复启动证据见上节。
-> **底部证据索引（2026-08-04）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。
+> **底部证据索引（2026-08-09）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。

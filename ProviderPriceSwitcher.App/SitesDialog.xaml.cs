@@ -22,15 +22,16 @@ public sealed partial class SitesDialog : Window
     private readonly ISiteEditorDialogFactory _editorFactory;
     private readonly SiteManagementUseCase _siteManagement;
     private readonly string? _currentProvider;
+    private readonly IUserNotificationService _notifications;
     private readonly DataGrid _grid = new() { AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false };
     private readonly Button _edit = new() { Content = "编辑" };
     private readonly Button _toggle = new() { Content = "启用/禁用" };
     private readonly Button _delete = new() { Content = "删除" };
     private bool _busy;
     public LocalAppSettings Settings { get; private set; }
-    public SitesDialog(LocalAppSettings settings, SiteManagementUseCase siteManagement, IPricingSnapshotQuery snapshotQuery, ISiteEditorDialogFactory editorFactory, string? currentProvider)
+    public SitesDialog(LocalAppSettings settings, SiteManagementUseCase siteManagement, IPricingSnapshotQuery snapshotQuery, ISiteEditorDialogFactory editorFactory, string? currentProvider, IUserNotificationService notifications)
     {
-        InitializeComponent(); Settings = settings; _siteManagement = siteManagement; _snapshotQuery = snapshotQuery; _editorFactory = editorFactory; _currentProvider = currentProvider;
+        InitializeComponent(); Settings = settings; _siteManagement = siteManagement; _snapshotQuery = snapshotQuery; _editorFactory = editorFactory; _currentProvider = currentProvider; _notifications = notifications;
         Title = "管理站点"; Width = 1120; Height = 560; WindowStartupLocation = WindowStartupLocation.CenterOwner; Owner = System.Windows.Application.Current.MainWindow;
         foreach (var column in new[] { ("站点名称", "DisplayName"), ("ProviderId", "ProviderId"), ("类型", "SiteType"), ("Base URL", "BaseUrl") }) _grid.Columns.Add(new DataGridTextColumn { Header = column.Item1, Binding = new System.Windows.Data.Binding(column.Item2) });
         _grid.SelectionChanged += (_, _) => UpdateButtons(); _grid.MouseDoubleClick += async (_, _) => await EditSelectedAsync();
@@ -45,7 +46,15 @@ public sealed partial class SitesDialog : Window
     private async Task EditSelectedAsync() { if (_busy) return; var selected = Selected; if (selected is null) return; var original = Settings.Sites.First(x => string.Equals(x.ProviderId, selected.ProviderId, StringComparison.Ordinal)); var dialog = _editorFactory.Create(original, Settings, this); if (dialog.ShowDialog() == true && dialog.Site is not null) await SaveSiteAsync(dialog.Site, original.ProviderId); }
     private async Task SaveSiteAsync(SiteConfiguration site, string? originalProviderId) { if (_busy) return; _busy = true; UpdateButtons(); try { Settings = await _siteManagement.SaveSiteAsync(Settings, site, originalProviderId); RefreshRows(site.ProviderId); } catch { MessageBox.Show("保存供应商失败，请重试。", "供应商", MessageBoxButton.OK, MessageBoxImage.Error); } finally { _busy = false; UpdateButtons(); } }
     private void ToggleSelected() { if (Selected is { } selected) { Settings = _siteManagement.SetEnabled(Settings, selected.ProviderId, !selected.Enabled); RefreshRows(selected.ProviderId); } }
-    private async Task DeleteSelectedAsync() { if (_busy || Selected is not { } selected) return; if (MessageBox.Show($"确认删除站点“{selected.ProviderId}”及其本地价格快照和凭据？", "删除站点", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return; _busy = true; UpdateButtons(); try { Settings = await _siteManagement.DeleteSiteAsync(Settings, selected.ProviderId); RefreshRows(); } catch { MessageBox.Show("删除供应商失败，请重试。", "供应商", MessageBoxButton.OK, MessageBoxImage.Error); } finally { _busy = false; UpdateButtons(); } }
+    private async Task DeleteSelectedAsync()
+    {
+        if (_busy || Selected is not { } selected) return;
+        if (!_notifications.Confirm($"确认删除站点“{selected.ProviderId}”及其本地价格快照和凭据？", "删除站点")) return;
+        _busy = true; UpdateButtons();
+        try { Settings = await _siteManagement.DeleteSiteAsync(Settings, selected.ProviderId); RefreshRows(); }
+        catch { _notifications.ShowError("删除供应商失败，请重试。", "供应商"); }
+        finally { _busy = false; UpdateButtons(); }
+    }
 }
 
 internal sealed class SiteListRow

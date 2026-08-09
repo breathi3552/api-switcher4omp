@@ -59,6 +59,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     public event EventHandler? Saved;
     public SiteCredentialSummary CredentialSummary { get; private set; } = new() { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured };
     public InferenceApiKeySummary? InferenceKeySummary { get; private set; }
+    public string InferenceKeyDisplayText => InferenceKeySummary?.MaskedKey ?? "未配置";
     public ObservableCollection<string> GroupOptions { get; } = [];
     public string KeyActionMessage { get => _lastKeyActionMessage ?? string.Empty; private set => SetProperty(ref _lastKeyActionMessage, value); }
     public bool SaveInferenceKey(string apiKey)
@@ -87,6 +88,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     {
         InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeyUseCase.GetSummary(ProviderId);
         OnPropertyChanged(nameof(InferenceKeySummary));
+        OnPropertyChanged(nameof(InferenceKeyDisplayText));
     }
     public bool SaveCredential(string token, string cookie) { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cookie)) { _notifications.ShowWarning("访问令牌和 Cookie 不能为空。", "校验失败"); return false; } _credentials.SaveCredential(new SiteCredentialRecord { ProviderId = ProviderId.Trim(), SiteType = Descriptor!.SiteType, AuthorizationScheme = "Bearer", AccessToken = token.Trim(), CookieHeader = cookie.Trim() }); UpdateCredentialStatus(); return true; }
     public bool ClearCredential() { if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || !_notifications.Confirm("确定清除本地凭据吗？", "清除凭据")) return false; _credentials.ClearCredential(ProviderId.Trim()); UpdateCredentialStatus(); return true; }

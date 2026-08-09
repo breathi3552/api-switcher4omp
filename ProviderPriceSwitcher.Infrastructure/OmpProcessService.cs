@@ -1,4 +1,6 @@
-﻿using System.Diagnostics;
+﻿using ProviderPriceSwitcher.Application;
+
+using System.Diagnostics;
 
 namespace ProviderPriceSwitcher.Infrastructure;
 
@@ -11,9 +13,10 @@ public sealed class OmpProcessService
         _processGateway = processGateway ?? new SystemOmpProcessGateway();
     }
 
-    public OmpProcessStartResult Start(OmpProcessStartRequest request)
+    public OmpProcessStartResult Start(OmpProcessStartRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
 
         OmpExistingProcessHint existingProcess;
         try
@@ -26,14 +29,16 @@ public sealed class OmpProcessService
             // Process detection is advisory and must never prevent an attempted launch.
             existingProcess = new OmpExistingProcessHint(0);
         }
+        cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
             var workingDirectory = WorkingDirectoryValidator.Validate(request.WorkingDirectory);
             var executable = ValidateExecutable(request.Executable);
             var startInfo = request.UseWindowsTerminal
-                ? CreateWindowsTerminalStartInfo(workingDirectory, executable, request.EffectiveArguments)
-                : CreateStartInfo(workingDirectory, executable, request.EffectiveArguments);
+                ? CreateWindowsTerminalStartInfo(workingDirectory, executable, request.EffectiveArguments, request.OmpAgentDirectory)
+                : CreateStartInfo(workingDirectory, executable, request.EffectiveArguments, request.OmpAgentDirectory);
+            cancellationToken.ThrowIfCancellationRequested();
             var process = _processGateway.Start(startInfo);
             if (process is null)
             {
@@ -44,6 +49,10 @@ public sealed class OmpProcessService
 
             var startTime = process.StartTime.ToUniversalTime();
             return OmpProcessStartResult.Success(existingProcess, process.Id, new DateTimeOffset(startTime));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (DirectoryNotFoundException)
         {
@@ -70,11 +79,11 @@ public sealed class OmpProcessService
             return OmpProcessStartResult.Failure(existingProcess, OmpProcessFailureKind.Unexpected);
         }
     }
-
     public static ProcessStartInfo CreateStartInfo(
         string workingDirectory,
         string executable,
-        IEnumerable<string>? arguments = null)
+        IEnumerable<string>? arguments = null,
+        string? ompAgentDirectory = null)
     {
         var info = new ProcessStartInfo
         {
@@ -82,6 +91,7 @@ public sealed class OmpProcessService
             WorkingDirectory = workingDirectory,
             UseShellExecute = false
         };
+        SetOmpAgentDirectoryEnvironment(info, ompAgentDirectory);
 
         if (arguments is not null)
         {
@@ -97,7 +107,8 @@ public sealed class OmpProcessService
     public static ProcessStartInfo CreateWindowsTerminalStartInfo(
         string workingDirectory,
         string executable,
-        IEnumerable<string>? arguments = null)
+        IEnumerable<string>? arguments = null,
+        string? ompAgentDirectory = null)
     {
         var info = new ProcessStartInfo
         {
@@ -105,6 +116,7 @@ public sealed class OmpProcessService
             WorkingDirectory = workingDirectory,
             UseShellExecute = false
         };
+        SetOmpAgentDirectoryEnvironment(info, ompAgentDirectory);
         info.ArgumentList.Add("-d");
         info.ArgumentList.Add(workingDirectory);
         info.ArgumentList.Add("powershell.exe");
@@ -125,6 +137,11 @@ public sealed class OmpProcessService
     {
         ArgumentNullException.ThrowIfNull(value);
         return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+    }
+    private static void SetOmpAgentDirectoryEnvironment(ProcessStartInfo info, string? ompAgentDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(ompAgentDirectory))
+            info.Environment["PI_CODING_AGENT_DIR"] = Path.GetFullPath(ompAgentDirectory);
     }
 
     private static string ValidateExecutable(string executable)

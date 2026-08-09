@@ -42,6 +42,8 @@ public sealed record SiteCredentialSummary
     public required string ProviderId { get; init; }
     public required SiteCredentialStatus Status { get; init; }
     public string StatusText { get; init; } = string.Empty;
+    public string? AccessTokenSummary { get; init; }
+    public string? CookieSummary { get; init; }
     public DateTimeOffset? ExpiresAt { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
 }

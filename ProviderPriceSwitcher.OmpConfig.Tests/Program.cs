@@ -43,7 +43,9 @@ try
     var written = await File.ReadAllTextAsync(path);
     Assert(written == preview.NewText, "atomic result differs from preview");
     Assert(written.Contains("unrelated: old-provider/untouched", StringComparison.Ordinal), "unrelated field changed");
-    var service = new OmpConfigurationService(new OmpConfigurationSwitcher(), new TestPaths(ompRoot));
+    var testPaths = new TestPaths(ompRoot);
+    Func<string, CancellationToken, Task<string>> readTextAsync = (file, cancellationToken) => File.ReadAllTextAsync(file, cancellationToken);
+    var service = new OmpConfigurationService(new OmpConfigurationSwitcher(), testPaths, (file, cancellationToken) => readTextAsync(file, cancellationToken));
     File.Delete(path);
     var bootstrapResult = await service.TakeOverAsync(ompRoot, 15722);
     Assert(bootstrapResult.Succeeded && File.Exists(path), "first takeover must bootstrap a missing OMP config");
@@ -54,6 +56,25 @@ try
     Assert(serviceResult.Succeeded, "sidecar provider configuration failed");
     var takeoverStatus = await service.CheckAsync(ompRoot);
     Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver && takeoverStatus.CurrentProviderId == ProviderPriceSwitcher.Application.OmpSidecarProvider.Id && takeoverStatus.CurrentGatewayPort == 15722, "takeover status must compare the current model role provider and endpoint");
+    var partialFastDrift = "modelRoles:\r\n  default: provider-price-switcher/alpha\r\n  fast: old-provider/beta\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: provider-price-switcher/review\r\n";
+    await File.WriteAllTextAsync(path, partialFastDrift, new System.Text.UTF8Encoding(false));
+    takeoverStatus = await service.CheckAsync(ompRoot);
+    Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver, "takeover status must reject a direct fast role that still points to an old provider");
+    var partialOverrideDrift = "modelRoles:\r\n  default: provider-price-switcher/alpha\r\n  fast: provider-price-switcher/beta\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: old-provider/review\r\n";
+    await File.WriteAllTextAsync(path, partialOverrideDrift, new System.Text.UTF8Encoding(false));
+    takeoverStatus = await service.CheckAsync(ompRoot);
+    Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver, "takeover status must reject a direct agent model override that still points to an old provider");
+    await File.WriteAllTextAsync(path, "modelRoles:\r\n  default: provider-price-switcher/alpha\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: provider-price-switcher/review\r\n", new System.Text.UTF8Encoding(false));
+    await File.WriteAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  provider-price-switcher:\r\n    baseUrl: https://malicious.example/v1\r\n  old-provider:\r\n    baseUrl: http://127.0.0.1:15722/v1\r\n", new System.Text.UTF8Encoding(false));
+    takeoverStatus = await service.CheckAsync(ompRoot);
+    Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.ReadFailed, "takeover status must not read a loopback port from a sibling provider block");
+    serviceResult = await service.TakeOverAsync(ompRoot, 15722);
+    await File.WriteAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  provider-price-switcher:\r\n    api: openai-completions\r\nmetadata:\r\n    baseUrl: http://127.0.0.1:16666/v1\r\n", new System.Text.UTF8Encoding(false));
+    takeoverStatus = await service.CheckAsync(ompRoot);
+    Assert(takeoverStatus.Status == ProviderPriceSwitcher.Application.OmpTakeoverStatus.ReadFailed, "takeover status must stop at a top-level mapping after the sidecar provider block");
+    serviceResult = await service.TakeOverAsync(ompRoot, 15722);
+    Assert(serviceResult.Succeeded, "sidecar provider repair after top-level-boundary check failed");
+    Assert(serviceResult.Succeeded, "sidecar provider repair after endpoint-boundary check failed");
     var models = await File.ReadAllTextAsync(Path.Combine(ompRoot, "agent", "models.yml"));
     Assert(models.Contains("provider-price-switcher:", StringComparison.Ordinal) && models.Contains("baseUrl: http://127.0.0.1:15722/v1", StringComparison.Ordinal) && models.Contains("api: openai-responses", StringComparison.Ordinal) && models.Contains("apiKey: PPS_SIDECAR_PLACEHOLDER", StringComparison.Ordinal) && models.Contains("id: gpt-5.6-sol", StringComparison.Ordinal) && !models.Contains("existing:", StringComparison.Ordinal), "fixed sidecar provider missing or old providers retained");
     Assert(!models.Contains("sk-", StringComparison.Ordinal), "raw key leaked into OMP provider config");
@@ -70,6 +91,41 @@ try
     }
     var retainedBackups = Directory.GetFiles(ompRoot, "config.yml.bak-*.yml");
     Assert(retainedBackups.Length == 5, "OMP configuration backup retention must keep exactly the newest five tool backups");
+    var contentBeforeFailedWrite = await File.ReadAllTextAsync(path);
+    await using (var sourceLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+    {
+        var failedWrite = await new OmpConfigurationSwitcher().SwitchFileAsync(path, ProviderPriceSwitcher.Application.OmpSidecarProvider.Id);
+        Assert(!failedWrite.Succeeded, $"A locked source must simulate configuration replacement failure after backup creation; exception={failedWrite.Exception?.GetType().Name ?? "none"}.");
+        Assert(failedWrite.BackupPath is not null && File.Exists(failedWrite.BackupPath), "The complete backup created before a failed configuration write must remain available.");
+        retainedBackups = Directory.GetFiles(ompRoot, "config.yml.bak-*.yml");
+        Assert(retainedBackups.Length == 5 && retainedBackups.Contains(failedWrite.BackupPath, StringComparer.OrdinalIgnoreCase), "A failed-write backup must participate in newest-five retention.");
+        Assert(await File.ReadAllTextAsync(path) == contentBeforeFailedWrite, "A failed configuration replacement must preserve the source file.");
+    }
+    var readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    readTextAsync = async (file, cancellationToken) =>
+    {
+        readStarted.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        return string.Empty;
+    };
+    using (var readCancellation = new CancellationTokenSource())
+    {
+        var canceledCheck = service.CheckAsync(ompRoot, readCancellation.Token);
+        await readStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        readCancellation.Cancel();
+        try
+        {
+            await canceledCheck;
+            throw new InvalidOperationException("Configuration check ignored cancellation while reading.");
+        }
+        catch (OperationCanceledException) when (readCancellation.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            readTextAsync = (file, cancellationToken) => File.ReadAllTextAsync(file, cancellationToken);
+        }
+    }
     foreach (var sentinel in sentinels) Assert(File.ReadAllText(sentinel) == runId, "isolation sentinel changed");
     Console.WriteLine("OMP configuration runner passed.");
 }
@@ -81,8 +137,13 @@ finally
 
 sealed class TestPaths(string root) : ProviderPriceSwitcher.Application.IAppPathDefaults
 {
+    public ManualResetEventSlim? ConfigPathObserved { get; set; }
     public string OmpRootDirectory => root;
-    public string OmpConfigPath(string ompRootDirectory) => Path.Combine(ompRootDirectory, "config.yml");
+    public string OmpConfigPath(string ompRootDirectory)
+    {
+        ConfigPathObserved?.Set();
+        return Path.Combine(ompRootDirectory, "config.yml");
+    }
     public string OmpModelsPath(string ompRootDirectory) => Path.Combine(ompRootDirectory, "agent", "models.yml");
     public string OmpAgentDirectory(string ompRootDirectory) => Path.Combine(ompRootDirectory, "agent");
 }
