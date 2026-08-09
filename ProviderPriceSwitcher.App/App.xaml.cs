@@ -18,8 +18,13 @@ public partial class App : System.Windows.Application
     private WindowsSidecarSupervisor? _sidecar;
     private ActiveRouteState? _activeRoute;
     private SettingsUseCase? _settingsUseCase;
+    private GatewayRecoveryUseCase? _gatewayRecovery;
+    private TrayApplicationController? _trayController;
     private CancellationTokenSource? _applicationCancellation;
+    private readonly object _gatewayRecoveryGate = new();
+    private Task? _gatewayRecoveryTask;
     private static readonly Action<ILogger, string, Exception?> LogApplicationFailure = LoggerMessage.Define<string>(LogLevel.Error, new EventId(101, "ApplicationFailure"), "Application failure: {FailureKind}");
+    private static readonly Action<ILogger, string, Exception?> LogGatewayRecoveryFailure = LoggerMessage.Define<string>(LogLevel.Warning, new EventId(103, "GatewayRecoveryFailure"), "Gateway recovery failed: {RecoveryStatus}");
     private static readonly Action<ILogger, string, Exception?> LogInferenceKeyLoadFailure = LoggerMessage.Define<string>(LogLevel.Warning, new EventId(102, "InferenceKeyLoadFailure"), "Inference API key unavailable for provider {ProviderId}");
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -70,6 +75,9 @@ public partial class App : System.Windows.Application
                     settings.GatewayPort),
                 resolver);
             await _sidecar.StartAsync(startupCancellation);
+            var applyActiveRoute = new ApplyActiveRouteUseCase(settingsRepository, _sidecar, inferenceKeyStore, activeRoute);
+            _gatewayRecovery = new GatewayRecoveryUseCase(settingsRepository, _sidecar, applyActiveRoute);
+            _sidecar.Changed += HandleSidecarStatusChanged;
             var startupOutcome = await ompStartup.InitializeAsync(settings, startupCancellation);
             if (!startupOutcome.Succeeded)
             {
@@ -97,7 +105,6 @@ public partial class App : System.Windows.Application
             ]);
             var refreshService = new PricingRefreshService(adapterRegistry, _loggerFactory.CreateLogger<PricingRefreshService>());
             var snapshotQuery = new PricingSnapshotQuery(snapshotRepository);
-            var applyActiveRoute = new ApplyActiveRouteUseCase(settingsRepository, _sidecar, inferenceKeyStore, activeRoute);
             var siteManagement = new SiteManagementUseCase(settingsRepository, snapshotRepository, credentialStore, inferenceKeyStore, activeRoute, _sidecar, resolver);
             var pricingCheck = new PricingCheckUseCase(refreshService, settingsRepository, snapshotRepository);
             var settingsUseCase = _settingsUseCase!;
@@ -109,8 +116,10 @@ public partial class App : System.Windows.Application
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
             var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), _sidecar, startupCancellation);
-            MainWindow = new MainWindow(viewModel);
-            MainWindow.Show();
+            var mainWindow = new MainWindow(viewModel);
+            MainWindow = mainWindow;
+            _trayController = new TrayApplicationController(mainWindow, viewModel, new WindowsTrayHost(), _notifications, Shutdown);
+            mainWindow.Show();
         }
         catch (OperationCanceledException) when (_applicationCancellation?.IsCancellationRequested == true)
         {
@@ -128,6 +137,44 @@ public partial class App : System.Windows.Application
             if (logger is not null) LogApplicationFailure(logger, "Startup", exception);
             _notifications.ShowError(UserErrorMessages.ApplicationStartupFailed, "ProviderPriceSwitcher");
             Shutdown(-1);
+        }
+    }
+
+    private void HandleSidecarStatusChanged(SidecarStatus status)
+    {
+        if (status.Status is not (SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted)
+            || _applicationCancellation?.IsCancellationRequested == true)
+            return;
+        lock (_gatewayRecoveryGate)
+        {
+            if (_gatewayRecoveryTask is { IsCompleted: false })
+                return;
+            _gatewayRecoveryTask = RecoverGatewayAsync();
+        }
+    }
+
+    private async Task RecoverGatewayAsync()
+    {
+        try
+        {
+            var cancellationToken = _applicationCancellation?.Token ?? CancellationToken.None;
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+            if (_gatewayRecovery is null)
+                return;
+            var outcome = await _gatewayRecovery.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            if (!outcome.Succeeded)
+            {
+                var logger = _loggerFactory?.CreateLogger<App>();
+                if (logger is not null) LogGatewayRecoveryFailure(logger, outcome.Status.ToString(), null);
+            }
+        }
+        catch (OperationCanceledException) when (_applicationCancellation?.IsCancellationRequested == true)
+        {
+        }
+        catch (Exception exception)
+        {
+            var logger = _loggerFactory?.CreateLogger<App>();
+            if (logger is not null) LogGatewayRecoveryFailure(logger, "Unexpected", exception);
         }
     }
 
@@ -167,8 +214,16 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        Task? recovery;
+        lock (_gatewayRecoveryGate) recovery = _gatewayRecoveryTask;
         _applicationCancellation?.Cancel();
-        _sidecar?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        try { recovery?.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+        if (_sidecar is not null)
+        {
+            _sidecar.Changed -= HandleSidecarStatusChanged;
+            _sidecar.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        _trayController?.Dispose();
         _applicationCancellation?.Dispose();
         _activeRoute?.Dispose();
         _httpClient?.Dispose();

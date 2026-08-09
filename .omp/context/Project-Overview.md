@@ -33,6 +33,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 生产 loopback runner 已验证真实 OMP 请求经过 sidecar，以及 Responses 非流式/流式 SSE、tools/tool results、reasoning、ModelId 透传、endpoint/key 隔离、路由切换、无活动路由错误和无残留进程；真实供应商与真实凭据未触及。
 - 推荐和成本计算使用固定的 Codex 高缓存默认用量；站内计价单位与人民币统一换算尚未完成。
 - OMP 接管和重复启动已实现：接管将全部受管直接 model role 指向固定 `provider-price-switcher`，写入前生成完整备份并保留最近五份；每次启动请求均尝试创建新实例，不改变活动供应商。目标 loopback 端口保存后在下次完整应用启动时迁移，端口冲突不自动换端口或连接未知进程。
+- 主窗口关闭后由托盘生命周期控制器隐藏而不停止应用；托盘只提供打开窗口、启动 OMP、网关/活动路由只读状态和显式退出。显式退出停止 sidecar 但不终止已有 OMP 进程；sidecar 断线或协议故障时自动重启并恢复最后确认的路由快照。
 - 生产 composition root 负责装配凭据、查询端口、repositories、adapter registry、推理 key 用例和活动路由状态，再注入窗口及 ViewModel。
 
 ## 文档边界

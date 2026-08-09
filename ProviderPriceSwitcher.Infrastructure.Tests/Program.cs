@@ -416,14 +416,19 @@ try
         await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
         using var switched = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
         Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
+        await supervisor.StopAsync();
+        Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop must publish a stable stopped state");
+        await supervisor.StartAsync();
+        using var recoveredRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-recovery\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert(recoveredRoute.IsSuccessStatusCode && (await recoveredRoute.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar restart must restore the last confirmed route before accepting new OMP requests");
         await supervisor.ClearAsync();
         using var noRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(noRoute.StatusCode == System.Net.HttpStatusCode.BadRequest && (await noRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal), "sidecar no-route contract failed");
         await supervisor.StopAsync();
-        Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop must publish a stable stopped state");
+        Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop after clearing the route must publish a stable stopped state");
         await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
         using var afterRestart = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-restart\"}", System.Text.Encoding.UTF8, "application/json"));
-        Assert(afterRestart.IsSuccessStatusCode && (await afterRestart.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal), "sidecar restart must require and accept an explicitly confirmed route snapshot");
+        Assert(afterRestart.IsSuccessStatusCode && (await afterRestart.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal), "sidecar restart must accept an explicitly confirmed replacement route");
     }
     using var conflictListener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
     conflictListener.Start();

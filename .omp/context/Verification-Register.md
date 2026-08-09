@@ -197,6 +197,16 @@
 - **scope:** MainWindow bottom action layout, recommendation pending selection, OMP working-directory selection, status dots, SiteEditorDialog sections, credential summaries, editable current-group candidates and inference key lifecycle.
 - **evidence:** App runner covers the WPF seam with temporary data/root and synthetic credentials, including current/minimum row projection, pending recommendation versus unchanged active route, independent apply/start busy states, read-only status points, ComboBox backfill/focus/repeated-probe retention, short and long credential summaries, inference-key close/cancel/empty-update/delete behavior, and takeover prompt behavior. Infrastructure runner covers storage-boundary token/Cookie summaries and secret exclusion. Real providers, credentials and user configuration are not touched.
 
+## Issue #7 tray lifecycle and end-to-end evidence
+
+- **status:** implementation complete; isolated App/Application/Infrastructure evidence and CrossLayer verification complete
+- **scope:** tray residency, explicit exit semantics, gateway/active-route status separation, automatic sidecar route recovery, and the existing multi-OMP loopback matrix.
+- **App runner:** the STA seam creates the real `WindowsTrayHost`, verifies the production tray resource, hides/restores the main window, exposes only open/start/exit commands, keeps gateway status unchanged while hiding, explains that exit stops only the gateway, and distinguishes `网关连接断开` from `无活动路由`/`网关不可用`.
+- **Application runner:** `GatewayRecoveryUseCase` verifies that recovery starts the lifecycle and restores the persisted active route, while startup failures become a stable `Failed` outcome without exposing exception text.
+- **Infrastructure runner:** the loopback sidecar matrix verifies that a stopped-and-started sidecar restores the last confirmed route before a new request, explicit route clearing produces `pps_no_active_route`, and the existing three isolated OMP instances continue to cover same/different working directories, route switching and in-flight snapshots.
+- **Cross-layer command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-09` 通过 static manifest/dependency checks、solution build（0 warnings / 0 errors）、format verification 和全部 8 个注册 runner。
+- **isolation:** all evidence uses synthetic secrets, loopback upstreams, temporary data/OMP/work roots and fake process/UI boundaries; no real Provider, credentials, user configuration or production OMP root was touched, and runner cleanup confirmed no residual sidecar/OMP process.
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

@@ -129,8 +129,13 @@ var windowThread = new Thread(() =>
             && window.FindName("OmpWorkingDirectoryBox") is System.Windows.Controls.ComboBox
             && window.FindName("GatewayStatusDot") is System.Windows.Shapes.Ellipse gatewayDot
             && window.FindName("TakeoverStatusDot") is System.Windows.Shapes.Ellipse
-            && Equals(gatewayDot.Fill, System.Windows.Media.Brushes.SeaGreen),
-            "main page must expose the selected OMP working directory and read-only gateway/takeover status dots");
+            && window.FindName("RouteStatusDot") is System.Windows.Shapes.Ellipse routeDot
+            && Equals(gatewayDot.Fill, System.Windows.Media.Brushes.SeaGreen)
+            && Equals(routeDot.Fill, System.Windows.Media.Brushes.SeaGreen)
+            && viewModel.ActiveRouteStatusText == "活动路由已应用",
+            "main page must expose the selected OMP working directory and distinct gateway/route/takeover status points");
+        using var realTray = new WindowsTrayHost();
+        realTray.Update(new TrayStatus("网关运行中", "活动路由已应用"));
         sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
         WaitFor(() => Equals(viewModel.GatewayStatusBrush, System.Windows.Media.Brushes.IndianRed));
         Assert(Equals(((System.Windows.Shapes.Ellipse)window.FindName("GatewayStatusDot")).Fill, System.Windows.Media.Brushes.IndianRed), "gateway status dot must follow the sidecar lifecycle status instead of only validating the configured port");
@@ -428,6 +433,34 @@ var windowThread = new Thread(() =>
         WaitFor(() => fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1);
         Assert(fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1, "partial-drift default status point must not bypass the launch-time takeover confirmation");
         statusWindow.Close();
+        var trayHost = new FakeTrayHost();
+        var trayExitRequested = false;
+        activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
+        using var trayController = new TrayApplicationController(window, viewModel, trayHost, notifications, () => trayExitRequested = true);
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready));
+        WaitFor(() => trayHost.Status?.GatewayText == "网关运行中" && trayHost.Status?.RouteText == "活动路由已应用");
+        activeRoute.ClearIfProvider("active");
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready));
+        WaitFor(() => trayHost.Status?.RouteText == "无活动路由");
+        activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
+        WaitFor(() => trayHost.Status?.GatewayText == "网关连接断开" && trayHost.Status?.RouteText == "网关不可用");
+        window.Close();
+        Assert(!window.IsVisible && sidecarStatus.Current.Status == ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "closing the main window must hide it without stopping the gateway");
+        trayHost.Raise(TrayCommand.OpenWindow);
+        Assert(window.IsVisible, "tray open command must restore the main window");
+        var launchesBeforeTrayStart = fakeOmpLauncher.Calls;
+        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
+        trayHost.Raise(TrayCommand.StartOmp);
+        WaitFor(() => fakeOmpLauncher.Calls == launchesBeforeTrayStart + 1);
+        Assert(trayHost.Commands.SequenceEqual([TrayCommand.OpenWindow, TrayCommand.StartOmp]), "tray must expose open and start commands without a provider-switch command");
+        notifications.ConfirmResult = false;
+        trayHost.Raise(TrayCommand.Exit);
+        Assert(!trayExitRequested, "cancelled tray exit must keep the gateway session alive");
+        notifications.ConfirmResult = true;
+        trayHost.Raise(TrayCommand.Exit);
+        Assert(trayExitRequested && notifications.LastConfirmMessage?.Contains("停止本地网关", StringComparison.Ordinal) == true && notifications.LastConfirmMessage.Contains("不会终止", StringComparison.Ordinal), "confirmed tray exit must request shutdown only after explaining that OMP processes remain running");
 
     }
     catch (Exception ex) { windowFailure = ex; }
@@ -646,6 +679,20 @@ sealed class FakeOmpLauncher : ProviderPriceSwitcher.Application.IOmpProcessLaun
         return new(true);
     }
 }
+sealed class FakeTrayHost : ITrayHost
+{
+    public event Action<TrayCommand>? CommandRequested;
+    public TrayStatus? Status { get; private set; }
+    public List<TrayCommand> Commands { get; } = [];
+    public void Update(TrayStatus status) => Status = status;
+    public void Raise(TrayCommand command)
+    {
+        Commands.Add(command);
+        CommandRequested?.Invoke(command);
+    }
+    public void Dispose() { }
+}
+
 
 
 sealed class FakeUriLauncher : IExternalUriLauncher
@@ -660,12 +707,14 @@ sealed class FakeNotifications : IUserNotificationService
     public int WarningCalls { get; private set; }
     public int ErrorCalls { get; private set; }
     public int ConfirmCalls { get; private set; }
+    public string? LastConfirmMessage { get; private set; }
     public bool ConfirmResult { get; set; } = true;
     public void ShowWarning(string message, string title) => WarningCalls++;
     public void ShowError(string message, string title) => ErrorCalls++;
     public bool Confirm(string message, string title)
     {
         ConfirmCalls++;
+        LastConfirmMessage = message;
         return ConfirmResult;
     }
 }

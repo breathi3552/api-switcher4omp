@@ -34,6 +34,7 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
     private Process? _process;
     private NamedPipeClientStream? _pipe;
     private SidecarStatus _status = new(SidecarConnectionStatus.Stopped);
+    private RouteSnapshot? _lastConfirmedRoute;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
     private readonly SemaphoreSlim _writeGate = new(1, 1);
@@ -49,6 +50,10 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
         _options = options; _resolver = resolver;
     }
     public SidecarStatus Status { get { lock (_gate) return _status; } }
+    private RouteSnapshot? CurrentConfirmedRoute
+    {
+        get { lock (_gate) return _lastConfirmedRoute; }
+    }
     public SidecarStatus Current => Status;
     public event Action<SidecarStatus>? Changed;
     private void SetStatus(SidecarStatus value) { lock (_gate) _status = value; Changed?.Invoke(value); }
@@ -83,6 +88,12 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
                 WindowsNamedPipeSecurity.EnsureCurrentUserOnly(_pipe.SafePipeHandle);
                 var reply = await SendAsync(new("handshake", null, null, null, null), cancellationToken).ConfigureAwait(false);
                 if (!string.Equals(reply.Version, SidecarProtocol.Version, StringComparison.Ordinal) || !string.Equals(reply.Type, "ready", StringComparison.Ordinal)) throw new InvalidOperationException("sidecar_protocol_mismatch");
+                var route = CurrentConfirmedRoute;
+                if (route is not null)
+                {
+                    var recoveryReply = await SendAsync(new("apply_route", route.ProviderId, route.BaseUrl, route.KeyHandle, null), cancellationToken).ConfigureAwait(false);
+                    EnsureOk(recoveryReply);
+                }
                 SetStatus(new(SidecarConnectionStatus.Ready));
             }
             catch
@@ -104,11 +115,13 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
         ValidateRoute(snapshot);
         var reply = await SendAsync(new("apply_route", snapshot.ProviderId, snapshot.BaseUrl, snapshot.KeyHandle, null), cancellationToken).ConfigureAwait(false);
         EnsureOk(reply);
+        lock (_gate) _lastConfirmedRoute = snapshot;
     }
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {
         await EnsureReady(cancellationToken).ConfigureAwait(false);
         EnsureOk(await SendAsync(new("clear_route", null, null, null, null), cancellationToken).ConfigureAwait(false));
+        lock (_gate) _lastConfirmedRoute = null;
     }
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {

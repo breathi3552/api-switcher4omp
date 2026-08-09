@@ -328,6 +328,27 @@ var emptyRestore = await new ApplyActiveRouteUseCase(emptyRestoreSettings, empty
     .RestoreAsync(emptyRestoreSettings.Value);
 Assert(emptyRestore.Status == ApplyActiveRouteStatus.NoActiveRoute && emptyRestoreController.ClearCount == 1 && emptyRestoreState.Current is null, "empty persisted activity must clear the sidecar before serving stable no-route errors");
 
+var recoverySettings = new MemorySettings();
+recoverySettings.Save(new LocalAppSettings { Sites = [Site(1)], ActiveProviderId = "p" });
+var recoveryKeys = new MemoryInferenceKeyStore();
+recoveryKeys.Save(new InferenceApiKeyRecord { ProviderId = "p", KeyHandle = "recovery-handle", ApiKey = "recovery-secret", BoundGroup = "g" });
+var recoveryState = new ActiveRouteState();
+var recoveryController = new FakeRouteController();
+var recoveryLifecycle = new FakeSidecarLifecycle();
+var recovery = new GatewayRecoveryUseCase(
+    recoverySettings,
+    recoveryLifecycle,
+    new ApplyActiveRouteUseCase(recoverySettings, recoveryController, recoveryKeys, recoveryState));
+var recoveredGateway = await recovery.ExecuteAsync();
+Assert(recoveredGateway.Status == GatewayRecoveryStatus.Recovered
+    && recoveryLifecycle.StartCalls == 1
+    && recoveryController.Applied?.ProviderId == "p"
+    && recoveryState.CurrentProviderId == "p",
+    "gateway recovery must start the sidecar and restore the persisted active route before serving new requests");
+recoveryLifecycle.ThrowOnStart = true;
+var failedRecovery = await recovery.ExecuteAsync();
+Assert(failedRecovery.Status == GatewayRecoveryStatus.Failed && failedRecovery.RouteStatus is null, "gateway recovery must expose a stable failure outcome without leaking startup exceptions");
+
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
     public PricingAdapterDescriptor Descriptor { get; } = descriptor;
@@ -411,6 +432,27 @@ sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
     public InferenceApiKeySummary? GetSummary(string providerId) => Record is null ? null : new() { ProviderId = Record.ProviderId, KeyHandle = Record.KeyHandle, BoundGroup = Record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(Record.ApiKey), UpdatedAt = Record.UpdatedAt };
 }
 
+sealed class FakeSidecarLifecycle : ISidecarLifecycle
+{
+    public int StartCalls { get; private set; }
+    public bool ThrowOnStart { get; set; }
+    public SidecarStatus Status { get; private set; } = new(SidecarConnectionStatus.Stopped);
+    public Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        StartCalls++;
+        if (ThrowOnStart) throw new InvalidOperationException("synthetic sidecar startup failure");
+        Status = new(SidecarConnectionStatus.Ready);
+        return Task.CompletedTask;
+    }
+    public Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        Status = new(SidecarConnectionStatus.Stopped);
+        return Task.CompletedTask;
+    }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
 sealed class FakeRouteController : IRouteController
 {
     public RouteSnapshot? Applied { get; private set; }
@@ -433,9 +475,15 @@ sealed class FakeActiveRoute : IActiveRouteController
 {
     public RouteSnapshot? Current { get; private set; }
     public string? CurrentProviderId => Current?.ProviderId;
+    public event Action? Changed;
     public Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default) => Task.FromResult<IDisposable>(NoopLease.Instance);
-    public void Apply(RouteSnapshot snapshot) => Current = snapshot;
-    public void ClearIfProvider(string providerId) { if (string.Equals(Current?.ProviderId, providerId, StringComparison.Ordinal)) Current = null; }
+    public void Apply(RouteSnapshot snapshot) { Current = snapshot; Changed?.Invoke(); }
+    public void ClearIfProvider(string providerId)
+    {
+        if (!string.Equals(Current?.ProviderId, providerId, StringComparison.Ordinal)) return;
+        Current = null;
+        Changed?.Invoke();
+    }
     private sealed class NoopLease : IDisposable
     {
         public static NoopLease Instance { get; } = new();

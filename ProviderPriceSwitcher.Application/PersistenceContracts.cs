@@ -72,6 +72,7 @@ public interface IActiveRouteController
 {
     RouteSnapshot? Current { get; }
     string? CurrentProviderId { get; }
+    event Action? Changed;
     Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default);
     void Apply(RouteSnapshot snapshot);
     void ClearIfProvider(string providerId);
@@ -85,6 +86,7 @@ public sealed class ActiveRouteState : IActiveRouteController, IDisposable
 
     public RouteSnapshot? Current { get { lock (_stateGate) return _current; } }
     public string? CurrentProviderId => Current?.ProviderId;
+    public event Action? Changed;
 
     public async Task<IDisposable> AcquireAsync(CancellationToken cancellationToken = default)
     {
@@ -96,16 +98,22 @@ public sealed class ActiveRouteState : IActiveRouteController, IDisposable
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         lock (_stateGate) _current = snapshot;
+        Changed?.Invoke();
     }
 
     public void ClearIfProvider(string providerId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        var cleared = false;
         lock (_stateGate)
         {
             if (string.Equals(_current?.ProviderId, providerId, StringComparison.Ordinal))
+            {
                 _current = null;
+                cleared = true;
+            }
         }
+        if (cleared) Changed?.Invoke();
     }
 
     public void Dispose() => _operationGate.Dispose();

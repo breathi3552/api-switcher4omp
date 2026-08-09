@@ -22,7 +22,7 @@
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Border Padding="16" Background="White" BorderBrush="#D9DEE7" BorderThickness="1" CornerRadius="5" Margin="0,0,0,16">
                 <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
                     <StackPanel><TextBlock Text="当前 OMP Provider" Foreground="#6B7280"/><TextBlock Text="{Binding CurrentProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                     <StackPanel Grid.Column="1"><TextBlock Text="推荐 Provider" Foreground="#6B7280"/><TextBlock Text="{Binding RecommendedProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                     <StackPanel Grid.Column="2">
@@ -33,7 +33,11 @@
                         <StackPanel Orientation="Horizontal"><Ellipse x:Name="GatewayStatusDot" Width="9" Height="9" Fill="{Binding GatewayStatusBrush}" Margin="0,0,6,0"/><TextBlock Text="网关" Foreground="#6B7280"/></StackPanel>
                         <TextBlock Text="{Binding GatewayPortStatus}" FontSize="16" FontWeight="SemiBold"/>
                     </StackPanel>
-                    <StackPanel Grid.Column="4"><TextBlock Text="最近检查" Foreground="#6B7280"/><TextBlock Text="{Binding LastCheckedText}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel Grid.Column="4">
+                        <StackPanel Orientation="Horizontal"><Ellipse x:Name="RouteStatusDot" Width="9" Height="9" Fill="{Binding ActiveRouteStatusBrush}" Margin="0,0,6,0"/><TextBlock Text="活动路由" Foreground="#6B7280"/></StackPanel>
+                        <TextBlock Text="{Binding ActiveRouteStatusText}" FontSize="16" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="5"><TextBlock Text="最近检查" Foreground="#6B7280"/><TextBlock Text="{Binding LastCheckedText}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                 </Grid>
             </Border>
             <DataGrid Grid.Row="1" MouseDoubleClick="PriceGrid_MouseDoubleClick" ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" GridLinesVisibility="Horizontal" BorderBrush="#D9DEE7" BorderThickness="1" Background="White">

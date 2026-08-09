@@ -133,6 +133,7 @@ public sealed class MainViewModel : ObservableObject
         _gatewayStatus = sidecarStatus?.Current;
         if (_sidecarStatus is not null)
             _sidecarStatus.Changed += HandleSidecarStatusChanged;
+        _activeRoute.Changed += HandleActiveRouteChanged;
         InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
         CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
         CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
@@ -161,6 +162,23 @@ public sealed class MainViewModel : ObservableObject
     public string GatewayPortStatus => _settings.GatewayPort == _settings.CurrentGatewayPort
         ? $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}"
         : $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}；下次启动：{_settings.GatewayPort}";
+    public string GatewayStatusText => _gatewayStatus?.Status switch
+    {
+        SidecarConnectionStatus.Ready => "网关运行中",
+        SidecarConnectionStatus.Starting => "网关启动中",
+        SidecarConnectionStatus.Disconnected => "网关连接断开",
+        SidecarConnectionStatus.Faulted => "网关故障",
+        SidecarConnectionStatus.Stopped => "网关已停止",
+        _ => "网关状态未知"
+    };
+    public string ActiveRouteStatusText => _gatewayStatus?.Status switch
+    {
+        SidecarConnectionStatus.Ready => _activeRoute.CurrentProviderId is null ? "无活动路由" : "活动路由已应用",
+        SidecarConnectionStatus.Starting => "网关恢复中",
+        SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => "网关不可用",
+        SidecarConnectionStatus.Stopped => "网关已停止",
+        _ => _activeRoute.CurrentProviderId is null ? "无活动路由" : "网关状态未知"
+    };
     public Brush GatewayStatusBrush => _gatewayStatus?.Status switch
     {
         SidecarConnectionStatus.Ready => Brushes.SeaGreen,
@@ -168,6 +186,14 @@ public sealed class MainViewModel : ObservableObject
         SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => Brushes.IndianRed,
         SidecarConnectionStatus.Stopped => Brushes.Gray,
         _ => _settings.CurrentGatewayPort is >= 1 and <= 65535 ? Brushes.SeaGreen : Brushes.IndianRed
+    };
+    public Brush ActiveRouteStatusBrush => _gatewayStatus?.Status switch
+    {
+        SidecarConnectionStatus.Ready when _activeRoute.CurrentProviderId is not null => Brushes.SeaGreen,
+        SidecarConnectionStatus.Ready => Brushes.DarkOrange,
+        SidecarConnectionStatus.Starting => Brushes.Goldenrod,
+        SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => Brushes.IndianRed,
+        _ => Brushes.Gray
     };
     public Brush TakeoverStatusBrush => _takeoverDisplayState switch
     {
@@ -190,6 +216,9 @@ public sealed class MainViewModel : ObservableObject
         LoadWorkingDirectories(_settings);
         OnPropertyChanged(nameof(GatewayPortStatus));
         OnPropertyChanged(nameof(GatewayStatusBrush));
+        OnPropertyChanged(nameof(GatewayStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
         CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
         await RefreshTakeoverStatusAsync(_lifetimeCancellationToken);
         LoadPersistedPrices();
@@ -220,11 +249,32 @@ public sealed class MainViewModel : ObservableObject
         _ = dispatcher.BeginInvoke(() => SetGatewayStatus(status));
     }
 
+    private void HandleActiveRouteChanged()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            SetActiveRouteStatus();
+            return;
+        }
+        _ = dispatcher.BeginInvoke(SetActiveRouteStatus);
+    }
+
+    private void SetActiveRouteStatus()
+    {
+        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+        OnPropertyChanged(nameof(ActiveRouteStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
+    }
+
     private void SetGatewayStatus(SidecarStatus status)
     {
         if (_gatewayStatus == status) return;
         _gatewayStatus = status;
+        OnPropertyChanged(nameof(GatewayStatusText));
         OnPropertyChanged(nameof(GatewayStatusBrush));
+        OnPropertyChanged(nameof(ActiveRouteStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
     }
 
     private void SetTakeoverDisplayState(TakeoverDisplayState state)
@@ -391,6 +441,8 @@ public sealed class MainViewModel : ObservableObject
             var outcome = await _applyActiveRoute.ExecuteAsync(_settings, choice.ProviderId);
             _settings = outcome.Settings;
             CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+            OnPropertyChanged(nameof(ActiveRouteStatusText));
+            OnPropertyChanged(nameof(ActiveRouteStatusBrush));
             StatusText = UserErrorMessages.ForApplyRouteStatus(outcome.Status);
         }
         catch (Exception)
@@ -413,6 +465,9 @@ public sealed class MainViewModel : ObservableObject
             LoadWorkingDirectories(_settings);
             OnPropertyChanged(nameof(GatewayPortStatus));
             OnPropertyChanged(nameof(GatewayStatusBrush));
+            OnPropertyChanged(nameof(GatewayStatusText));
+            OnPropertyChanged(nameof(ActiveRouteStatusText));
+            OnPropertyChanged(nameof(ActiveRouteStatusBrush));
             await RefreshTakeoverStatusAsync(_lifetimeCancellationToken);
             CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
             LoadPersistedPrices();
@@ -441,6 +496,8 @@ public sealed class MainViewModel : ObservableObject
         dialog.ShowDialog();
         _settings = dialog.Settings;
         CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
+        OnPropertyChanged(nameof(ActiveRouteStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
         LoadPersistedPrices(previousSelection);
     }
 }
