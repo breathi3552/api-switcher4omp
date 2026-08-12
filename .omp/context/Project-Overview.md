@@ -29,8 +29,8 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 支持供应商新增、编辑、删除、启用/禁用；保存当前分组倍率、配置页面地址和最后成功快照；首页展示当前组和最低倍率组，最低组只读；价格检查推荐只进入待应用选择，不改变活动供应商。站点访问凭据的原文不进入普通设置、快照、日志或 UI 回填。
 - 站点编辑器在同一窗口中分为基础配置、价格查询和模型推理三段；价格查询凭据由凭据存储边界生成安全摘要并以空输入框 overlay 展示，推理 API key 只展示脱敏摘要并支持更新/删除。
 - 支持每个供应商保存、更新、删除一个模型推理 API key，并绑定一个当前分组；界面只显示脱敏摘要，删除或重命名活动供应商会同步清除应用层和 sidecar 活动路由。
-- 固定 Bifrost fork 已作为 Windows x64 sidecar 随应用发布并校验 SHA-256；当前用户私有 Named Pipe 提交不可变 `RouteSnapshot` 并按请求解析 `keyHandle`。OMP 使用固定 `provider-price-switcher` OpenAI Responses Provider，普通配置只含占位凭据。
-- 生产 loopback runner 已验证真实 OMP 请求经过 sidecar，以及 Responses 非流式/流式 SSE、tools/tool results、reasoning、ModelId 透传、endpoint/key 隔离、路由切换、无活动路由错误和无残留进程；真实供应商与真实凭据未触及。
+- 固定 Bifrost fork 已作为 Windows x64 sidecar 随应用发布并校验 SHA-256；当前用户私有 Named Pipe 提交不可变 `RouteSnapshot` 并按请求解析 `keyHandle`。OMP 使用固定 `provider-price-switcher` OpenAI Responses Provider，普通配置只含占位凭据。OMP 的每次 `/v1/models` 查询由 sidecar 按请求捕获活动路由并实时转发，只返回当前活动供应商的 OpenAI-compatible 模型列表，不聚合、不缓存，也不建立隐式模型路由。
+- 生产 loopback runner 已验证真实 OMP 请求经过 sidecar，以及 Responses 非流式/流式 SSE、tools/tool results、reasoning、ModelId 透传、endpoint/key 隔离、路由切换、无活动路由错误和无残留进程；模型发现隔离场景另验证两个不同供应商列表、重复实时查询、切换后下一次查询、上游 HTTP 失败状态与脱敏错误。真实供应商与真实凭据未触及。
 - 推荐和成本计算使用固定的 Codex 高缓存默认用量；站内计价单位与人民币统一换算尚未完成。
 - OMP 接管和重复启动已实现：接管将全部受管直接 model role 指向固定 `provider-price-switcher`，写入前生成完整备份并保留最近五份；每次启动请求均尝试创建新实例，不改变活动供应商。目标 loopback 端口保存后在下次完整应用启动时迁移，端口冲突不自动换端口或连接未知进程。
 - 主窗口关闭后由托盘生命周期控制器隐藏而不停止应用；托盘只提供打开窗口、启动 OMP、网关/活动路由只读状态和显式退出。显式退出停止 sidecar 但不终止已有 OMP 进程；sidecar 断线或协议故障时自动重启并恢复最后确认的路由快照。

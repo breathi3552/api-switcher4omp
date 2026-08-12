@@ -359,7 +359,7 @@ try
     bindingStore.Recover();
     Assert(bindingSettings.Load().Sites.Single().CurrentGroup == "recovered-group" && bindingKeys.Load("binding")?.ApiKey == "synthetic-recovered-secret" && !Directory.Exists(transactionDirectory), "startup recovery must finish a prepared inference binding transaction");
     var sidecarPath = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "ProviderPriceSwitcher.App", "Assets", "Bifrost", "bifrost-sidecar.exe"));
-    const string sidecarHash = "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491";
+    const string sidecarHash = "5173977eee7a0e75ca5cca069b3ee26923413550a0474973d04f0a625e059bd9";
     var upstream = new System.Net.HttpListener();
     var upstreamPort = Random.Shared.Next(20000, 30000);
     var secondUpstreamPort = upstreamPort + 10000;
@@ -378,6 +378,9 @@ try
     var postSwitchOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var survivorOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var survivorOmpRecoveryRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var firstUpstreamModelRequestCount = 0;
+    var secondUpstreamModelRequestCount = 0;
+    var failSecondUpstreamModelDiscovery = 0;
     async Task ServeResponsesAsync(System.Net.HttpListener listener, string expectedKey, string responseId, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -385,8 +388,34 @@ try
             System.Net.HttpListenerContext context;
             try { context = await listener.GetContextAsync(); }
             catch when (cancellationToken.IsCancellationRequested) { return; }
-            Assert(context.Request.Url?.AbsolutePath == "/v1/responses", "sidecar used unexpected upstream path");
+            var requestPath = context.Request.Url?.AbsolutePath;
+            Assert(requestPath is "/v1/responses" or "/v1/models", "sidecar used unexpected upstream path");
             Assert(context.Request.Headers["Authorization"] == $"Bearer {expectedKey}", "sidecar key/endpoint isolation failed");
+            if (requestPath == "/v1/models")
+            {
+                var requestCount = responseId == "resp_A"
+                    ? Interlocked.Increment(ref firstUpstreamModelRequestCount)
+                    : Interlocked.Increment(ref secondUpstreamModelRequestCount);
+                var failureMode = responseId == "resp_B" ? Volatile.Read(ref failSecondUpstreamModelDiscovery) : 0;
+                var modelsResponse = failureMode switch
+                {
+                    1 => "{\"error\":{\"message\":\"synthetic-sidecar-secret-B upstream-private-detail\"}}",
+                    2 => "synthetic-sidecar-secret-B malformed-model-payload",
+                    _ => responseId == "resp_A"
+                        ? requestCount == 1
+                            ? "{\"object\":\"list\",\"data\":[{\"id\":\"provider-a-first\",\"object\":\"model\",\"owned_by\":\"provider-a\"}]}"
+                            : "{\"object\":\"list\",\"data\":[{\"id\":\"provider-a-live\",\"object\":\"model\",\"owned_by\":\"provider-a\"}]}"
+                        : "{\"object\":\"list\",\"data\":[{\"id\":\"provider-b-only\",\"object\":\"model\",\"owned_by\":\"provider-b\"}]}"
+                };
+                context.Response.StatusCode = failureMode == 1 ? 429 : 200;
+                context.Response.ContentType = "application/json";
+                var modelsBytes = System.Text.Encoding.UTF8.GetBytes(modelsResponse);
+                await context.Response.OutputStream.WriteAsync(modelsBytes, cancellationToken);
+                context.Response.Close();
+                continue;
+            }
+
+            Assert(requestPath == "/v1/responses", "sidecar used unexpected upstream path");
             using var reader = new StreamReader(context.Request.InputStream);
             var requestBody = await reader.ReadToEndAsync(cancellationToken);
             if (responseId == "resp_B" && requestBody.Contains("post-switch-omp", StringComparison.Ordinal))
@@ -403,6 +432,8 @@ try
                 await releaseInFlight.Task.WaitAsync(cancellationToken);
             }
             var isRepeatedOmpLaunch = requestBody.Contains("repeat-launch", StringComparison.Ordinal);
+            var isSurvivorOmpRequest = requestBody.Contains("survivor-omp", StringComparison.Ordinal)
+                || requestBody.Contains("survivor-after-recovery", StringComparison.Ordinal);
             if (isRepeatedOmpLaunch)
             {
                 var requestCount = Interlocked.Increment(ref repeatedOmpRequestCount);
@@ -414,7 +445,7 @@ try
             var streaming = requestBody.Contains("\"stream\":true", StringComparison.Ordinal);
             var response = streaming
                 ? $"event: response.reasoning_summary_text.delta\ndata: {{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"reasoning\"}}\n\nevent: response.function_call_arguments.delta\ndata: {{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{{}}\"}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{responseId}\"}}}}\n\n"
-                : isRepeatedOmpLaunch
+                : isRepeatedOmpLaunch || isSurvivorOmpRequest
                     ? $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}"
                     : $"{{\"id\":\"{responseId}\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{{\"id\":\"reason_1\",\"type\":\"reasoning\",\"summary\":[]}},{{\"id\":\"call_1\",\"type\":\"function_call\",\"status\":\"completed\",\"name\":\"lookup\",\"call_id\":\"call_1\",\"arguments\":\"{{}}\"}},{{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"loopback-ok\",\"annotations\":[]}}]}}],\"usage\":{{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}}";
             context.Response.StatusCode = 200;
@@ -663,10 +694,54 @@ try
         Assert(stream.IsSuccessStatusCode && stream.Content.Headers.ContentType?.MediaType == "text/event-stream" && streamBody.Contains("response.completed", StringComparison.Ordinal) && streamBody.Contains("response.function_call_arguments.delta", StringComparison.Ordinal), "sidecar SSE matrix failed");
         var currentWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), "loopback");
         Assert(currentWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback", "isolated workflow must confirm the current route before launching OMP instances");
+        using var firstModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        var firstModelsBody = await firstModels.Content.ReadAsStringAsync();
+        using var firstModelsDocument = JsonDocument.Parse(firstModelsBody);
+        Assert(firstModels.IsSuccessStatusCode
+            && firstModelsDocument.RootElement.GetProperty("object").GetString() == "list"
+            && firstModelsDocument.RootElement.GetProperty("data").GetArrayLength() == 1
+            && firstModelsDocument.RootElement.GetProperty("data")[0].GetProperty("id").GetString() == "provider-a-first"
+            && firstUpstreamModelRequestCount == 1
+            && secondUpstreamModelRequestCount == 0,
+            "model discovery must return only the current active provider's OpenAI-compatible model list");
+        using var repeatedModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        var repeatedModelsBody = await repeatedModels.Content.ReadAsStringAsync();
+        Assert(repeatedModels.IsSuccessStatusCode
+            && repeatedModelsBody.Contains("provider-a-live", StringComparison.Ordinal)
+            && !repeatedModelsBody.Contains("provider-a-first", StringComparison.Ordinal)
+            && firstUpstreamModelRequestCount == 2
+            && secondUpstreamModelRequestCount == 0,
+            "every model discovery request must reach the active upstream without using a cached or aggregated list");
         var inFlightTask = client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"in-flight\"}", System.Text.Encoding.UTF8, "application/json"));
         await inFlightStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var recommendedWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), recommendedProvider!);
         Assert(recommendedWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback-B", "isolated workflow must explicitly apply the selected recommendation before new OMP requests");
+        using var switchedModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        var switchedModelsBody = await switchedModels.Content.ReadAsStringAsync();
+        Assert(switchedModels.IsSuccessStatusCode
+            && switchedModelsBody.Contains("provider-b-only", StringComparison.Ordinal)
+            && !switchedModelsBody.Contains("provider-a-live", StringComparison.Ordinal)
+            && firstUpstreamModelRequestCount == 2
+            && secondUpstreamModelRequestCount == 1,
+            "the next model discovery after a successful route switch must use only the replacement route");
+        Volatile.Write(ref failSecondUpstreamModelDiscovery, 1);
+        using var failedModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        var failedModelsBody = await failedModels.Content.ReadAsStringAsync();
+        Assert(failedModels.StatusCode == System.Net.HttpStatusCode.TooManyRequests
+            && failedModelsBody.Contains("pps_model_discovery_upstream_error", StringComparison.Ordinal)
+            && !failedModelsBody.Contains("synthetic-sidecar-secret-B", StringComparison.Ordinal)
+            && !failedModelsBody.Contains("upstream-private-detail", StringComparison.Ordinal)
+            && !failedModelsBody.Contains("provider-b-only", StringComparison.Ordinal),
+            "upstream model discovery failures must retain HTTP status, expose a stable sanitized error, and never fall back to a previous list");
+        Volatile.Write(ref failSecondUpstreamModelDiscovery, 2);
+        using var malformedModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        var malformedModelsBody = await malformedModels.Content.ReadAsStringAsync();
+        Assert(malformedModels.StatusCode == System.Net.HttpStatusCode.BadGateway
+            && malformedModelsBody.Contains("pps_model_discovery_upstream_error", StringComparison.Ordinal)
+            && !malformedModelsBody.Contains("synthetic-sidecar-secret-B", StringComparison.Ordinal)
+            && !malformedModelsBody.Contains("malformed-model-payload", StringComparison.Ordinal),
+            "a malformed successful upstream model payload must be rejected at the protocol boundary with a stable sanitized failure");
+        Volatile.Write(ref failSecondUpstreamModelDiscovery, 0);
         var postSwitchOmpProcess = System.Diagnostics.Process.Start(CreateOmpStartInfo(secondOmpWorkingDirectory, "Return loopback-ok. post-switch-omp"))
             ?? throw new InvalidOperationException("Post-switch OMP process did not start.");
         Exception? postSwitchCleanupFailure = null;
@@ -702,6 +777,10 @@ try
         Assert(keyDeletedNoRoute.StatusCode == System.Net.HttpStatusCode.BadRequest
             && (await keyDeletedNoRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal),
             "key deletion must clear the real gateway route before rebind");
+        using var keyDeletedModels = await client.GetAsync("http://127.0.0.1:15722/v1/models");
+        Assert(keyDeletedModels.StatusCode == System.Net.HttpStatusCode.BadRequest
+            && (await keyDeletedModels.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal),
+            "model discovery without an active route must return the stable no-route failure instead of a static or empty successful list");
         workflowKeyUseCase.Save("loopback-B", "synthetic-sidecar-secret-B", "g");
         var restoredWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), "loopback-B");
         Assert(restoredWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback-B", "isolated workflow must restore the selected route after key rebind");
@@ -709,7 +788,18 @@ try
         Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
         var survivorOmpProcess = System.Diagnostics.Process.Start(CreateOmpStartInfo(secondOmpWorkingDirectory, null, true))
             ?? throw new InvalidOperationException("Survivor OMP process did not start.");
-        var survivorOmpOutputTask = survivorOmpProcess.StandardOutput.ReadToEndAsync();
+        var survivorOmpAgentEnded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var survivorOmpOutputTask = Task.Run(async () =>
+        {
+            var output = new System.Text.StringBuilder();
+            while (await survivorOmpProcess.StandardOutput.ReadLineAsync() is { } line)
+            {
+                output.AppendLine(line);
+                if (line.Contains("\"type\":\"agent_end\"", StringComparison.Ordinal))
+                    survivorOmpAgentEnded.TrySetResult();
+            }
+            return output.ToString();
+        });
         var survivorOmpErrorTask = survivorOmpProcess.StandardError.ReadToEndAsync();
         Exception? survivorCleanupFailure = null;
         try
@@ -719,6 +809,7 @@ try
             await survivorOmpProcess.StandardInput.WriteLineAsync("{\"type\":\"prompt\",\"message\":\"survivor-omp\"}");
             await survivorOmpProcess.StandardInput.FlushAsync();
             await survivorOmpRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            await survivorOmpAgentEnded.Task.WaitAsync(TimeSpan.FromSeconds(20));
             Assert(!survivorOmpProcess.HasExited, "an existing OMP process must remain alive after its first request");
             await supervisor.StopAsync();
             Assert(!survivorOmpProcess.HasExited, "stopping the gateway must not terminate an existing OMP process");

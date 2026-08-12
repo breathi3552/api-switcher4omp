@@ -72,7 +72,7 @@ public partial class App : System.Windows.Application
             _sidecar = new WindowsSidecarSupervisor(
                 new SidecarBinaryOptions(
                     Path.Combine(AppContext.BaseDirectory, "bifrost-sidecar.exe"),
-                    "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491",
+                    "5173977eee7a0e75ca5cca069b3ee26923413550a0474973d04f0a625e059bd9",
                     "pps-sidecar-v1",
                     settings.GatewayPort),
                 resolver);

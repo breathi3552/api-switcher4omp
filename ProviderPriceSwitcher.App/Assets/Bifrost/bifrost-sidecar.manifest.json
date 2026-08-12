@@ -1,9 +1,9 @@
 {
   "protocol": "pps.sidecar.v1",
   "upstreamCommit": "501126260d55cd1a93df5f24238cc19877dd73eb",
-  "goVersion": "go1.26.4",
+  "goVersion": "go1.26.5",
   "target": "windows/amd64",
-  "sha256": "38c2c8a69e481a6561d07d7252f2fd100a50bef443bbb61beddf85e2e6ae4491",
-  "buildCommand": "set CGO_ENABLED=1&&set GOOS=windows&&set GOARCH=amd64&&set CC=gcc&&go1.26.4 build -trimpath -ldflags \"-s -w -X main.Version=pps-bifrost-v1\" -o bifrost-sidecar.exe ./bifrost-http",
-  "source": "external temporary worktree C:/Users/breathi/AppData/Local/Temp/pps-bifrost-fork/transports"
+  "sha256": "5173977eee7a0e75ca5cca069b3ee26923413550a0474973d04f0a625e059bd9",
+  "buildCommand": "set CGO_ENABLED=1&&set GOOS=windows&&set GOARCH=amd64&&set CC=gcc&&go1.26.5 build -trimpath -ldflags \"-s -w -X main.Version=pps-bifrost-v1\" -o bifrost-sidecar.exe ./bifrost-http",
+  "source": "external temporary worktree C:/Users/breathi/AppData/Local/Temp/pps-bifrost-issue8/transports"
 }
