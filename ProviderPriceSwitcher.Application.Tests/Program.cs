@@ -299,7 +299,7 @@ var restoredRouteState = new ActiveRouteState();
 var restoredRouteController = new FakeRouteController();
 var restoreUseCase = new ApplyActiveRouteUseCase(activeRouteStore, restoredRouteController, activeKeyStore, restoredRouteState);
 var restoreSaveCount = activeRouteStore.SaveCount;
-var restored = await restoreUseCase.RestoreAsync(activeRouteStore.Value with { ActiveProviderId = "p" });
+var restored = await restoreUseCase.RestoreAsync();
 Assert(restored.Status == ApplyActiveRouteStatus.Applied && restoredRouteController.Applied?.ProviderId == "p" && restoredRouteState.CurrentProviderId == "p" && activeRouteStore.SaveCount == restoreSaveCount, "valid persisted provider must restore sidecar state without rewriting unchanged settings");
 var invalidRestoreStore = new MemorySettings();
 
@@ -316,7 +316,7 @@ await deleteKeyUseCase.DeleteAsync("p");
 Assert(deleteRouteSettings.Value.ActiveProviderId is null && deleteRouteState.CurrentProviderId is null && deleteRouteController.ClearCount == 1, "deleting an active key must clear persisted and sidecar activity without fallback");
 invalidRestoreStore.Save(activeRouteStore.Value with { ActiveProviderId = "p" });
 var invalidRestore = await new ApplyActiveRouteUseCase(invalidRestoreStore, new FakeRouteController(), new MemoryInferenceKeyStore(), new ActiveRouteState())
-    .RestoreAsync(invalidRestoreStore.Value);
+    .RestoreAsync();
 Assert(invalidRestore.Status == ApplyActiveRouteStatus.Cleared && invalidRestoreStore.Value.ActiveProviderId is null, "disabled or missing-key persisted provider must be cleared without fallback");
 
 var emptyRestoreState = new ActiveRouteState();
@@ -325,7 +325,7 @@ var emptyRestoreController = new FakeRouteController();
 var emptyRestoreSettings = new MemorySettings();
 emptyRestoreSettings.Save(new LocalAppSettings());
 var emptyRestore = await new ApplyActiveRouteUseCase(emptyRestoreSettings, emptyRestoreController, activeKeyStore, emptyRestoreState)
-    .RestoreAsync(emptyRestoreSettings.Value);
+    .RestoreAsync();
 Assert(emptyRestore.Status == ApplyActiveRouteStatus.NoActiveRoute && emptyRestoreController.ClearCount == 1 && emptyRestoreState.Current is null, "empty persisted activity must clear the sidecar before serving stable no-route errors");
 
 var recoverySettings = new MemorySettings();
@@ -336,7 +336,6 @@ var recoveryState = new ActiveRouteState();
 var recoveryController = new FakeRouteController();
 var recoveryLifecycle = new FakeSidecarLifecycle();
 var recovery = new GatewayRecoveryUseCase(
-    recoverySettings,
     recoveryLifecycle,
     new ApplyActiveRouteUseCase(recoverySettings, recoveryController, recoveryKeys, recoveryState));
 var recoveredGateway = await recovery.ExecuteAsync();
@@ -345,6 +344,30 @@ Assert(recoveredGateway.Status == GatewayRecoveryStatus.Recovered
     && recoveryController.Applied?.ProviderId == "p"
     && recoveryState.CurrentProviderId == "p",
     "gateway recovery must start the sidecar and restore the persisted active route before serving new requests");
+
+using var racingSettings = new CoordinatedSettings();
+var providerA = Site(1) with { ProviderId = "a", BaseUrl = new Uri("https://a.example.test") };
+var providerB = Site(1) with { ProviderId = "b", BaseUrl = new Uri("https://b.example.test") };
+racingSettings.Save(new LocalAppSettings { Sites = [providerA, providerB], ActiveProviderId = "a" });
+var racingKeys = new FixedInferenceKeyStore(
+    new InferenceApiKeyRecord { ProviderId = "a", KeyHandle = "a-handle", ApiKey = "a-secret", BoundGroup = "g" },
+    new InferenceApiKeyRecord { ProviderId = "b", KeyHandle = "b-handle", ApiKey = "b-secret", BoundGroup = "g" });
+var racingState = new ActiveRouteState();
+var racingController = new FakeRouteController();
+var racingRouteUseCase = new ApplyActiveRouteUseCase(racingSettings, racingController, racingKeys, racingState);
+var racingRecovery = new GatewayRecoveryUseCase(new FakeSidecarLifecycle(), racingRouteUseCase);
+racingSettings.BlockNextLoad();
+var racingRecoveryTask = Task.Run(() => racingRecovery.ExecuteAsync());
+await racingSettings.WaitForBlockedLoadAsync();
+var applyProviderBTask = racingRouteUseCase.ExecuteAsync(racingSettings.Current, "b");
+racingSettings.ReleaseBlockedLoad();
+var applyProviderB = await applyProviderBTask;
+await racingRecoveryTask;
+Assert(applyProviderB.Status == ApplyActiveRouteStatus.Applied
+    && racingController.Applied?.ProviderId == "b"
+    && racingState.CurrentProviderId == "b"
+    && racingSettings.Current.ActiveProviderId == "b",
+    "gateway recovery that read provider A must not overwrite a concurrent user apply of provider B");
 recoveryLifecycle.ThrowOnStart = true;
 var failedRecovery = await recovery.ExecuteAsync();
 Assert(failedRecovery.Status == GatewayRecoveryStatus.Failed && failedRecovery.RouteStatus is null, "gateway recovery must expose a stable failure outcome without leaking startup exceptions");
@@ -362,6 +385,71 @@ sealed class MemorySettings : ISettingsRepository
     public LocalAppSettings Load() => Value;
     public void Save(LocalAppSettings settings) { if (ThrowOnSave) throw new IOException("synthetic settings save failure"); SaveCount++; Value = settings; }
     public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update) { ArgumentNullException.ThrowIfNull(update); var updated = update(Value); Save(updated); return updated; }
+}
+sealed class CoordinatedSettings : ISettingsRepository, IDisposable
+{
+    private readonly object _gate = new();
+    private readonly TaskCompletionSource _blockedLoad = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly ManualResetEventSlim _releaseBlockedLoad = new(false);
+    private LocalAppSettings _value = new();
+    private bool _blockNextLoad;
+
+    public LocalAppSettings Current
+    {
+        get
+        {
+            lock (_gate)
+                return _value;
+        }
+    }
+
+    public void BlockNextLoad()
+    {
+        lock (_gate)
+            _blockNextLoad = true;
+    }
+
+    public Task WaitForBlockedLoadAsync() => _blockedLoad.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    public void ReleaseBlockedLoad() => _releaseBlockedLoad.Set();
+
+    public LocalAppSettings Load()
+    {
+        LocalAppSettings snapshot;
+        bool shouldBlock;
+        lock (_gate)
+        {
+            snapshot = _value;
+            shouldBlock = _blockNextLoad;
+            _blockNextLoad = false;
+        }
+
+        if (shouldBlock)
+        {
+            _blockedLoad.TrySetResult();
+            if (!_releaseBlockedLoad.Wait(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException("Timed out waiting to release the coordinated settings load.");
+        }
+
+        return snapshot;
+    }
+
+    public void Save(LocalAppSettings settings)
+    {
+        lock (_gate)
+            _value = settings;
+    }
+
+    public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        lock (_gate)
+        {
+            _value = update(_value);
+            return _value;
+        }
+    }
+
+    public void Dispose() => _releaseBlockedLoad.Dispose();
 }
 sealed class MemorySnapshots : IPricingSnapshotRepository
 {
@@ -430,6 +518,25 @@ sealed class MemoryInferenceKeyStore : IInferenceApiKeyStore
     public void Save(InferenceApiKeyRecord record) { if (ThrowOnSave) throw new IOException("synthetic key save failure"); Record = record; }
     public void Clear(string providerId) => Record = null;
     public InferenceApiKeySummary? GetSummary(string providerId) => Record is null ? null : new() { ProviderId = Record.ProviderId, KeyHandle = Record.KeyHandle, BoundGroup = Record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(Record.ApiKey), UpdatedAt = Record.UpdatedAt };
+}
+
+sealed class FixedInferenceKeyStore(params InferenceApiKeyRecord[] records) : IInferenceApiKeyStore
+{
+    private readonly Dictionary<string, InferenceApiKeyRecord> _records = records.ToDictionary(record => record.ProviderId, StringComparer.Ordinal);
+    public InferenceApiKeyRecord? Load(string providerId) => _records.GetValueOrDefault(providerId);
+    public void Save(InferenceApiKeyRecord record) => _records[record.ProviderId] = record;
+    public void Clear(string providerId) => _records.Remove(providerId);
+    public InferenceApiKeySummary? GetSummary(string providerId)
+        => Load(providerId) is { } record
+            ? new InferenceApiKeySummary
+            {
+                ProviderId = record.ProviderId,
+                KeyHandle = record.KeyHandle,
+                BoundGroup = record.BoundGroup,
+                MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey),
+                UpdatedAt = record.UpdatedAt
+            }
+            : null;
 }
 
 sealed class FakeSidecarLifecycle : ISidecarLifecycle

@@ -211,7 +211,7 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
-        var restored = await _applyActiveRoute.RestoreAsync(_settings);
+        var restored = await _applyActiveRoute.RestoreAsync();
         _settings = restored.Settings with { CurrentGatewayPort = _settings.CurrentGatewayPort };
         LoadWorkingDirectories(_settings);
         OnPropertyChanged(nameof(GatewayPortStatus));

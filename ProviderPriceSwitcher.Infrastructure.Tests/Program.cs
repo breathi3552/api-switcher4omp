@@ -301,7 +301,7 @@ try
         var emptyRouteSettings = new MemorySettingsRepository(new LocalAppSettings());
         var emptyRouteState = new ActiveRouteState();
         var emptyRoute = new ApplyActiveRouteUseCase(emptyRouteSettings, supervisor, new SyntheticInferenceKeyStore(), emptyRouteState);
-        var emptyOutcome = await emptyRoute.RestoreAsync(emptyRouteSettings.Load());
+        var emptyOutcome = await emptyRoute.RestoreAsync();
         Assert(emptyOutcome.Status == ApplyActiveRouteStatus.NoActiveRoute && supervisor.Status.IsReady, "empty active route must start the sidecar and expose its stable no-route response");
         var activeRouteSettings = new MemorySettingsRepository(new LocalAppSettings
         {
@@ -323,7 +323,8 @@ try
         var routeApply = new ApplyActiveRouteUseCase(activeRouteSettings, supervisor, activeRouteKeys, activeRouteState);
         var applied = await routeApply.ExecuteAsync(activeRouteSettings.Load(), "loopback");
         Assert(applied.Status == ApplyActiveRouteStatus.Applied && activeRouteSettings.Load().ActiveProviderId == "loopback" && activeRouteState.CurrentProviderId == "loopback", "application route use case must atomically apply and persist the sidecar snapshot");
-        var disabledRestore = await routeApply.RestoreAsync(activeRouteSettings.Load() with { ActiveProviderId = "loopback", Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = false }] });
+        activeRouteSettings.Save(activeRouteSettings.Load() with { ActiveProviderId = "loopback", Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = false }] });
+        var disabledRestore = await routeApply.RestoreAsync();
         Assert(disabledRestore.Status == ApplyActiveRouteStatus.Cleared && disabledRestore.Settings.ActiveProviderId is null && activeRouteState.CurrentProviderId is null, "restart restore must clear a disabled persisted provider without fallback");
         await routeApply.ExecuteAsync(activeRouteSettings.Load() with { Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = true }] }, "loopback");
         var ompAgentRoot = Path.Combine(root, "omp-agent");

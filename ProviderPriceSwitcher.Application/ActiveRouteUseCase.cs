@@ -43,12 +43,10 @@ public sealed class ApplyActiveRouteUseCase(
         return await CommitAsync(settings, target.Site!, target.Key!, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<ApplyActiveRouteOutcome> RestoreAsync(
-        LocalAppSettings settings,
-        CancellationToken cancellationToken = default)
+    public async Task<ApplyActiveRouteOutcome> RestoreAsync(CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(settings);
         using var lease = await activeRoute.AcquireAsync(cancellationToken).ConfigureAwait(false);
+        var settings = settingsRepository.Load();
         if (string.IsNullOrWhiteSpace(settings.ActiveProviderId))
         {
             var previousProviderId = activeRoute.Current?.ProviderId;

@@ -76,7 +76,7 @@ public partial class App : System.Windows.Application
                 resolver);
             await _sidecar.StartAsync(startupCancellation);
             var applyActiveRoute = new ApplyActiveRouteUseCase(settingsRepository, _sidecar, inferenceKeyStore, activeRoute);
-            _gatewayRecovery = new GatewayRecoveryUseCase(settingsRepository, _sidecar, applyActiveRoute);
+            _gatewayRecovery = new GatewayRecoveryUseCase(_sidecar, applyActiveRoute);
             _sidecar.Changed += HandleSidecarStatusChanged;
             var startupOutcome = await ompStartup.InitializeAsync(settings, startupCancellation);
             if (!startupOutcome.Succeeded)

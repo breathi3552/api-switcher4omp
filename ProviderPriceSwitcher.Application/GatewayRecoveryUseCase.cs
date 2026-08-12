@@ -15,19 +15,17 @@ public sealed record GatewayRecoveryOutcome(
 }
 
 public sealed class GatewayRecoveryUseCase(
-    ISettingsRepository settingsRepository,
     ISidecarLifecycle sidecar,
     ApplyActiveRouteUseCase activeRoute)
 {
     public async Task<GatewayRecoveryOutcome> ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(settingsRepository);
         ArgumentNullException.ThrowIfNull(sidecar);
         ArgumentNullException.ThrowIfNull(activeRoute);
         try
         {
             await sidecar.StartAsync(cancellationToken).ConfigureAwait(false);
-            var route = await activeRoute.RestoreAsync(settingsRepository.Load(), cancellationToken).ConfigureAwait(false);
+            var route = await activeRoute.RestoreAsync(cancellationToken).ConfigureAwait(false);
             return route.Status switch
             {
                 ApplyActiveRouteStatus.Applied => new GatewayRecoveryOutcome(GatewayRecoveryStatus.Recovered, route.Status),
