@@ -34,6 +34,69 @@ var startupKeyStore = new StartupKeyStore();
 var startupResolver = new ProviderPriceSwitcher.Application.InferenceApiKeyResolverBridge(startupKeyStore);
 App.RegisterAvailableInferenceKeys(startupSettings, startupKeyStore, startupResolver, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
 Assert(await startupResolver.ResolveAsync("healthy-handle") == "healthy-secret", "one corrupt inference key must not prevent healthy keys or application startup");
+var recoveryAttempts = 0;
+var recoveryFailures = new List<string>();
+await App.RecoverGatewayWithRetryAsync(
+    _ => Task.FromResult(++recoveryAttempts == 1
+        ? new ProviderPriceSwitcher.Application.GatewayRecoveryOutcome(
+            ProviderPriceSwitcher.Application.GatewayRecoveryStatus.Failed,
+            FailureKind: ProviderPriceSwitcher.Application.GatewayRecoveryFailureKind.GatewayUnavailable)
+        : new ProviderPriceSwitcher.Application.GatewayRecoveryOutcome(ProviderPriceSwitcher.Application.GatewayRecoveryStatus.Recovered)),
+    outcome => recoveryFailures.Add($"{outcome.Status}:{outcome.FailureKind}"),
+    CancellationToken.None);
+Assert(recoveryAttempts == 2 && recoveryFailures.SequenceEqual(["Failed:GatewayUnavailable"]), "gateway recovery must retry a transient failure until the gateway is restored");
+var deterministicRecoveryAttempts = 0;
+await App.RecoverGatewayWithRetryAsync(
+    _ =>
+    {
+        deterministicRecoveryAttempts++;
+        return Task.FromResult(new ProviderPriceSwitcher.Application.GatewayRecoveryOutcome(
+            ProviderPriceSwitcher.Application.GatewayRecoveryStatus.Failed,
+            FailureKind: ProviderPriceSwitcher.Application.GatewayRecoveryFailureKind.ExecutableUnavailable));
+    },
+    _ => { },
+    CancellationToken.None);
+Assert(deterministicRecoveryAttempts == 1, "deterministic gateway recovery failures must not be retried indefinitely");
+using var transientRecoveryCancellation = new CancellationTokenSource();
+var transientRecoveryAttempts = 0;
+try
+{
+    await App.RecoverGatewayWithRetryAsync(
+        _ =>
+        {
+            transientRecoveryAttempts++;
+            transientRecoveryCancellation.Cancel();
+            return Task.FromResult(new ProviderPriceSwitcher.Application.GatewayRecoveryOutcome(
+                ProviderPriceSwitcher.Application.GatewayRecoveryStatus.Failed,
+                FailureKind: ProviderPriceSwitcher.Application.GatewayRecoveryFailureKind.GatewayUnavailable));
+        },
+        _ => { },
+        transientRecoveryCancellation.Token);
+    throw new InvalidOperationException("transient recovery did not remain cancellable");
+}
+catch (OperationCanceledException)
+{
+}
+Assert(transientRecoveryAttempts == 1, "transient gateway recovery must continue until cancellation rather than silently stopping after a bounded retry window");
+using var recoveryCancellation = new CancellationTokenSource();
+recoveryCancellation.Cancel();
+var canceledRecoveryAttempts = 0;
+try
+{
+    await App.RecoverGatewayWithRetryAsync(
+        _ =>
+        {
+            canceledRecoveryAttempts++;
+            return Task.FromResult(new ProviderPriceSwitcher.Application.GatewayRecoveryOutcome(ProviderPriceSwitcher.Application.GatewayRecoveryStatus.Recovered));
+        },
+        _ => { },
+        recoveryCancellation.Token);
+    throw new InvalidOperationException("canceled gateway recovery was accepted");
+}
+catch (OperationCanceledException)
+{
+}
+Assert(canceledRecoveryAttempts == 0, "canceled gateway recovery must not start another attempt");
 Assert(UserErrorMessages.ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus.Started).Contains("活动供应商未改变", StringComparison.Ordinal), "launch status mapping mismatch");
 var warningOutcome = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
     ProviderPriceSwitcher.Application.OmpLaunchStatus.Started,
@@ -444,10 +507,12 @@ var windowThread = new Thread(() =>
         sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready));
         WaitFor(() => trayHost.Status?.RouteText == "无活动路由");
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
+        sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready));
+        WaitFor(() => trayHost.Status?.GatewayText == "网关运行中" && trayHost.Status?.RouteText == "活动路由已应用");
+        window.Close();
+        Assert(!window.IsVisible && sidecarStatus.Current.Status == ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, "closing the main window must hide it without stopping the gateway");
         sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
         WaitFor(() => trayHost.Status?.GatewayText == "网关连接断开" && trayHost.Status?.RouteText == "网关不可用");
-        window.Close();
-        Assert(!window.IsVisible && sidecarStatus.Current.Status == ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "closing the main window must hide it without stopping the gateway");
         trayHost.Raise(TrayCommand.OpenWindow);
         Assert(window.IsVisible, "tray open command must restore the main window");
         var launchesBeforeTrayStart = fakeOmpLauncher.Calls;

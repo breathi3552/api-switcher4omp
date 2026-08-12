@@ -17,7 +17,10 @@ public enum ApplyActiveRouteStatus
     RollbackFailed,
 }
 
-public sealed record ApplyActiveRouteOutcome(ApplyActiveRouteStatus Status, LocalAppSettings Settings)
+public sealed record ApplyActiveRouteOutcome(
+    ApplyActiveRouteStatus Status,
+    LocalAppSettings Settings,
+    SidecarFailureKind? SidecarFailure = null)
 {
     public bool Succeeded => Status is ApplyActiveRouteStatus.Applied or ApplyActiveRouteStatus.NoActiveRoute or ApplyActiveRouteStatus.Cleared;
 }
@@ -58,9 +61,9 @@ public sealed class ApplyActiveRouteUseCase(
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
-                return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings);
+                return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings, ClassifySidecarFailure(exception));
             }
 
             if (previousProviderId is not null)
@@ -80,9 +83,9 @@ public sealed class ApplyActiveRouteUseCase(
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
-                return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings);
+                return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings, ClassifySidecarFailure(exception));
             }
 
             if (previousProviderId is not null)
@@ -117,9 +120,9 @@ public sealed class ApplyActiveRouteUseCase(
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings);
+            return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings, ClassifySidecarFailure(exception));
         }
 
         LocalAppSettings persisted;
@@ -154,9 +157,9 @@ public sealed class ApplyActiveRouteUseCase(
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings);
+            return new ApplyActiveRouteOutcome(ApplyActiveRouteStatus.SidecarFailed, settings, ClassifySidecarFailure(exception));
         }
 
         activeRoute.Apply(next);
@@ -178,6 +181,15 @@ public sealed class ApplyActiveRouteUseCase(
             return false;
         }
     }
+    private static SidecarFailureKind ClassifySidecarFailure(Exception exception) => exception switch
+    {
+        SidecarLifecycleException lifecycle => lifecycle.FailureKind,
+        TimeoutException => SidecarFailureKind.GatewayUnavailable,
+        InvalidDataException or InvalidOperationException => SidecarFailureKind.Protocol,
+        UnauthorizedAccessException => SidecarFailureKind.AccessDenied,
+        IOException => SidecarFailureKind.GatewayUnavailable,
+        _ => SidecarFailureKind.Unexpected
+    };
 
     private (SiteConfiguration? Site, InferenceApiKeyRecord? Key, ApplyActiveRouteStatus? Status) FindTarget(LocalAppSettings settings, string providerId)
     {

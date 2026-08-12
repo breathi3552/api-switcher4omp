@@ -1,6 +1,8 @@
 ﻿using System.Diagnostics;
 using ProviderPriceSwitcher.Application;
 using ProviderPriceSwitcher.Infrastructure;
+using System.Runtime.Versioning;
+[assembly: SupportedOSPlatform("windows")]
 static void Assert(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 var runId = Guid.NewGuid().ToString("N");
 var root = Path.Combine(Path.GetTempPath(), "ProviderPriceSwitcher-OmpProcess-" + runId);
@@ -48,9 +50,28 @@ try
     }
     Assert(gateway.StartCount == startsBeforeCancellation, "Canceled process launch must not reach the process gateway.");
     const string syntheticSecret = "synthetic-token-DO-NOT-LOG https://example.invalid/prices?api_key=synthetic-query-secret&token=synthetic-token&cookie=synthetic-cookie C:\\Users\\Private\\Documents\\secret";
+    var credentialStore = new WindowsSiteCredentialStore(dataRoot);
+    credentialStore.SaveCredential(new ProviderPriceSwitcher.Core.SiteCredentialRecord
+    {
+        ProviderId = "omp-launch",
+        SiteType = "new-api",
+        AuthorizationScheme = "Bearer",
+        AccessToken = syntheticSecret,
+        CookieHeader = "synthetic-cookie"
+    });
     gateway.StartException = new InvalidOperationException(syntheticSecret);
     var failedLaunch = service.Start(new OmpProcessStartRequest(workingRoot, "dotnet", UseWindowsTerminal: false));
     Assert(!failedLaunch.Succeeded && failedLaunch.FailureKind == OmpProcessFailureKind.StartFailed && !failedLaunch.ToString().Contains(syntheticSecret, StringComparison.Ordinal), "Launch exceptions must be safe.");
+    var failedStartInfo = gateway.LastStartInfo ?? throw new InvalidOperationException("failed launch did not publish start info");
+    var launchMaterial = string.Join(
+        "\n",
+        new[] { failedStartInfo.FileName, failedStartInfo.WorkingDirectory }
+            .Concat(failedStartInfo.ArgumentList)
+            .Concat(failedStartInfo.Environment.Select(pair => $"{pair.Key}={pair.Value}")));
+    Assert(!launchMaterial.Contains(syntheticSecret, StringComparison.Ordinal)
+        && !launchMaterial.Contains("synthetic-query-secret", StringComparison.Ordinal)
+        && !launchMaterial.Contains("synthetic-cookie", StringComparison.Ordinal),
+        "OMP command line and environment must not contain credential material");
     gateway.StartException = null;
     using var existingOmpProcess = Process.GetCurrentProcess();
     gateway.Processes = [existingOmpProcess];

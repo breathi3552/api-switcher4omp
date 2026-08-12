@@ -290,7 +290,9 @@ Assert(rollbackFailure.Status == ApplyActiveRouteStatus.RollbackFailed && rollba
 activeRouteController.ThrowOnApply = new IOException("synthetic sidecar failure");
 var sidecarFailure = await activeRouteUseCase.ExecuteAsync(activeRouteStore.Value, "p");
 activeRouteController.ThrowOnApply = null;
-Assert(sidecarFailure.Status == ApplyActiveRouteStatus.SidecarFailed && activeRouteStore.Value.ActiveProviderId == "p", "sidecar failure must not persist a new active provider");
+Assert(sidecarFailure.Status == ApplyActiveRouteStatus.SidecarFailed
+    && sidecarFailure.SidecarFailure == SidecarFailureKind.GatewayUnavailable
+    && activeRouteStore.Value.ActiveProviderId == "p", "sidecar failure must not persist a new active provider or lose the gateway failure kind");
 
 var disabledRoute = await activeRouteUseCase.ExecuteAsync(activeRouteStore.Value with { Sites = [Site(1) with { Enabled = false }] }, "p");
 Assert(disabledRoute.Status == ApplyActiveRouteStatus.ProviderDisabled && activeRouteController.ApplyCount == 3, "disabled provider must not become an active route");
@@ -370,7 +372,17 @@ Assert(applyProviderB.Status == ApplyActiveRouteStatus.Applied
     "gateway recovery that read provider A must not overwrite a concurrent user apply of provider B");
 recoveryLifecycle.ThrowOnStart = true;
 var failedRecovery = await recovery.ExecuteAsync();
-Assert(failedRecovery.Status == GatewayRecoveryStatus.Failed && failedRecovery.RouteStatus is null, "gateway recovery must expose a stable failure outcome without leaking startup exceptions");
+Assert(failedRecovery.Status == GatewayRecoveryStatus.Failed
+    && failedRecovery.RouteStatus is null
+    && failedRecovery.FailureKind == GatewayRecoveryFailureKind.Protocol,
+    "gateway recovery must expose a stable classified failure without leaking startup exceptions");
+recoveryLifecycle.ThrowOnStart = false;
+recoveryController.ThrowOnApply = new InvalidOperationException("synthetic protocol failure");
+var protocolRecovery = await recovery.ExecuteAsync();
+recoveryController.ThrowOnApply = null;
+Assert(protocolRecovery.Status == GatewayRecoveryStatus.Failed
+    && protocolRecovery.FailureKind == GatewayRecoveryFailureKind.Protocol,
+    "route restore must preserve protocol failures instead of relabeling them as gateway-unavailable");
 
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
@@ -386,6 +398,7 @@ sealed class MemorySettings : ISettingsRepository
     public void Save(LocalAppSettings settings) { if (ThrowOnSave) throw new IOException("synthetic settings save failure"); SaveCount++; Value = settings; }
     public LocalAppSettings Update(Func<LocalAppSettings, LocalAppSettings> update) { ArgumentNullException.ThrowIfNull(update); var updated = update(Value); Save(updated); return updated; }
 }
+
 sealed class CoordinatedSettings : ISettingsRepository, IDisposable
 {
     private readonly object _gate = new();
@@ -548,7 +561,8 @@ sealed class FakeSidecarLifecycle : ISidecarLifecycle
     {
         cancellationToken.ThrowIfCancellationRequested();
         StartCalls++;
-        if (ThrowOnStart) throw new InvalidOperationException("synthetic sidecar startup failure");
+        if (ThrowOnStart)
+            throw new SidecarLifecycleException(SidecarFailureKind.Protocol, new InvalidOperationException("synthetic sidecar startup failure"));
         Status = new(SidecarConnectionStatus.Ready);
         return Task.CompletedTask;
     }
@@ -565,7 +579,7 @@ sealed class FakeRouteController : IRouteController
     public RouteSnapshot? Applied { get; private set; }
     public int ApplyCount { get; private set; }
     public int ClearCount { get; private set; }
-    public IOException? ThrowOnApply { get; set; }
+    public Exception? ThrowOnApply { get; set; }
     public int? ThrowOnApplyCall { get; set; }
     public Task ApplyAsync(RouteSnapshot snapshot, CancellationToken cancellationToken = default)
     {

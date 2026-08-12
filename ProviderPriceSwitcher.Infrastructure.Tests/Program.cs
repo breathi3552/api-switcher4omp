@@ -5,6 +5,14 @@ using ProviderPriceSwitcher.Application;
 using System.Runtime.Versioning;
 
 [assembly: SupportedOSPlatform("windows")]
+if (args.Contains("--control-pipe", StringComparer.Ordinal))
+{
+    await RunFakeSidecarAsync(args);
+    return;
+}
+
+var runOnlySidecarChannelCloseContract = args.Contains("--sidecar-channel-close-contract", StringComparer.Ordinal);
+
 
 var currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("current user SID unavailable");
 var privatePipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)");
@@ -17,6 +25,120 @@ static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
 }
+static async Task RunFakeSidecarAsync(string[] arguments)
+{
+    var pipeArgumentIndex = Array.IndexOf(arguments, "--control-pipe");
+    if (pipeArgumentIndex < 0 || pipeArgumentIndex == arguments.Length - 1)
+        throw new InvalidOperationException("control pipe argument missing");
+
+    var pipeName = arguments[pipeArgumentIndex + 1].Replace(@"\\.\pipe\", "", StringComparison.Ordinal);
+    await using var pipe = new System.IO.Pipes.NamedPipeServerStream(
+        pipeName,
+        System.IO.Pipes.PipeDirection.InOut,
+        1,
+        System.IO.Pipes.PipeTransmissionMode.Byte,
+        System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
+    await pipe.WaitForConnectionAsync();
+
+    var lengthBytes = new byte[4];
+    await ReadExactAsync(pipe, lengthBytes);
+    var length = BitConverter.ToInt32(lengthBytes);
+    if (length is <= 0 or > 1024 * 1024)
+        throw new InvalidDataException("fake sidecar received invalid frame");
+
+    await ReadExactAsync(pipe, new byte[length]);
+    if (pipeName.Contains("-protocol-", StringComparison.Ordinal))
+    {
+        await pipe.WriteAsync(BitConverter.GetBytes(0));
+        await pipe.FlushAsync();
+    }
+    else if (pipeName.Contains("-malformed-json-", StringComparison.Ordinal))
+    {
+        var malformedJson = System.Text.Encoding.UTF8.GetBytes("{ invalid");
+        await pipe.WriteAsync(BitConverter.GetBytes(malformedJson.Length));
+        await pipe.WriteAsync(malformedJson);
+        await pipe.FlushAsync();
+    }
+}
+
+static async Task ReadExactAsync(Stream stream, byte[] buffer)
+{
+    var offset = 0;
+    while (offset < buffer.Length)
+    {
+        var read = await stream.ReadAsync(buffer.AsMemory(offset));
+        if (read == 0)
+            throw new EndOfStreamException();
+        offset += read;
+    }
+}
+
+static async Task AssertSidecarChannelCloseClassificationAsync()
+{
+    var executablePath = Environment.ProcessPath
+        ?? throw new InvalidOperationException("test executable path unavailable");
+    if (string.Equals(Path.GetFileNameWithoutExtension(executablePath), "dotnet", StringComparison.OrdinalIgnoreCase))
+        executablePath = Path.ChangeExtension(System.Reflection.Assembly.GetExecutingAssembly().Location, ".exe");
+
+    string executableHash;
+    using (var executable = File.OpenRead(executablePath))
+        executableHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(executable));
+
+    static int ReserveLoopbackPort()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    }
+
+    static async Task<SidecarLifecycleException?> CaptureFailureAsync(
+        string executablePath,
+        string executableHash,
+        string scenario)
+    {
+        await using var supervisor = new WindowsSidecarSupervisor(
+            new SidecarBinaryOptions(
+                executablePath,
+                executableHash,
+                $"pps-sidecar-{scenario}-{Guid.NewGuid():N}",
+                ReserveLoopbackPort()),
+            new SyntheticResolver());
+        try
+        {
+            await supervisor.StartAsync();
+            return null;
+        }
+        catch (SidecarLifecycleException exception)
+        {
+            return exception;
+        }
+    }
+
+    var protocolFailure = await CaptureFailureAsync(executablePath, executableHash, "protocol");
+    var malformedJsonFailure = await CaptureFailureAsync(executablePath, executableHash, "malformed-json");
+    var disconnectedFailure = await CaptureFailureAsync(executablePath, executableHash, "disconnected");
+    Console.WriteLine(
+        $"Sidecar channel closure classifications: protocol={protocolFailure?.FailureKind.ToString() ?? "none"}"
+        + $" ({protocolFailure?.InnerException?.GetType().Name ?? "no cause"}),"
+        + $" malformed-json={malformedJsonFailure?.FailureKind.ToString() ?? "none"}"
+        + $" ({malformedJsonFailure?.InnerException?.GetType().Name ?? "no cause"}),"
+        + $" disconnected={disconnectedFailure?.FailureKind.ToString() ?? "none"}"
+        + $" ({disconnectedFailure?.InnerException?.GetType().Name ?? "no cause"}).");
+    Assert(
+        protocolFailure?.FailureKind == SidecarFailureKind.Protocol,
+        $"invalid sidecar response frames must remain Protocol after response channel closure; actual={protocolFailure?.FailureKind.ToString() ?? "none"}");
+    Assert(
+        malformedJsonFailure?.FailureKind == SidecarFailureKind.Protocol,
+        $"malformed JSON sidecar responses must remain Protocol after response channel closure; actual={malformedJsonFailure?.FailureKind.ToString() ?? "none"}");
+    Assert(
+        disconnectedFailure?.FailureKind == SidecarFailureKind.GatewayUnavailable,
+        $"ordinary response channel closure without a protocol cause must remain GatewayUnavailable; actual={disconnectedFailure?.FailureKind.ToString() ?? "none"}");
+}
+
+await AssertSidecarChannelCloseClassificationAsync();
+if (runOnlySidecarChannelCloseContract)
+    return;
+
 
 var root = Path.Combine(Path.GetTempPath(), "ProviderPriceSwitcher.Tests", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -253,6 +375,9 @@ try
     var repeatedOmpRequestCount = 0;
     var firstRepeatedOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     var releaseRepeatedOmpRequests = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var postSwitchOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var survivorOmpRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var survivorOmpRecoveryRequestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     async Task ServeResponsesAsync(System.Net.HttpListener listener, string expectedKey, string responseId, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -264,6 +389,12 @@ try
             Assert(context.Request.Headers["Authorization"] == $"Bearer {expectedKey}", "sidecar key/endpoint isolation failed");
             using var reader = new StreamReader(context.Request.InputStream);
             var requestBody = await reader.ReadToEndAsync(cancellationToken);
+            if (responseId == "resp_B" && requestBody.Contains("post-switch-omp", StringComparison.Ordinal))
+                postSwitchOmpRequestStarted.TrySetResult();
+            if (responseId == "resp_B" && requestBody.Contains("survivor-omp", StringComparison.Ordinal))
+                survivorOmpRequestStarted.TrySetResult();
+            if (responseId == "resp_B" && requestBody.Contains("survivor-after-recovery", StringComparison.Ordinal))
+                survivorOmpRecoveryRequestStarted.TrySetResult();
             Assert(requestBody.Contains("gpt-5.6-sol", StringComparison.Ordinal), "sidecar did not preserve ModelId");
             if (requestBody.Contains("matrix", StringComparison.Ordinal)) Assert(requestBody.Contains("function_call_output", StringComparison.Ordinal), "sidecar did not preserve tool result input");
             if (requestBody.Contains("in-flight", StringComparison.Ordinal))
@@ -296,11 +427,13 @@ try
     var upstreamTask = ServeResponsesAsync(upstream, "synthetic-sidecar-secret", "resp_A", upstreamCancellation.Token);
     var secondUpstreamTask = ServeResponsesAsync(secondUpstream, "synthetic-sidecar-secret-B", "resp_B", upstreamCancellation.Token);
     const int sidecarPort = ProviderPriceSwitcher.Application.OmpSidecarProvider.DefaultPort;
-    await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N"), sidecarPort), new SyntheticResolver()))
+    var sharedKeyStore = new WindowsInferenceApiKeyStore(root);
+    var resolver = new InferenceApiKeyResolverBridge(sharedKeyStore);
+    await using (var supervisor = new WindowsSidecarSupervisor(new SidecarBinaryOptions(sidecarPath, sidecarHash, "pps-sidecar-contract-" + Guid.NewGuid().ToString("N"), sidecarPort), resolver))
     {
         var emptyRouteSettings = new MemorySettingsRepository(new LocalAppSettings());
         var emptyRouteState = new ActiveRouteState();
-        var emptyRoute = new ApplyActiveRouteUseCase(emptyRouteSettings, supervisor, new SyntheticInferenceKeyStore(), emptyRouteState);
+        var emptyRoute = new ApplyActiveRouteUseCase(emptyRouteSettings, supervisor, sharedKeyStore, emptyRouteState);
         var emptyOutcome = await emptyRoute.RestoreAsync();
         Assert(emptyOutcome.Status == ApplyActiveRouteStatus.NoActiveRoute && supervisor.Status.IsReady, "empty active route must start the sidecar and expose its stable no-route response");
         var activeRouteSettings = new MemorySettingsRepository(new LocalAppSettings
@@ -317,8 +450,10 @@ try
                 }
             ]
         });
-        var activeRouteKeys = new SyntheticInferenceKeyStore();
-        activeRouteKeys.Save(new InferenceApiKeyRecord { ProviderId = "loopback", KeyHandle = "synthetic-handle", ApiKey = "synthetic-sidecar-secret", BoundGroup = "g" });
+        var activeRouteKeys = sharedKeyStore;
+        var activeRouteRecord = new InferenceApiKeyRecord { ProviderId = "loopback", KeyHandle = "synthetic-handle", ApiKey = "synthetic-sidecar-secret", BoundGroup = "g" };
+        activeRouteKeys.Save(activeRouteRecord);
+        resolver.Register(activeRouteRecord);
         var activeRouteState = new ActiveRouteState();
         var routeApply = new ApplyActiveRouteUseCase(activeRouteSettings, supervisor, activeRouteKeys, activeRouteState);
         var applied = await routeApply.ExecuteAsync(activeRouteSettings.Load(), "loopback");
@@ -327,6 +462,55 @@ try
         var disabledRestore = await routeApply.RestoreAsync();
         Assert(disabledRestore.Status == ApplyActiveRouteStatus.Cleared && disabledRestore.Settings.ActiveProviderId is null && activeRouteState.CurrentProviderId is null, "restart restore must clear a disabled persisted provider without fallback");
         await routeApply.ExecuteAsync(activeRouteSettings.Load() with { Sites = [activeRouteSettings.Load().Sites.Single() with { Enabled = true }] }, "loopback");
+        var workflowDataRoot = Path.Combine(root, "workflow-data");
+        var workflowSettingsRepository = new JsonSettingsRepository(workflowDataRoot);
+        var workflowSnapshots = new JsonPricingSnapshotRepository(workflowDataRoot);
+        var workflowSites = new[]
+        {
+            new SiteConfiguration
+            {
+                ProviderId = "loopback",
+                ConfigurationKey = "workflow-loopback",
+                BaseUrl = new Uri($"http://127.0.0.1:{upstreamPort}"),
+                SiteType = "workflow",
+                Model = "gpt-5.6-sol",
+                CurrentGroup = "g"
+            },
+            new SiteConfiguration
+            {
+                ProviderId = "loopback-B",
+                ConfigurationKey = "workflow-loopback-B",
+                BaseUrl = new Uri($"http://127.0.0.1:{secondUpstreamPort}"),
+                SiteType = "workflow",
+                Model = "gpt-5.6-sol",
+                CurrentGroup = "g"
+            }
+        };
+        var workflowSiteManagement = new SiteManagementUseCase(workflowSettingsRepository, workflowSnapshots);
+        await workflowSiteManagement.SaveSiteAsync(workflowSettingsRepository.Load(), workflowSites[0], null);
+        await workflowSiteManagement.SaveSiteAsync(workflowSettingsRepository.Load(), workflowSites[1], null);
+        var workflowKeys = sharedKeyStore;
+        var workflowBinding = new WindowsInferenceBindingStore(workflowSettingsRepository, workflowKeys, workflowDataRoot);
+        var workflowState = new ActiveRouteState();
+        var workflowRoute = new ApplyActiveRouteUseCase(workflowSettingsRepository, supervisor, workflowKeys, workflowState);
+        var workflowResolver = resolver;
+        var workflowKeyUseCase = new InferenceApiKeyUseCase(workflowKeys, workflowBinding, workflowState, supervisor, workflowResolver, workflowSettingsRepository);
+        workflowKeyUseCase.Save("loopback", "synthetic-sidecar-secret", "g");
+        workflowKeyUseCase.Save("loopback-B", "synthetic-sidecar-secret-B", "g");
+        var workflowPricing = new PricingCheckUseCase(
+            new PricingRefreshService(
+                new PricingAdapterRegistry([new WorkflowPricingAdapter()]),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<PricingRefreshService>.Instance),
+            workflowSettingsRepository,
+            workflowSnapshots);
+        var workflowPricingOutcome = await workflowPricing.ExecuteAsync(workflowSettingsRepository.Load(), null);
+        var recommendedProvider = workflowPricingOutcome.RefreshResult.Recommendation.Selected?.Site.ProviderId;
+        Assert(recommendedProvider == "loopback-B"
+            && workflowPricingOutcome.Settings.ActiveProviderId is null
+            && workflowPricingOutcome.Settings.Sites.All(site => site.GroupRatioSource == "自动"),
+            "isolated workflow must discover pricing and keep the recommendation pending before explicit route application");
+        var initialWorkflowRoute = await workflowRoute.ExecuteAsync(workflowPricingOutcome.Settings, "loopback");
+        Assert(initialWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowSettingsRepository.Load().ActiveProviderId == "loopback", "isolated workflow must explicitly apply the current provider before launching OMP instances");
         var ompAgentRoot = Path.Combine(root, "omp-agent");
         Directory.CreateDirectory(ompAgentRoot);
         await File.WriteAllTextAsync(Path.Combine(ompAgentRoot, "models.yml"), "providers:\n  provider-price-switcher:\n    baseUrl: http://127.0.0.1:15722/v1\n    apiKey: PPS_SIDECAR_PLACEHOLDER\n    api: openai-responses\n    authHeader: true\n    models:\n      - id: gpt-5.6-sol\n        name: GPT 5.6 Sol via ProviderPriceSwitcher\n        contextWindow: 400000\n        maxTokens: 128000\n");
@@ -335,27 +519,100 @@ try
         var secondOmpWorkingDirectory = Path.Combine(root, "omp-working-b");
         Directory.CreateDirectory(firstOmpWorkingDirectory);
         Directory.CreateDirectory(secondOmpWorkingDirectory);
-        System.Diagnostics.ProcessStartInfo CreateOmpStartInfo(string workingDirectory)
+        var ompExecutable = ResolveOmpExecutable();
+        static string ResolveOmpExecutable()
         {
-            var startInfo = new System.Diagnostics.ProcessStartInfo("D:\\.Pi Projects\\omp.exe")
+            var configured = Environment.GetEnvironmentVariable("PPS_OMP_EXECUTABLE");
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                var configuredPath = Path.GetFullPath(configured);
+                if (!File.Exists(configuredPath))
+                    throw new InvalidOperationException($"Configured OMP executable was not found: {configuredPath}");
+                return configuredPath;
+            }
+
+            for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+            {
+                var adjacentPath = Path.Combine(directory.FullName, "omp.exe");
+                if (File.Exists(adjacentPath))
+                    return adjacentPath;
+            }
+
+            foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var pathEntry = Path.Combine(directory, "omp.exe");
+                if (File.Exists(pathEntry))
+                    return pathEntry;
+            }
+
+            throw new InvalidOperationException("OMP executable was not found; set PPS_OMP_EXECUTABLE to an isolated OMP binary.");
+        }
+        System.Diagnostics.ProcessStartInfo CreateOmpStartInfo(string workingDirectory, string? prompt = "Return loopback-ok. repeat-launch", bool rpc = false)
+        {
+            var startInfo = new System.Diagnostics.ProcessStartInfo(ompExecutable)
             {
                 UseShellExecute = false,
+                RedirectStandardInput = prompt is null,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
                 WorkingDirectory = workingDirectory
             };
+            if (rpc)
+            {
+                startInfo.ArgumentList.Add("--mode");
+                startInfo.ArgumentList.Add("rpc");
+            }
             startInfo.ArgumentList.Add("--model");
             startInfo.ArgumentList.Add("provider-price-switcher/gpt-5.6-sol");
             startInfo.ArgumentList.Add("--no-tools");
             startInfo.ArgumentList.Add("--no-session");
-            startInfo.ArgumentList.Add("-p");
-            startInfo.ArgumentList.Add("Return loopback-ok. repeat-launch");
+            if (prompt is not null)
+            {
+                startInfo.ArgumentList.Add("-p");
+                startInfo.ArgumentList.Add(prompt);
+            }
             startInfo.Environment["PI_CODING_AGENT_DIR"] = ompAgentRoot;
             startInfo.Environment["PPS_SIDECAR_PLACEHOLDER"] = "not-a-secret";
             return startInfo;
         }
+        static async Task<Exception?> TryCleanupProcessAsync(System.Diagnostics.Process process)
+        {
+            List<Exception>? failures = null;
+            void Capture(Exception exception) => (failures ??= []).Add(exception);
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch (Exception exception)
+            {
+                Capture(exception);
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception exception)
+            {
+                Capture(exception);
+            }
+
+            try
+            {
+                process.Dispose();
+            }
+            catch (Exception exception)
+            {
+                Capture(exception);
+            }
+
+            return failures is null ? null : new AggregateException("OMP process cleanup failed.", failures);
+        }
         var repeatedOmpProcesses = new List<System.Diagnostics.Process>();
+        Exception? repeatedCleanupFailure = null;
         try
         {
             var firstOmp = System.Diagnostics.Process.Start(CreateOmpStartInfo(firstOmpWorkingDirectory))
@@ -385,20 +642,18 @@ try
         finally
         {
             releaseRepeatedOmpRequests.TrySetResult();
+            var cleanupFailures = new List<Exception>();
             foreach (var process in repeatedOmpProcesses)
             {
-                try
-                {
-                    if (!process.HasExited)
-                        process.Kill(entireProcessTree: true);
-                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-                }
-                finally
-                {
-                    process.Dispose();
-                }
+                var cleanupFailure = await TryCleanupProcessAsync(process);
+                if (cleanupFailure is not null)
+                    cleanupFailures.Add(cleanupFailure);
             }
+            if (cleanupFailures.Count > 0)
+                repeatedCleanupFailure = new AggregateException("One or more OMP processes could not be cleaned up.", cleanupFailures);
         }
+        if (repeatedCleanupFailure is not null)
+            throw repeatedCleanupFailure;
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         using var nonStream = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"tools\":[{\"type\":\"function\",\"name\":\"lookup\"}]}", System.Text.Encoding.UTF8, "application/json"));
         var nonStreamBody = await nonStream.Content.ReadAsStringAsync();
@@ -406,31 +661,117 @@ try
         using var stream = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"ok\"}],\"stream\":true}", System.Text.Encoding.UTF8, "application/json"));
         var streamBody = await stream.Content.ReadAsStringAsync();
         Assert(stream.IsSuccessStatusCode && stream.Content.Headers.ContentType?.MediaType == "text/event-stream" && streamBody.Contains("response.completed", StringComparison.Ordinal) && streamBody.Contains("response.function_call_arguments.delta", StringComparison.Ordinal), "sidecar SSE matrix failed");
-        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        var currentWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), "loopback");
+        Assert(currentWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback", "isolated workflow must confirm the current route before launching OMP instances");
         var inFlightTask = client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"in-flight\"}", System.Text.Encoding.UTF8, "application/json"));
         await inFlightStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
+        var recommendedWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), recommendedProvider!);
+        Assert(recommendedWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback-B", "isolated workflow must explicitly apply the selected recommendation before new OMP requests");
+        var postSwitchOmpProcess = System.Diagnostics.Process.Start(CreateOmpStartInfo(secondOmpWorkingDirectory, "Return loopback-ok. post-switch-omp"))
+            ?? throw new InvalidOperationException("Post-switch OMP process did not start.");
+        Exception? postSwitchCleanupFailure = null;
+        try
+        {
+            var postSwitchOutputTask = postSwitchOmpProcess.StandardOutput.ReadToEndAsync();
+            var postSwitchErrorTask = postSwitchOmpProcess.StandardError.ReadToEndAsync();
+            await postSwitchOmpRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            await postSwitchOmpProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var postSwitchOutput = await postSwitchOutputTask;
+            var postSwitchError = await postSwitchErrorTask;
+            Assert(postSwitchOmpProcess.ExitCode == 0,
+                $"A new OMP request after route switch must use the replacement route; exit={postSwitchOmpProcess.ExitCode}; stdout={postSwitchOutput}; stderr={postSwitchError}");
+        }
+        finally
+        {
+            postSwitchCleanupFailure = await TryCleanupProcessAsync(postSwitchOmpProcess);
+        }
+        if (postSwitchCleanupFailure is not null)
+            throw postSwitchCleanupFailure;
         using var postSwitch = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"new-route\"}", System.Text.Encoding.UTF8, "application/json"));
         releaseInFlight.TrySetResult();
         using var inFlight = await inFlightTask;
         Assert((await inFlight.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal) && (await postSwitch.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "in-flight request must retain its original route snapshot while new requests use the replacement route");
-        await supervisor.ApplyAsync(new RouteSnapshot("loopback-B", $"http://127.0.0.1:{secondUpstreamPort}", "synthetic-handle-B"));
+        var selectedWorkflowKeyHandle = workflowKeys.Load("loopback-B")!.KeyHandle;
+        await workflowKeyUseCase.DeleteAsync("loopback-B");
+        Assert(workflowSettingsRepository.Load().ActiveProviderId is null
+            && workflowKeys.Load("loopback-B") is null
+            && await workflowResolver.ResolveAsync(selectedWorkflowKeyHandle) is null
+            && workflowState.CurrentProviderId is null,
+            "deleting the selected inference key must clear the active route and remove the key without fallback");
+        using var keyDeletedNoRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-key-delete\"}", System.Text.Encoding.UTF8, "application/json"));
+        Assert(keyDeletedNoRoute.StatusCode == System.Net.HttpStatusCode.BadRequest
+            && (await keyDeletedNoRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal),
+            "key deletion must clear the real gateway route before rebind");
+        workflowKeyUseCase.Save("loopback-B", "synthetic-sidecar-secret-B", "g");
+        var restoredWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), "loopback-B");
+        Assert(restoredWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback-B", "isolated workflow must restore the selected route after key rebind");
         using var switched = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":[{\"type\":\"function_call_output\",\"call_id\":\"call_2\",\"output\":\"ok\"}]}", System.Text.Encoding.UTF8, "application/json"));
         Assert(switched.IsSuccessStatusCode && (await switched.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar route switch isolation failed");
-        await supervisor.StopAsync();
-        Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop must publish a stable stopped state");
-        await supervisor.StartAsync();
-        using var recoveredRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-recovery\"}", System.Text.Encoding.UTF8, "application/json"));
-        Assert(recoveredRoute.IsSuccessStatusCode && (await recoveredRoute.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar restart must restore the last confirmed route before accepting new OMP requests");
+        var survivorOmpProcess = System.Diagnostics.Process.Start(CreateOmpStartInfo(secondOmpWorkingDirectory, null, true))
+            ?? throw new InvalidOperationException("Survivor OMP process did not start.");
+        var survivorOmpOutputTask = survivorOmpProcess.StandardOutput.ReadToEndAsync();
+        var survivorOmpErrorTask = survivorOmpProcess.StandardError.ReadToEndAsync();
+        Exception? survivorCleanupFailure = null;
+        try
+        {
+            await Task.Delay(1000);
+            Assert(!survivorOmpProcess.HasExited, "an existing OMP process must remain alive before gateway shutdown");
+            await survivorOmpProcess.StandardInput.WriteLineAsync("{\"type\":\"prompt\",\"message\":\"survivor-omp\"}");
+            await survivorOmpProcess.StandardInput.FlushAsync();
+            await survivorOmpRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            Assert(!survivorOmpProcess.HasExited, "an existing OMP process must remain alive after its first request");
+            await supervisor.StopAsync();
+            Assert(!survivorOmpProcess.HasExited, "stopping the gateway must not terminate an existing OMP process");
+            await supervisor.StartAsync();
+            await survivorOmpProcess.StandardInput.WriteLineAsync("{\"type\":\"prompt\",\"message\":\"survivor-after-recovery\"}");
+            await survivorOmpProcess.StandardInput.FlushAsync();
+            await survivorOmpRecoveryRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            Assert(!survivorOmpProcess.HasExited, "an existing OMP process must issue a new request after gateway recovery");
+            using var recoveredRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-recovery\"}", System.Text.Encoding.UTF8, "application/json"));
+            Assert(recoveredRoute.IsSuccessStatusCode && (await recoveredRoute.Content.ReadAsStringAsync()).Contains("resp_B", StringComparison.Ordinal), "sidecar restart must restore the last confirmed route before accepting new OMP requests");
+        }
+        finally
+        {
+            var cleanupFailure = await TryCleanupProcessAsync(survivorOmpProcess);
+            Exception? outputFailure = null;
+            try
+            {
+                await Task.WhenAll(survivorOmpOutputTask, survivorOmpErrorTask).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception exception)
+            {
+                outputFailure = exception;
+            }
+            if (cleanupFailure is not null || outputFailure is not null)
+                survivorCleanupFailure = new AggregateException("Survivor OMP cleanup failed.", new[] { cleanupFailure, outputFailure }.OfType<Exception>());
+        }
+        if (survivorCleanupFailure is not null)
+            throw survivorCleanupFailure;
         await supervisor.ClearAsync();
         using var noRoute = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"matrix\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(noRoute.StatusCode == System.Net.HttpStatusCode.BadRequest && (await noRoute.Content.ReadAsStringAsync()).Contains(SidecarProtocol.NoActiveRouteCode, StringComparison.Ordinal), "sidecar no-route contract failed");
         await supervisor.StopAsync();
         Assert(supervisor.Status.Status == SidecarConnectionStatus.Stopped, "sidecar stop after clearing the route must publish a stable stopped state");
-        await supervisor.ApplyAsync(new RouteSnapshot("loopback", $"http://127.0.0.1:{upstreamPort}", "synthetic-handle"));
+        var finalWorkflowRoute = await workflowRoute.ExecuteAsync(workflowSettingsRepository.Load(), "loopback");
+        Assert(finalWorkflowRoute.Status == ApplyActiveRouteStatus.Applied && workflowState.CurrentProviderId == "loopback", "isolated workflow must apply a replacement route after the no-route check");
         using var afterRestart = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent("{\"model\":\"gpt-5.6-sol\",\"input\":\"after-restart\"}", System.Text.Encoding.UTF8, "application/json"));
         Assert(afterRestart.IsSuccessStatusCode && (await afterRestart.Content.ReadAsStringAsync()).Contains("resp_A", StringComparison.Ordinal), "sidecar restart must accept an explicitly confirmed replacement route");
     }
+    async Task AssertExecutableUnavailableAsync(string executablePath, string hash)
+    {
+        await using var supervisor = new WindowsSidecarSupervisor(
+            new SidecarBinaryOptions(executablePath, hash, "pps-sidecar-invalid-" + Guid.NewGuid().ToString("N")),
+            new SyntheticResolver());
+        Exception? failure = null;
+        try { await supervisor.StartAsync(); }
+        catch (Exception exception) { failure = exception; }
+        Assert(failure is SidecarLifecycleException lifecycle
+            && lifecycle.FailureKind == SidecarFailureKind.ExecutableUnavailable
+            && supervisor.Status.Status == SidecarConnectionStatus.Faulted,
+            "missing or invalid sidecar binaries must publish an explicit executable-unavailable failure");
+    }
+    await AssertExecutableUnavailableAsync(Path.Combine(root, "missing-sidecar.exe"), sidecarHash);
+    await AssertExecutableUnavailableAsync(sidecarPath, "invalid-sidecar-hash");
     using var conflictListener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
     conflictListener.Start();
     var conflictPort = ((System.Net.IPEndPoint)conflictListener.LocalEndpoint).Port;
@@ -441,7 +782,7 @@ try
         Exception? conflictError = null;
         try { await conflictSupervisor.StartAsync(); }
         catch (Exception exception) { conflictError = exception; }
-        Assert(conflictError is GatewayPortUnavailableException && !conflictSupervisor.Status.IsReady, "busy gateway port must fail with a structured port error without accepting an unknown listener");
+        Assert(conflictError is GatewayPortUnavailableException && conflictSupervisor.Status.Status == SidecarConnectionStatus.Faulted, "busy gateway port must fail with a structured port error and publish a visible fault without accepting an unknown listener");
         await conflictSupervisor.StopAsync();
     }
     conflictListener.Stop();
@@ -456,7 +797,25 @@ finally { Directory.Delete(root, true); }
 
 sealed class SyntheticResolver : IInferenceApiKeyResolver
 {
-    public ValueTask<string?> ResolveAsync(string keyHandle, CancellationToken cancellationToken = default) => ValueTask.FromResult<string?>(keyHandle switch { "synthetic-handle" => "synthetic-sidecar-secret", "synthetic-handle-B" => "synthetic-sidecar-secret-B", _ => null });
+    private readonly Dictionary<string, string> _secrets = new(StringComparer.Ordinal)
+    {
+        ["synthetic-handle"] = "synthetic-sidecar-secret",
+        ["synthetic-handle-B"] = "synthetic-sidecar-secret-B"
+    };
+
+    public void Register(InferenceApiKeyRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        lock (_secrets)
+            _secrets[record.KeyHandle] = record.ApiKey;
+    }
+
+    public ValueTask<string?> ResolveAsync(string keyHandle, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_secrets)
+            return ValueTask.FromResult(_secrets.GetValueOrDefault(keyHandle));
+    }
 }
 sealed class MemorySettingsRepository(LocalAppSettings value) : ISettingsRepository
 {
@@ -471,14 +830,50 @@ sealed class MemorySettingsRepository(LocalAppSettings value) : ISettingsReposit
         return updated;
     }
 }
-
-sealed class SyntheticInferenceKeyStore : IInferenceApiKeyStore
+sealed class MemorySnapshots : IPricingSnapshotRepository
 {
-    private readonly Dictionary<string, InferenceApiKeyRecord> _records = new(StringComparer.Ordinal);
-    public InferenceApiKeyRecord? Load(string providerId) => _records.GetValueOrDefault(providerId);
-    public void Save(InferenceApiKeyRecord record) => _records[record.ProviderId] = record;
-    public void Clear(string providerId) => _records.Remove(providerId);
-    public InferenceApiKeySummary? GetSummary(string providerId) => Load(providerId) is { } record
-        ? new InferenceApiKeySummary { ProviderId = record.ProviderId, KeyHandle = record.KeyHandle, BoundGroup = record.BoundGroup, MaskedKey = InferenceApiKeySummary.Mask(record.ApiKey), UpdatedAt = record.UpdatedAt }
-        : null;
+    private readonly Dictionary<string, PricingSnapshot> _snapshots = new(StringComparer.Ordinal);
+    public IReadOnlyDictionary<string, PricingSnapshot> LoadAll() => _snapshots;
+    public PricingSnapshot? Load(string providerId) => _snapshots.GetValueOrDefault(providerId);
+    public void SaveAll(IEnumerable<PricingSnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots)
+            _snapshots[snapshot.ProviderId] = snapshot;
+    }
+    public void Save(PricingSnapshot snapshot) => _snapshots[snapshot.ProviderId] = snapshot;
+    public void Delete(string providerId) => _snapshots.Remove(providerId);
+}
+
+sealed class WorkflowPricingAdapter : IPricingAdapter
+{
+    public PricingAdapterDescriptor Descriptor { get; } = new("workflow", "Loopback workflow", false, []);
+
+    public Task<SitePricingResult> FetchAsync(SiteConfiguration site, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var ratio = site.ProviderId == "loopback-B" ? 0.5m : 1m;
+        var prices = new TokenPrices { InputPerMillion = ratio, CachedInputPerMillion = ratio, OutputPerMillion = ratio };
+        var snapshot = new PricingSnapshot
+        {
+            ProviderId = site.ProviderId,
+            ConfigurationKey = site.ConfigurationKey,
+            Model = site.Model,
+            CurrentGroup = site.CurrentGroup,
+            BasePrices = new TokenPrices { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 },
+            CurrentGroupRatio = ratio,
+            Prices = prices,
+            MinimumGroup = site.CurrentGroup,
+            MinimumGroupRatio = ratio,
+            MinimumGroupPrices = prices,
+            RefreshedAt = DateTimeOffset.UtcNow
+        };
+        return Task.FromResult(new SitePricingResult
+        {
+            Snapshot = snapshot,
+            GroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { [site.CurrentGroup] = ratio },
+            MinimumValidGroup = site.CurrentGroup,
+            MinimumGroupRatio = ratio,
+            Warnings = []
+        });
+    }
 }

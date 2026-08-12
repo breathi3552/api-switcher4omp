@@ -32,6 +32,20 @@ public interface ISidecarLifecycle : IAsyncDisposable
     Task StopAsync(CancellationToken cancellationToken = default);
     SidecarStatus Status { get; }
 }
+public enum SidecarFailureKind
+{
+    GatewayUnavailable,
+    ExecutableUnavailable,
+    Protocol,
+    AccessDenied,
+    Unexpected
+}
+
+public class SidecarLifecycleException(SidecarFailureKind failureKind, Exception? innerException = null)
+    : Exception(failureKind.ToString(), innerException)
+{
+    public SidecarFailureKind FailureKind { get; } = failureKind;
+}
 
 public interface IInferenceApiKeyResolver
 {

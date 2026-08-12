@@ -17,10 +17,10 @@ using ProviderPriceSwitcher.Core;
 namespace ProviderPriceSwitcher.Infrastructure;
 
 public sealed record SidecarBinaryOptions(string ExecutablePath, string Sha256, string PipeName, int Port = OmpSidecarProvider.DefaultPort);
-public sealed class GatewayPortUnavailableException : IOException
+public sealed class GatewayPortUnavailableException : SidecarLifecycleException
 {
     public GatewayPortUnavailableException(int port, SocketException innerException)
-        : base($"Local gateway port {port} is unavailable.", innerException) => Port = port;
+        : base(SidecarFailureKind.GatewayUnavailable, innerException) => Port = port;
 
     public int Port { get; }
 }
@@ -103,6 +103,22 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
                 throw;
             }
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (SidecarLifecycleException)
+        {
+            if (Status.Status is not SidecarConnectionStatus.Faulted)
+                SetStatus(new(SidecarConnectionStatus.Faulted, "sidecar_start_failed"));
+            throw;
+        }
+        catch (Exception exception)
+        {
+            if (Status.Status is not SidecarConnectionStatus.Faulted)
+                SetStatus(new(SidecarConnectionStatus.Faulted, "sidecar_start_failed"));
+            throw new SidecarLifecycleException(ClassifyFailure(exception), exception);
+        }
         finally
         {
             _lifecycleGate.Release();
@@ -158,6 +174,14 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
                 catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
                     throw new TimeoutException("sidecar_command_timeout");
+                }
+                catch (ChannelClosedException exception)
+                {
+                    var cause = exception.InnerException;
+                    var failureKind = cause is InvalidDataException or JsonException
+                        ? SidecarFailureKind.Protocol
+                        : SidecarFailureKind.GatewayUnavailable;
+                    throw new SidecarLifecycleException(failureKind, cause ?? exception);
                 }
             }
             catch
@@ -275,7 +299,24 @@ public sealed class WindowsSidecarSupervisor : ISidecarLifecycle, IRouteControll
             throw new GatewayPortUnavailableException(port, exception);
         }
     }
-    private void ValidateBinary() { if (!File.Exists(_options.ExecutablePath)) throw new FileNotFoundException("sidecar_binary_missing", _options.ExecutablePath); using var sha = SHA256.Create(); using var stream = File.OpenRead(_options.ExecutablePath); var actual = Convert.ToHexString(sha.ComputeHash(stream)); if (!string.Equals(actual, _options.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("sidecar_binary_hash_mismatch"); }
+    private static SidecarFailureKind ClassifyFailure(Exception exception) => exception switch
+    {
+        TimeoutException => SidecarFailureKind.GatewayUnavailable,
+        InvalidDataException or InvalidOperationException => SidecarFailureKind.Protocol,
+        UnauthorizedAccessException => SidecarFailureKind.AccessDenied,
+        IOException => SidecarFailureKind.GatewayUnavailable,
+        _ => SidecarFailureKind.Unexpected
+    };
+    private void ValidateBinary()
+    {
+        if (!File.Exists(_options.ExecutablePath))
+            throw new SidecarLifecycleException(SidecarFailureKind.ExecutableUnavailable, new FileNotFoundException("sidecar_binary_missing", _options.ExecutablePath));
+        using var sha = SHA256.Create();
+        using var stream = File.OpenRead(_options.ExecutablePath);
+        var actual = Convert.ToHexString(sha.ComputeHash(stream));
+        if (!string.Equals(actual, _options.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new SidecarLifecycleException(SidecarFailureKind.ExecutableUnavailable, new InvalidDataException("sidecar_binary_hash_mismatch"));
+    }
     private static void ValidateRoute(RouteSnapshot route) { if (string.IsNullOrWhiteSpace(route.ProviderId) || !Uri.TryCreate(route.BaseUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(route.KeyHandle)) throw new ArgumentException("invalid_route"); }
     private static void EnsureOk(WireMessage reply) { if (!string.Equals(reply.Type, "ok", StringComparison.Ordinal)) throw new InvalidOperationException(reply.Type ?? "sidecar_request_failed"); }
     private sealed record WireMessage(string Type, string? ProviderId, string? BaseUrl, string? KeyHandle, string? ApiKey) { public string Version { get; init; } = SidecarProtocol.Version; }

@@ -1,4 +1,6 @@
 ﻿using ProviderPriceSwitcher.Infrastructure;
+using System.Runtime.Versioning;
+[assembly: SupportedOSPlatform("windows")]
 
 static void Assert(bool condition, string message)
 {
@@ -10,14 +12,35 @@ var root = Path.Combine(Path.GetTempPath(), "ProviderPriceSwitcher-OmpConfig-" +
 var dataRoot = Path.Combine(root, "data");
 var ompRoot = Path.Combine(root, "omp");
 var workingRoot = Path.Combine(root, "working");
-Directory.CreateDirectory(dataRoot);
-Directory.CreateDirectory(ompRoot);
-Directory.CreateDirectory(workingRoot);
-var sentinels = new[] { dataRoot, ompRoot, workingRoot }.Select(path => Path.Combine(path, ".sentinel")).ToArray();
-foreach (var sentinel in sentinels) File.WriteAllText(sentinel, runId);
-File.WriteAllText(Path.Combine(dataRoot, "settings.json"), $"{{\"OmpRootDirectory\":\"{ompRoot}\",\"OmpWorkingDirectories\":[\"{workingRoot}\"],\"LastOmpWorkingDirectory\":\"{workingRoot}\"}}");
-Directory.CreateDirectory(Path.Combine(ompRoot, "agent"));
-File.WriteAllText(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  existing:\r\n    baseUrl: https://example.test/v1\r\n");
+string[] sentinels = [];
+const string secretSentinel = "synthetic-config-secret-DO-NOT-LOG";
+const string cookieSentinel = "synthetic-config-cookie-DO-NOT-LOG";
+var credentialStore = new WindowsSiteCredentialStore(dataRoot);
+try
+{
+    Directory.CreateDirectory(dataRoot);
+    Directory.CreateDirectory(ompRoot);
+    Directory.CreateDirectory(workingRoot);
+    sentinels = new[] { dataRoot, ompRoot, workingRoot }.Select(path => Path.Combine(path, ".sentinel")).ToArray();
+    foreach (var sentinel in sentinels) File.WriteAllText(sentinel, runId);
+    File.WriteAllText(Path.Combine(dataRoot, "settings.json"), $"{{\"OmpRootDirectory\":\"{ompRoot}\",\"OmpWorkingDirectories\":[\"{workingRoot}\"],\"LastOmpWorkingDirectory\":\"{workingRoot}\"}}");
+    Directory.CreateDirectory(Path.Combine(ompRoot, "agent"));
+    File.WriteAllText(Path.Combine(ompRoot, "agent", "models.yml"), "providers:\r\n  existing:\r\n    baseUrl: https://example.test/v1\r\n");
+    credentialStore.SaveCredential(new ProviderPriceSwitcher.Core.SiteCredentialRecord
+    {
+        ProviderId = "new-provider",
+        SiteType = "new-api",
+        AuthorizationScheme = "Bearer",
+        AccessToken = secretSentinel,
+        CookieHeader = cookieSentinel
+    });
+}
+catch
+{
+    if (Directory.Exists(root))
+        Directory.Delete(root, true);
+    throw;
+}
 try
 {
     var yaml = "# keep this comment\r\nmodelRoles:\r\n  DEFAULT: old-provider/alpha/variant\r\n  fast: another-provider/beta@2024\r\n  indirect: '@smol'\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: old-provider/review\r\n    helper: '@role'\r\nunrelated: old-provider/untouched\r\n";
@@ -41,6 +64,15 @@ try
     Assert(result.BackupPath is not null && File.Exists(result.BackupPath), "backup missing");
     Assert(Path.GetFullPath(result.BackupPath!).StartsWith(Path.GetFullPath(ompRoot), StringComparison.Ordinal), "backup escaped omp root");
     var written = await File.ReadAllTextAsync(path);
+    var backupText = await File.ReadAllTextAsync(result.BackupPath!);
+    var settingsText = await File.ReadAllTextAsync(Path.Combine(dataRoot, "settings.json"));
+    Assert(!written.Contains(secretSentinel, StringComparison.Ordinal)
+        && !written.Contains(cookieSentinel, StringComparison.Ordinal)
+        && !backupText.Contains(secretSentinel, StringComparison.Ordinal)
+        && !backupText.Contains(cookieSentinel, StringComparison.Ordinal)
+        && !settingsText.Contains(secretSentinel, StringComparison.Ordinal)
+        && !settingsText.Contains(cookieSentinel, StringComparison.Ordinal),
+        "synthetic credentials must not enter OMP config, backups or settings");
     Assert(written == preview.NewText, "atomic result differs from preview");
     Assert(written.Contains("unrelated: old-provider/untouched", StringComparison.Ordinal), "unrelated field changed");
     var testPaths = new TestPaths(ompRoot);
