@@ -147,25 +147,44 @@ public sealed class OmpConfigurationAnalyzer
     }
     private static bool HasValidYamlSyntax(string text)
     {
-        foreach (var line in text.Split('\n'))
+        var syntaxLines = new List<string>();
+        var blockIndent = -1;
+        foreach (var rawLine in text.Split('\n'))
         {
-            var indentation = line.TakeWhile(ch => ch is ' ' or '\t');
-            if (indentation.Contains('\t'))
+            var line = rawLine.TrimEnd('\r');
+            var indent = line.TakeWhile(ch => ch == ' ').Count();
+            if (line.TakeWhile(ch => ch is ' ' or '\t').Contains('\t'))
                 return false;
+            var trimmed = line.Trim();
+            if (blockIndent >= 0 && (trimmed.Length == 0 || indent > blockIndent))
+            {
+                syntaxLines.Add(string.Empty);
+                continue;
+            }
+
+            blockIndent = -1;
+            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+            {
+                syntaxLines.Add(line);
+                continue;
+            }
+
+            var colon = FindUnquotedColon(trimmed);
+            if (colon < 0 && !trimmed.StartsWith('-') && !trimmed.StartsWith('[') && !trimmed.StartsWith('{'))
+                return false;
+
+            syntaxLines.Add(line);
+            if (colon >= 0 && trimmed[(colon + 1)..].TrimStart() is ['|' or '>', ..])
+                blockIndent = indent;
         }
+
         var flow = new Stack<char>();
         var quote = '\0';
         var escaped = false;
-        for (var index = 0; index < text.Length; index++)
+        foreach (var ch in string.Join('\n', syntaxLines))
         {
-            var ch = text[index];
             if (quote == '\'')
             {
-                if (ch == '\'' && index + 1 < text.Length && text[index + 1] == '\'')
-                {
-                    index++;
-                    continue;
-                }
                 if (ch == '\'')
                     quote = '\0';
                 continue;
@@ -193,13 +212,6 @@ public sealed class OmpConfigurationAnalyzer
                 quote = ch;
                 continue;
             }
-            if (ch == '#'
-                && (index == 0 || char.IsWhiteSpace(text[index - 1])))
-            {
-                while (index < text.Length && text[index] != '\n')
-                    index++;
-                continue;
-            }
             if (ch is '[' or '{')
             {
                 flow.Push(ch);
@@ -211,7 +223,33 @@ public sealed class OmpConfigurationAnalyzer
                     return false;
             }
         }
+
         return quote == '\0' && flow.Count == 0 && !escaped;
+    }
+
+    private static int FindUnquotedColon(string value)
+    {
+        var quote = '\0';
+        for (var index = 0; index < value.Length; index++)
+        {
+            var ch = value[index];
+            if (quote != '\0')
+            {
+                if (ch == quote)
+                    quote = '\0';
+                else if (quote == '"' && ch == '\\')
+                    index++;
+                continue;
+            }
+            if (ch is '\'' or '"')
+            {
+                quote = ch;
+                continue;
+            }
+            if (ch == ':')
+                return index;
+        }
+        return -1;
     }
 
     private static string BuildPath(IReadOnlyList<YamlKey> stack, string key)
