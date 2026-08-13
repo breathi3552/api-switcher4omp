@@ -109,6 +109,9 @@ try
     Assert(!malformedShapePreview.Succeeded && malformedShapePreview.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "invalid YAML mapping shape must return a structured error");
     Assert((await File.ReadAllTextAsync(configPath)).Contains("not-a-mapping", StringComparison.Ordinal), "invalid YAML mapping shape must not be rewritten");
 
+    await File.WriteAllTextAsync(configPath, "modelRoles:\r\n  default: old-provider/gpt-5\r\n  - invalid\r\n");
+    var malformedSequencePreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+    Assert(!malformedSequencePreview.Succeeded && malformedSequencePreview.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "invalid YAML sequence shape must return a structured error");
     await File.WriteAllTextAsync(configPath, "modelRoles:\r\n  default: old-provider/gpt-5\r\n  note: |\r\n    text containing [brackets]\r\n");
     var blockScalarPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
     Assert(blockScalarPreview.Succeeded, "valid YAML block scalar must remain analyzable");

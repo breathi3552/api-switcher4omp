@@ -149,6 +149,9 @@ public sealed class OmpConfigurationAnalyzer
     {
         var syntaxLines = new List<string>();
         var blockIndent = -1;
+        var previousIndent = -1;
+        var previousAllowsSequence = false;
+        var sequenceIndent = -1;
         foreach (var rawLine in text.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
@@ -169,6 +172,24 @@ public sealed class OmpConfigurationAnalyzer
                 continue;
             }
 
+            if (trimmed.StartsWith('-'))
+            {
+                if (sequenceIndent < 0)
+                {
+                    if (!previousAllowsSequence || indent <= previousIndent)
+                        return false;
+                    sequenceIndent = indent;
+                }
+                else if (indent != sequenceIndent)
+                {
+                    sequenceIndent = -1;
+                }
+            }
+            else if (sequenceIndent >= 0 && indent <= sequenceIndent)
+            {
+                sequenceIndent = -1;
+            }
+
             var colon = FindUnquotedColon(trimmed);
             if (colon < 0
                 && !trimmed.StartsWith('-')
@@ -179,6 +200,8 @@ public sealed class OmpConfigurationAnalyzer
                 return false;
 
             syntaxLines.Add(RemoveYamlComment(line));
+            previousIndent = indent;
+            previousAllowsSequence = colon >= 0 && string.IsNullOrWhiteSpace(trimmed[(colon + 1)..]);
             if (colon >= 0 && trimmed[(colon + 1)..].TrimStart() is ['|' or '>', ..])
                 blockIndent = indent;
         }
