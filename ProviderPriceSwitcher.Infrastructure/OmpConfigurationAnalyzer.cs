@@ -145,9 +145,14 @@ public sealed class OmpConfigurationAnalyzer
         model = value[(slash + 1)..];
         return true;
     }
-
     private static bool HasValidYamlSyntax(string text)
     {
+        foreach (var line in text.Split('\n'))
+        {
+            var indentation = line.TakeWhile(ch => ch is ' ' or '\t');
+            if (indentation.Contains('\t'))
+                return false;
+        }
         var flow = new Stack<char>();
         var quote = '\0';
         var escaped = false;
@@ -169,6 +174,8 @@ public sealed class OmpConfigurationAnalyzer
             {
                 if (escaped)
                 {
+                    if (!"0abtnvfre \"/\\N_LP_xXuU".Contains(ch, StringComparison.Ordinal))
+                        return false;
                     escaped = false;
                     continue;
                 }

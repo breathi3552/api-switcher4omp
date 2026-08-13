@@ -101,8 +101,8 @@ try
     var portResult = await useCase.ExecuteAsync(portSettings, portPreview);
     Assert(portResult.Succeeded && !portResult.ConfigurationChanged && portResult.ModelsChanged && (await File.ReadAllTextAsync(modelsPath)).Contains("baseUrl: http://127.0.0.1:17001/v1", StringComparison.Ordinal), "a local target port change must update models.yml even without route changes");
     Assert((await File.ReadAllTextAsync(modelsPath)) != modelsBeforeNoOp
-        && Directory.GetFiles(Path.GetDirectoryName(modelsPath)!, "models.yml.bak-*.yml").Length == backupsBeforeNoOp + 1,
-        "a managed Provider update must create one bounded backup");
+        && Directory.GetFiles(Path.GetDirectoryName(modelsPath)!, "models.yml.bak-*.yml").Length == backupsBeforeNoOp,
+        "a managed Provider update must not create a backup containing catalog credentials");
 
     await File.WriteAllTextAsync(configPath, "modelRoles:\r\n  default: old-provider/gpt-5\r\n  fast: [unterminated\r\n");
     var malformedPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);

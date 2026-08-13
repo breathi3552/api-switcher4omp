@@ -144,13 +144,11 @@ public sealed class OmpConfigurationService(
         var configPreview = switcher.Preview(config.Text, request.TargetProvider);
         if (!configPreview.IsValid || !Matches(preview, configPreview))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "配置预览已失效，请重新预览后重试。");
-        if (!preview.HasChanges)
-            return new(true, preview);
 
         ModelsFile? models = null;
         ModelsPlan? modelsPlan = null;
         var isLocalTarget = string.Equals(request.TargetProvider, OmpConfigurationReplacementTargets.LocalProviderId, StringComparison.Ordinal);
-        if (isLocalTarget && preview.ModelsChangeKind != OmpModelsProviderChangeKind.None)
+        if (isLocalTarget)
         {
             var modelsPath = pathDefaults.OmpModelsPath(request.OmpRootDirectory);
             try
@@ -175,6 +173,8 @@ public sealed class OmpConfigurationService(
                 return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
             }
         }
+        if (!preview.HasChanges)
+            return new(true, preview);
 
         string? modelsBackupPath = null;
         var modelsChanged = false;
@@ -183,7 +183,23 @@ public sealed class OmpConfigurationService(
         {
             if (modelsPlan is not null && modelsPlan.ChangeKind != OmpModelsProviderChangeKind.None)
             {
-                var modelsWrite = await WriteModelsAsync(modelsPlan, cancellationToken).ConfigureAwait(false);
+                ModelsWriteResult modelsWrite;
+                try
+                {
+                    modelsWrite = await WriteModelsAsync(modelsPlan, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (IOException)
+                {
+                    return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
+                }
                 if (!modelsWrite.Succeeded)
                 {
                     if (modelsWrite.IsStale)
@@ -319,14 +335,12 @@ public sealed class OmpConfigurationService(
             ? encoding.GetPreamble()
             : Array.Empty<byte>();
         var output = preamble.Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
-        var backupPath = plan.Exists ? OmpConfigurationSwitcher.CreateBackupPath(plan.Path) : null;
+        string? backupPath = null;
         var tempPath = Path.Combine(directory, "." + Path.GetFileName(plan.Path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
         Exception? retentionException = null;
         var succeeded = false;
         try
         {
-            if (backupPath is not null)
-                File.Copy(plan.Path, backupPath, overwrite: false);
             await WriteBytesAtomicallyAsync(tempPath, plan.Path, output, cancellationToken).ConfigureAwait(false);
             succeeded = true;
         }
@@ -443,7 +457,7 @@ public sealed class OmpConfigurationService(
             if (trailingNewline && lines.Count > 0 && lines[^1].Length == 0)
                 lines.RemoveAt(lines.Count - 1);
 
-            var providersIndex = lines.FindIndex(line => Indent(line) == 0 && line.Trim() == "providers:");
+            var providersIndex = lines.FindIndex(line => Indent(line) == 0 && ProviderKey(line) == "providers");
             var providerIndent = 2;
             if (providersIndex >= 0)
             {
@@ -530,20 +544,31 @@ public sealed class OmpConfigurationService(
         {
             var trimmed = line.Trim();
             var comment = trimmed.IndexOf(" #", StringComparison.Ordinal);
-            return (comment >= 0 ? trimmed[..comment] : trimmed).Trim().TrimEnd(':').TrimEnd();
+            var key = (comment >= 0 ? trimmed[..comment] : trimmed).Trim().TrimEnd(':').TrimEnd();
+            return key.Length >= 2 && ((key[0] == '\'' && key[^1] == '\'') || (key[0] == '"' && key[^1] == '"'))
+                ? key[1..^1]
+                : key;
         }
 
         private static string BuildProviderBlock(int gatewayPort, string newline, int providerIndent)
         {
-            var prefix = new string(' ', Math.Max(0, providerIndent - 2));
+            var lines = LocalProviderTemplate
+                .Replace("{0}", gatewayPort.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n');
+            var templateIndent = lines.First(line => line.Length != 0).TakeWhile(ch => ch is ' ' or '\t').Count();
+            var delta = providerIndent - templateIndent;
             return string.Join(
                 newline,
-                LocalProviderTemplate
-                    .Replace("{0}", gatewayPort.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                    .Replace("\r\n", "\n", StringComparison.Ordinal)
-                    .Split('\n')
-                    .Select(line => line.Length == 0 ? line : prefix + line)
-                    .ToArray())
+                lines.Select(line =>
+                {
+                    if (line.Length == 0)
+                        return line;
+                    var leading = line.TakeWhile(ch => ch is ' ' or '\t').Count();
+                    return delta >= 0
+                        ? new string(' ', delta) + line
+                        : line[Math.Min(-delta, leading)..];
+                }))
                 .TrimEnd('\r', '\n');
         }
     }

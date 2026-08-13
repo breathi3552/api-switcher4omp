@@ -78,30 +78,14 @@ public sealed class SevnXPricingAdapter : IPricingAdapter
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            var detail = AuthenticationFailureDetail(body);
+            var detail = AuthenticationFailureDetail();
             throw new PricingAdapterException(PricingAdapterFailure.Authentication, $"SevnX 认证失败（{detail}）。请在浏览器确认价格接口返回 200 后，重新导入该请求使用的最新访问令牌。");
         }
         response.EnsureSuccessStatusCode();
         return await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
-    private static string AuthenticationFailureDetail(string body)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            var code = OptionalString(document.RootElement, "code");
-            var message = OptionalString(document.RootElement, "message");
-            if (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(message)) return $"{code}: {message}";
-            if (!string.IsNullOrWhiteSpace(code)) return code;
-            if (!string.IsNullOrWhiteSpace(message)) return message;
-        }
-        catch (JsonException)
-        {
-        }
-        return "HTTP 401";
-    }
+    private static string AuthenticationFailureDetail() => "HTTP 401";
 
     private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {

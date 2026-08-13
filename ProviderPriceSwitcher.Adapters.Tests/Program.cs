@@ -158,7 +158,7 @@ using (var unauthorizedClient = new HttpClient(subUnauthorized))
     catch (PricingAdapterException exception)
     {
         Assert(exception.Failure == PricingAdapterFailure.Authentication, "SevnX unauthorized failure kind mismatch");
-        Assert(exception.Message.Contains("INVALID_TOKEN: Invalid token", StringComparison.Ordinal), "SevnX unauthorized message mismatch");
+        Assert(exception.Message.Contains("HTTP 401", StringComparison.Ordinal), "SevnX unauthorized message mismatch");
     }
 }
 

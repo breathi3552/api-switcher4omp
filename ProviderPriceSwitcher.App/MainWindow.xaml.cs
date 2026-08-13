@@ -389,18 +389,35 @@ public sealed class MainViewModel : ObservableObject
     private async Task CheckAsync()
     {
         if (_checkCancellation is not null) return;
-        _checkCancellation = new CancellationTokenSource(); CheckCommand.RaiseCanExecuteChanged(); CancelCommand.RaiseCanExecuteChanged(); StatusText = "正在检查已启用站点的价格…";
+        using var checkCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellationToken);
+        _checkCancellation = checkCancellation;
+        CheckCommand.RaiseCanExecuteChanged();
+        CancelCommand.RaiseCanExecuteChanged();
+        StatusText = "正在检查已启用站点的价格…";
         try
         {
-            var outcome = await _pricingCheck.ExecuteAsync(_settings, _activeRoute.CurrentProviderId, _checkCancellation.Token);
+            var outcome = await _pricingCheck.ExecuteAsync(_settings, _activeRoute.CurrentProviderId, checkCancellation.Token);
             _settings = outcome.Settings;
             _lastResult = outcome.RefreshResult;
             MapResult(_lastResult, LocalAppSettings.DefaultUsageProfile);
-            LastCheckedText = _lastResult.CompletedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture); StatusText = "检查完成。";
+            LastCheckedText = _lastResult.CompletedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            StatusText = "检查完成。";
         }
-        catch (OperationCanceledException) { StatusText = "已取消检查。"; }
-        catch (Exception) { throw; }
-        finally { _checkCancellation.Dispose(); _checkCancellation = null; CheckCommand.RaiseCanExecuteChanged(); CancelCommand.RaiseCanExecuteChanged(); ApplyRouteCommand.RaiseCanExecuteChanged(); }
+        catch (OperationCanceledException)
+        {
+            StatusText = "已取消检查。";
+        }
+        catch (Exception)
+        {
+            throw;
+        }
+        finally
+        {
+            _checkCancellation = null;
+            CheckCommand.RaiseCanExecuteChanged();
+            CancelCommand.RaiseCanExecuteChanged();
+            ApplyRouteCommand.RaiseCanExecuteChanged();
+        }
     }
 
     private void MapResult(PricingRefreshResult result, UsageProfile usage)
