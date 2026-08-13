@@ -337,7 +337,6 @@ public sealed class OmpConfigurationService(
         var output = preamble.Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
         string? backupPath = null;
         var tempPath = Path.Combine(directory, "." + Path.GetFileName(plan.Path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
-        Exception? retentionException = null;
         var succeeded = false;
         try
         {
@@ -352,18 +351,7 @@ public sealed class OmpConfigurationService(
         {
             TryDelete(tempPath);
         }
-        finally
-        {
-            try
-            {
-                OmpConfigurationSwitcher.PruneBackups(directory, Path.GetFileName(plan.Path));
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                retentionException = exception;
-            }
-        }
-        return new(succeeded, backupPath, retentionException is null);
+        return new(succeeded, backupPath, true);
     }
 
     private static async Task WriteBytesAtomicallyAsync(
