@@ -165,15 +165,20 @@ public sealed class OmpConfigurationAnalyzer
             blockIndent = -1;
             if (trimmed.Length == 0 || trimmed.StartsWith('#'))
             {
-                syntaxLines.Add(line);
+                syntaxLines.Add(string.Empty);
                 continue;
             }
 
             var colon = FindUnquotedColon(trimmed);
-            if (colon < 0 && !trimmed.StartsWith('-') && !trimmed.StartsWith('[') && !trimmed.StartsWith('{'))
+            if (colon < 0
+                && !trimmed.StartsWith('-')
+                && !trimmed.StartsWith('[')
+                && !trimmed.StartsWith('{')
+                && !trimmed.StartsWith('?')
+                && trimmed is not "..." and not "---")
                 return false;
 
-            syntaxLines.Add(line);
+            syntaxLines.Add(RemoveYamlComment(line));
             if (colon >= 0 && trimmed[(colon + 1)..].TrimStart() is ['|' or '>', ..])
                 blockIndent = indent;
         }
@@ -250,6 +255,30 @@ public sealed class OmpConfigurationAnalyzer
                 return index;
         }
         return -1;
+    }
+    private static string RemoveYamlComment(string line)
+    {
+        var quote = '\0';
+        for (var index = 0; index < line.Length; index++)
+        {
+            var ch = line[index];
+            if (quote != '\0')
+            {
+                if (ch == quote)
+                    quote = '\0';
+                else if (quote == '"' && ch == '\\')
+                    index++;
+                continue;
+            }
+            if (ch is '\'' or '"')
+            {
+                quote = ch;
+                continue;
+            }
+            if (ch == '#' && (index == 0 || char.IsWhiteSpace(line[index - 1])))
+                return line[..index];
+        }
+        return line;
     }
 
     private static string BuildPath(IReadOnlyList<YamlKey> stack, string key)
