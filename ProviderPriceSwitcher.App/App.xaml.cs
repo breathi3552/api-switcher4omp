@@ -60,10 +60,9 @@ public partial class App : System.Windows.Application
             inferenceBindingStore.Recover();
             settings = startupSettings = settingsRepository.Load();
             var startupCancellation = _applicationCancellation?.Token ?? CancellationToken.None;
-            var ompTakeover = new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults());
+            var ompConfiguration = new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults());
             var ompStartup = new OmpStartupUseCase(
                 settingsRepository,
-                ompTakeover,
                 _loggerFactory.CreateLogger<OmpStartupUseCase>());
             var activeRoute = new ActiveRouteState();
             _activeRoute = activeRoute;
@@ -95,8 +94,6 @@ public partial class App : System.Windows.Application
                 await ShutdownAsync(-1);
                 return;
             }
-            if (!startupOutcome.BackupRetentionSucceeded)
-                _notifications.ShowWarning(UserErrorMessages.OmpBackupRetentionFailed, "ProviderPriceSwitcher");
             settings = startupSettings = startupOutcome.Settings;
             var inferenceKeyUseCase = new InferenceApiKeyUseCase(inferenceKeyStore, inferenceBindingStore, activeRoute, _sidecar, resolver, settingsRepository);
             LogApplicationStarted(_loggerFactory.CreateLogger<App>(), null);
@@ -113,12 +110,12 @@ public partial class App : System.Windows.Application
             var settingsUseCase = _settingsUseCase!;
             var ompLaunch = new OmpLaunchUseCase(
                 settingsRepository,
-                ompTakeover,
                 new OmpProcessLauncher(new OmpProcessService(), new AppPathDefaults()),
                 _loggerFactory.CreateLogger<OmpLaunchUseCase>());
+            var ompReplacement = new OmpConfigurationReplacementUseCase(ompConfiguration);
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
-            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), _sidecar, startupCancellation);
+            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), _sidecar, ompReplacement, startupCancellation);
             var mainWindow = new MainWindow(viewModel);
             MainWindow = mainWindow;
             _trayController = new TrayApplicationController(mainWindow, viewModel, new WindowsTrayHost(), _notifications, RequestShutdown);

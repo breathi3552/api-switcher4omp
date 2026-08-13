@@ -90,7 +90,7 @@ public sealed class WindowsSiteCredentialStore : ISiteAccessCredentialStore
 
     private static byte[] Entropy(string providerId) => Encoding.UTF8.GetBytes(Purpose + ":" + providerId);
     private static string Mask(string secret) =>
-        secret.Length > 8 ? $"{secret[..4]}********{secret[^4..]}" : "********";
+        secret.Length >= 12 ? $"{secret[..4]}********{secret[^4..]}" : "********";
 
     private static string? MaskNullable(string? secret) =>
         string.IsNullOrEmpty(secret) ? null : Mask(secret);

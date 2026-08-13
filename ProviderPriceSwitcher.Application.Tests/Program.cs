@@ -68,67 +68,12 @@ var startupStore = new MemorySettings();
 var startupSettings = new LocalAppSettings { OmpRootDirectory = "root", GatewayPort = 17001, CurrentGatewayPort = 15722 };
 startupStore.Save(startupSettings);
 startupStore.SaveCount = 0;
-var startupTakeover = new FakeTakeover { Status = OmpTakeoverStatus.TakenOver, CurrentGatewayPort = 15722 };
-var startupUseCase = new OmpStartupUseCase(startupStore, startupTakeover, NullLogger<OmpStartupUseCase>.Instance);
+var startupUseCase = new OmpStartupUseCase(startupStore, NullLogger<OmpStartupUseCase>.Instance);
 var migratedStartup = await startupUseCase.InitializeAsync(startupSettings);
 Assert(migratedStartup.Status == OmpStartupStatus.Ready
     && migratedStartup.Settings.CurrentGatewayPort == 17001
-    && startupTakeover.LastPort == 17001
     && startupStore.SaveCount == 1,
-    "Startup must migrate a taken-over OMP configuration to the saved target port and persist the observed port.");
-var observedStore = new MemorySettings();
-observedStore.Save(startupSettings);
-observedStore.SaveCount = 0;
-var observedTakeover = new FakeTakeover { Status = OmpTakeoverStatus.TakenOver, CurrentGatewayPort = 17001 };
-var observedStartup = await new OmpStartupUseCase(observedStore, observedTakeover, NullLogger<OmpStartupUseCase>.Instance)
-    .InitializeAsync(startupSettings);
-Assert(observedStartup.Status == OmpStartupStatus.Ready
-    && observedStartup.Settings.CurrentGatewayPort == 17001
-    && observedTakeover.TakeoverCalls == 0
-    && observedStore.SaveCount == 1,
-    "Startup must persist a newly observed taken-over port without rewriting OMP configuration.");
-
-var untakenStore = new MemorySettings();
-untakenStore.Save(startupSettings);
-untakenStore.SaveCount = 0;
-var untakenStartup = await new OmpStartupUseCase(
-        untakenStore,
-        new FakeTakeover { Status = OmpTakeoverStatus.NotTakenOver },
-        NullLogger<OmpStartupUseCase>.Instance)
-    .InitializeAsync(startupSettings);
-Assert(untakenStartup.Status == OmpStartupStatus.Ready
-    && untakenStartup.Settings.CurrentGatewayPort == 17001
-    && untakenStore.SaveCount == 1,
-    "Startup must align the effective port with the saved target while OMP is not taken over.");
-
-var readFailureStore = new MemorySettings();
-readFailureStore.Save(startupSettings);
-readFailureStore.SaveCount = 0;
-var readFailureStartup = await new OmpStartupUseCase(
-        readFailureStore,
-        new FakeTakeover { Status = OmpTakeoverStatus.ReadFailed },
-        NullLogger<OmpStartupUseCase>.Instance)
-    .InitializeAsync(startupSettings);
-Assert(readFailureStartup.Status == OmpStartupStatus.TakeoverReadFailed && readFailureStore.SaveCount == 0, "Startup must stop without persisting settings when takeover status cannot be read.");
-
-var migrationFailureStore = new MemorySettings();
-migrationFailureStore.Save(startupSettings);
-migrationFailureStore.SaveCount = 0;
-var migrationFailureStartup = await new OmpStartupUseCase(
-        migrationFailureStore,
-        new FakeTakeover
-        {
-            Status = OmpTakeoverStatus.TakenOver,
-            CurrentGatewayPort = 15722,
-            TakeoverResult = new(false, OmpTakeoverFailureKind.Configuration, BackupRetentionSucceeded: false)
-        },
-        NullLogger<OmpStartupUseCase>.Instance)
-    .InitializeAsync(startupSettings);
-Assert(migrationFailureStartup.Status == OmpStartupStatus.PortMigrationFailed
-    && migrationFailureStartup.TakeoverFailureKind == OmpTakeoverFailureKind.Configuration
-    && !migrationFailureStartup.BackupRetentionSucceeded
-    && migrationFailureStore.SaveCount == 0,
-    "Startup must preserve structured port migration failure and avoid settings persistence.");
+    "Startup must align the saved gateway port without reading or rewriting OMP YAML.");
 
 var startupSaveFailureStore = new MemorySettings();
 startupSaveFailureStore.Save(startupSettings);
@@ -136,15 +81,13 @@ startupSaveFailureStore.SaveCount = 0;
 startupSaveFailureStore.ThrowOnSave = true;
 var startupSaveFailure = await new OmpStartupUseCase(
         startupSaveFailureStore,
-        new FakeTakeover { Status = OmpTakeoverStatus.NotTakenOver },
         NullLogger<OmpStartupUseCase>.Instance)
     .InitializeAsync(startupSettings);
 Assert(startupSaveFailure.Status == OmpStartupStatus.SettingsPersistenceFailed && startupSaveFailureStore.SaveCount == 0, "Startup settings persistence failure must be returned as structured state.");
 
 settingsRepo.SaveCount = 0;
-var takeover = new FakeTakeover { Status = OmpTakeoverStatus.TakenOver };
 var launcher = new FakeLauncher(new OmpLaunchResult(true));
-var launchUseCase = new OmpLaunchUseCase(settingsRepo, takeover, launcher, NullLogger<OmpLaunchUseCase>.Instance);
+var launchUseCase = new OmpLaunchUseCase(settingsRepo, launcher, NullLogger<OmpLaunchUseCase>.Instance);
 var launchSettings = new LocalAppSettings { OmpRootDirectory = "root", OmpWorkingDirectories = ["C:\\One"] };
 using var launchCancellation = new CancellationTokenSource();
 var started = await launchUseCase.LaunchAsync(launchSettings, "C:\\Two", launchCancellation.Token);
@@ -154,18 +97,12 @@ Assert(started.Status == OmpLaunchStatus.Started
     && launcher.LastRequest == new OmpLaunchRequest("C:\\Two", "root")
     && launcher.LastCancellationToken == launchCancellation.Token
     && started.Settings.LastOmpWorkingDirectory == "C:\\Two",
-    "Launch must pass the managed OMP root and cancellation token to every process attempt.");
+    "Start OMP must launch without checking takeover state and pass the cancellation token.");
 
-takeover.Status = OmpTakeoverStatus.NotTakenOver;
 settingsRepo.SaveCount = 0;
 launcher.Calls = 0;
-var takeoverRequired = await launchUseCase.LaunchAsync(launchSettings, "C:\\Two");
-Assert(takeoverRequired.Status == OmpLaunchStatus.TakeoverRequired && settingsRepo.SaveCount == 0 && launcher.Calls == 0, "launch must not bypass OMP takeover");
-
-takeover.Status = OmpTakeoverStatus.TakenOver;
-launcher.Result = new OmpLaunchResult(true);
 var secondLaunch = await launchUseCase.LaunchAsync(launchSettings, "C:\\Three");
-Assert(secondLaunch.Succeeded && launcher.Calls == 1, "every launch request must create a new OMP attempt");
+Assert(secondLaunch.Succeeded && launcher.Calls == 1, "every launch request must create a new OMP attempt without configuration side effects");
 launcher.Result = new OmpLaunchResult(false, OmpProcessFailureKind.AccessDenied);
 launcher.Calls = 0;
 var deniedLaunch = await launchUseCase.LaunchAsync(launchSettings, "C:\\Denied");
@@ -173,17 +110,8 @@ Assert(deniedLaunch.Status == OmpLaunchStatus.LaunchFailed
     && deniedLaunch.ProcessFailureKind == OmpProcessFailureKind.AccessDenied
     && launcher.Calls == 1,
     "Application launch outcome must preserve the process failure kind.");
-launcher.Result = new OmpLaunchResult(true);
-
-takeover.TakeoverResult = new OmpTakeoverOperationResult(false);
-launcher.Calls = 0;
-var failedTakeover = await launchUseCase.TakeOverAndLaunchAsync(launchSettings, "C:\\Four", 15722);
-Assert(failedTakeover.Status == OmpLaunchStatus.TakeoverFailed && launcher.Calls == 0, "failed takeover must not launch OMP");
-
-takeover.TakeoverResult = new OmpTakeoverOperationResult(true);
-var takeoverLaunch = await launchUseCase.TakeOverAndLaunchAsync(launchSettings, "C:\\Five", 15722);
-Assert(takeoverLaunch.Succeeded && takeover.LastPort == 15722 && launcher.Calls == 1, "takeover and launch must be one explicit workflow");
 Console.WriteLine("Application contract tests passed.");
+
 
 var keyStore = new MemoryInferenceKeyStore();
 var keySettings = new MemorySettings();
@@ -204,7 +132,6 @@ var routeController = new FakeRouteController();
 var launchRouteState = new ActiveRouteState();
 launchRouteState.Apply(new RouteSnapshot("p", "https://example.test", "active-handle"));
 var routeBeforeLaunch = launchRouteState.Current;
-takeover.Status = OmpTakeoverStatus.TakenOver;
 launcher.Result = new OmpLaunchResult(true);
 launcher.Calls = 0;
 var independentLaunch = await launchUseCase.LaunchAsync(launchSettings, "C:\\Six");
@@ -472,22 +399,6 @@ sealed class MemorySnapshots : IPricingSnapshotRepository
     public void SaveAll(IEnumerable<PricingSnapshot> snapshots) { _values.Clear(); foreach (var snapshot in snapshots) _values[snapshot.ProviderId] = snapshot; }
     public void Save(PricingSnapshot snapshot) => _values[snapshot.ProviderId] = snapshot;
     public void Delete(string providerId) => _values.Remove(providerId);
-}
-sealed class FakeTakeover : IOmpTakeoverService
-{
-    public OmpTakeoverStatus Status { get; set; } = OmpTakeoverStatus.TakenOver;
-    public OmpTakeoverOperationResult TakeoverResult { get; set; } = new(true);
-    public int? CurrentGatewayPort { get; set; }
-    public int TakeoverCalls { get; private set; }
-    public int LastPort { get; private set; }
-    public Task<OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new OmpTakeoverCheckResult(Status, CurrentGatewayPort: CurrentGatewayPort));
-    public Task<OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default)
-    {
-        TakeoverCalls++;
-        LastPort = gatewayPort;
-        return Task.FromResult(TakeoverResult);
-    }
 }
 sealed class FakeLauncher(OmpLaunchResult result) : IOmpProcessLauncher
 {

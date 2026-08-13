@@ -1,7 +1,7 @@
 ﻿using System.Collections.ObjectModel;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-
 namespace ProviderPriceSwitcher.Infrastructure;
 
 public sealed record OmpConfigurationChange(
@@ -40,10 +40,19 @@ public sealed class OmpConfigurationPreview
     public IReadOnlyList<OmpConfigurationChange> Items => Changes;
     public string? Error { get; }
     public bool IsValid => Error is null;
-    public bool CanApply => IsValid;
+    public bool CanApply => IsValid && Changes.Count != 0;
     public string? CurrentProvider => Analysis.CurrentProvider;
     public int AffectedCount => Changes.Count;
-    public string NewText => IsValid ? OmpConfigurationSwitcher.ApplyChanges(SourceText, Analysis.ModelReferences, TargetProvider) : SourceText;
+    public string NewText => IsValid
+        ? OmpConfigurationSwitcher.ApplyChanges(
+            SourceText,
+            Analysis.ModelReferences.Where(reference => IsEligible(reference, TargetProvider)).ToArray(),
+            TargetProvider)
+        : SourceText;
+
+    internal static bool IsEligible(OmpModelReference reference, string targetProvider) =>
+        reference.Model.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(reference.Provider, targetProvider, StringComparison.Ordinal);
 }
 
 public sealed class OmpConfigurationSwitchResult
@@ -77,10 +86,12 @@ public sealed class OmpConfigurationSwitchResult
     public string? Error => Exception?.Message ?? Preview.Error;
 }
 
-/// <summary>Creates previews and safely applies OMP provider changes.</summary>
+/// <summary>Creates previews and safely applies GPT-only OMP provider changes.</summary>
+internal sealed class OmpConfigurationStaleException : IOException
+{
+}
 public sealed class OmpConfigurationSwitcher
 {
-    internal const string BootstrapConfiguration = "modelRoles:\n  default: bootstrap/gpt-5.6-sol\n";
     private static readonly Regex SafeProviderId = new("^[A-Za-z0-9][A-Za-z0-9._-]*$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private readonly OmpConfigurationAnalyzer _analyzer;
 
@@ -97,6 +108,8 @@ public sealed class OmpConfigurationSwitcher
         string? error = null;
         if (!SafeProviderId.IsMatch(targetProvider))
             error = "Target provider must be a non-empty safe provider ID.";
+        else if (!analysis.HasValidYamlSyntax)
+            error = "OMP config.yml contains invalid YAML syntax.";
         else if (!analysis.HasValidDefault)
             error = "modelRoles.default must contain a direct provider/model reference.";
         else if (!analysis.HasValidReferences)
@@ -104,6 +117,7 @@ public sealed class OmpConfigurationSwitcher
 
         var changes = error is null
             ? analysis.ModelReferences
+                .Where(reference => OmpConfigurationPreview.IsEligible(reference, targetProvider))
                 .Select(reference => new OmpConfigurationChange(
                     reference.ConfigurationPath,
                     reference.Key,
@@ -118,7 +132,13 @@ public sealed class OmpConfigurationSwitcher
 
     public OmpConfigurationPreview PreviewText(string text, string targetProvider) => Preview(text, targetProvider);
 
-    public async Task<OmpConfigurationSwitchResult> SwitchFileAsync(string path, string targetProvider, CancellationToken cancellationToken = default)
+    public Task<OmpConfigurationSwitchResult> SwitchFileAsync(string path, string targetProvider, CancellationToken cancellationToken = default) =>
+        SwitchFileAsync(path, targetProvider, expectedVersion: null, cancellationToken);
+    public async Task<OmpConfigurationSwitchResult> SwitchFileAsync(
+        string path,
+        string targetProvider,
+        string? expectedVersion,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         cancellationToken.ThrowIfCancellationRequested();
@@ -130,10 +150,23 @@ public sealed class OmpConfigurationSwitcher
             encoding = DetectEncoding(bytes, out preambleLength);
         var text = exists
             ? encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength)
-            : BootstrapConfiguration;
+            : string.Empty;
         var preview = Preview(text, targetProvider);
+        if (expectedVersion is not null && (!exists || !string.Equals(Hash(bytes), expectedVersion, StringComparison.Ordinal)))
+            return new OmpConfigurationSwitchResult(false, path, null, preview, new OmpConfigurationStaleException());
+        if (!exists)
+        {
+            preview = new OmpConfigurationPreview(
+                text,
+                targetProvider,
+                preview.Analysis,
+                preview.Changes,
+                "OMP 主 config.yml 不存在。");
+        }
         if (!preview.IsValid)
             return new OmpConfigurationSwitchResult(false, path, null, preview, null);
+        if (preview.Changes.Count == 0)
+            return new OmpConfigurationSwitchResult(true, path, null, preview, null);
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
         Directory.CreateDirectory(directory);
@@ -144,7 +177,6 @@ public sealed class OmpConfigurationSwitcher
         OmpConfigurationSwitchResult result;
         try
         {
-            // The backup is a complete copy made before touching the source.
             if (backupPath is not null)
                 File.Copy(path, backupPath, overwrite: false);
             cancellationToken.ThrowIfCancellationRequested();
@@ -156,10 +188,21 @@ public sealed class OmpConfigurationSwitcher
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            if (expectedVersion is not null)
+            {
+                var currentBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(Hash(currentBytes), expectedVersion, StringComparison.Ordinal))
+                    throw new OmpConfigurationStaleException();
+            }
             File.Move(tempPath, path, overwrite: true);
             result = new OmpConfigurationSwitchResult(true, path, backupPath, preview, null);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            TryDelete(tempPath);
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             TryDelete(tempPath);
             result = new OmpConfigurationSwitchResult(false, path, backupPath, preview, exception);
@@ -191,7 +234,8 @@ public sealed class OmpConfigurationSwitcher
                 backupRetentionException);
     }
 
-    public Task<OmpConfigurationSwitchResult> SwitchAsync(string path, string targetProvider, CancellationToken cancellationToken = default) => SwitchFileAsync(path, targetProvider, cancellationToken);
+    public Task<OmpConfigurationSwitchResult> SwitchAsync(string path, string targetProvider, CancellationToken cancellationToken = default) =>
+        SwitchFileAsync(path, targetProvider, cancellationToken);
 
     internal static string ApplyChanges(string source, IReadOnlyList<OmpModelReference> references, string targetProvider)
     {
@@ -205,6 +249,7 @@ public sealed class OmpConfigurationSwitcher
                 .Insert(replacement.ValueStart, replacement.Value);
         return builder.ToString();
     }
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
     internal static string CreateBackupPath(string path)
     {
@@ -230,7 +275,7 @@ public sealed class OmpConfigurationSwitcher
             File.Delete(old);
     }
 
-    private static UTF8Encoding DetectEncoding(byte[] bytes, out int preambleLength)
+    internal static UTF8Encoding DetectEncoding(byte[] bytes, out int preambleLength)
     {
         if (bytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
         {

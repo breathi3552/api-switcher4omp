@@ -98,11 +98,10 @@ catch (OperationCanceledException)
 }
 Assert(canceledRecoveryAttempts == 0, "canceled gateway recovery must not start another attempt");
 Assert(UserErrorMessages.ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus.Started).Contains("活动供应商未改变", StringComparison.Ordinal), "launch status mapping mismatch");
-var warningOutcome = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
-    ProviderPriceSwitcher.Application.OmpLaunchStatus.Started,
-    new ProviderPriceSwitcher.Application.LocalAppSettings(),
-    BackupRetentionSucceeded: false);
-Assert(UserErrorMessages.ForOmpLaunchStatus(warningOutcome).Contains("备份保留失败", StringComparison.Ordinal), "backup retention warning mapping mismatch");
+var launchFailureMapping = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
+    ProviderPriceSwitcher.Application.OmpLaunchStatus.SettingsPersistenceFailed,
+    new ProviderPriceSwitcher.Application.LocalAppSettings());
+Assert(UserErrorMessages.ForOmpLaunchStatus(launchFailureMapping).Contains("无法保存工作目录", StringComparison.Ordinal), "launch persistence failure mapping mismatch");
 var probeAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
 var registry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
     new FakeAdapter(new("one", "One", false, ["无"])),
@@ -132,7 +131,7 @@ var windowThread = new Thread(() =>
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
         var settings = settingsRepository.Load();
-        settings = settings with { GatewayPort = 16222, CurrentGatewayPort = 15722 };
+        settings = settings with { GatewayPort = 16222, CurrentGatewayPort = 15722, OmpRootDirectory = root };
         settings = settings with
         {
             OmpWorkingDirectories = [root, Path.Combine(root, "other-working")],
@@ -150,6 +149,9 @@ var windowThread = new Thread(() =>
             ]
         };
         settingsRepository.Save(settings);
+        Directory.CreateDirectory(Path.Combine(root, "agent"));
+        File.WriteAllText(Path.Combine(root, "agent", "config.yml"), "modelRoles:\r\n  default: another-provider/gpt-5\r\n  deepseek: deepseek/deepseek-chat\r\n");
+        File.WriteAllText(Path.Combine(root, "agent", "models.yml"), "providers:\r\n  existing:\r\n    baseUrl: https://existing.example/v1\r\n");
         var credentialStore = new FakeCredentialStore();
         var notifications = new FakeNotifications();
         var sidecarStatus = new FakeSidecarStatus();
@@ -163,46 +165,78 @@ var windowThread = new Thread(() =>
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
         var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original, fakeInferenceKeys));
-        var fakeTakeover = new FakeTakeover();
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
             settingsRepository,
-            fakeTakeover,
             fakeOmpLauncher,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.OmpLaunchUseCase>.Instance);
         var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, notifications));
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance, sidecarStatus: sidecarStatus);
+        var ompReplacement = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementUseCase(
+            new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(
+                new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(),
+                new ProviderPriceSwitcher.Infrastructure.AppPathDefaults()));
+        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance, sidecarStatus: sidecarStatus, ompReplacement: ompReplacement);
         var window = new MainWindow(viewModel);
         window.Show();
-        WaitFor(() => viewModel.TakeoverStatus != "检查中");
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
         var activeBeforeLaunch = activeRoute.Current;
-        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver;
-        notifications.ConfirmResult = false;
-        viewModel.StartOmpCommand.Execute(null);
-        WaitFor(() => viewModel.StatusText == "已取消启动。");
-        Assert(fakeOmpLauncher.Calls == 0 && activeRoute.Current == activeBeforeLaunch, "cancelled first takeover must not launch or change the active route");
-        notifications.ConfirmResult = true;
         viewModel.StartOmpCommand.Execute(null);
         WaitFor(() => viewModel.StatusText.Contains("活动供应商未改变", StringComparison.Ordinal));
-        Assert(fakeTakeover.TakeoverCalls == 1 && fakeTakeover.LastPort == 15722 && fakeOmpLauncher.Calls == 1 && fakeOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(root, "other-working") && !viewModel.IsStartingOmp && viewModel.TakeoverStatus == "OMP 已接管" && activeRoute.Current == activeBeforeLaunch, "takeover and launch must preserve the active supplier, selected working directory, current port, and independent start busy state");
+        Assert(fakeOmpLauncher.Calls == 1
+            && fakeOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(root, "other-working")
+            && !viewModel.IsStartingOmp
+            && activeRoute.Current == activeBeforeLaunch,
+            "Start OMP must remain independent from configuration replacement and preserve the active supplier.");
 
         Assert(viewModel.OmpWorkingDirectoryChoices.SequenceEqual([root, Path.Combine(root, "other-working")])
             && viewModel.SelectedOmpWorkingDirectory == Path.Combine(root, "other-working")
             && window.FindName("OmpWorkingDirectoryBox") is System.Windows.Controls.ComboBox
+            && window.FindName("OmpConfigurationTargetBox") is System.Windows.Controls.ComboBox
+            && window.FindName("OmpConfigurationStatusDot") is System.Windows.Shapes.Ellipse statusDot
             && window.FindName("GatewayStatusDot") is System.Windows.Shapes.Ellipse gatewayDot
-            && window.FindName("TakeoverStatusDot") is System.Windows.Shapes.Ellipse
             && window.FindName("RouteStatusDot") is System.Windows.Shapes.Ellipse routeDot
+            && Equals(statusDot.Fill, System.Windows.Media.Brushes.DarkOrange)
             && Equals(gatewayDot.Fill, System.Windows.Media.Brushes.SeaGreen)
             && Equals(routeDot.Fill, System.Windows.Media.Brushes.SeaGreen)
             && viewModel.ActiveRouteStatusText == "活动路由已应用",
-            "main page must expose the selected OMP working directory and distinct gateway/route/takeover status points");
+            "main page must expose the independent OMP replacement target and distinct lifecycle status points");
+
+        var configBeforeCancel = File.ReadAllText(Path.Combine(root, "agent", "config.yml"));
+        var modelsBeforeCancel = File.ReadAllText(Path.Combine(root, "agent", "models.yml"));
+        notifications.ConfirmResult = false;
+        viewModel.SelectedOmpConfigurationTarget = viewModel.OmpConfigurationTargetChoices.First(choice => choice.ProviderId == "provider-price-switcher");
+        viewModel.ReplaceOmpGptProviderCommand.Execute(null);
+        WaitFor(() => viewModel.StatusText.Contains("已取消 OMP 配置替换", StringComparison.Ordinal));
+        Assert(File.ReadAllText(Path.Combine(root, "agent", "config.yml")) == configBeforeCancel
+            && File.ReadAllText(Path.Combine(root, "agent", "models.yml")) == modelsBeforeCancel
+            && activeRoute.Current == activeBeforeLaunch
+            && fakeOmpLauncher.Calls == 1,
+            "cancelling the OMP preview must not write files, change routes or launch OMP");
+
+        notifications.ConfirmResult = true;
+        viewModel.ReplaceOmpGptProviderCommand.Execute(null);
+        WaitFor(() => viewModel.StatusText.Contains("手动重启", StringComparison.Ordinal));
+        Assert(viewModel.StatusText.Contains("手动重启", StringComparison.Ordinal)
+            && viewModel.OmpConfigurationStatus == "配置已替换"
+            && activeRoute.Current == activeBeforeLaunch
+            && fakeOmpLauncher.Calls == 1
+            && notifications.LastConfirmMessage?.Contains("another-provider -> provider-price-switcher", StringComparison.Ordinal) == true,
+            "confirmed replacement must show a preview, write OMP files and preserve process/active-route state");
+
+        var modelsAfterLocal = File.ReadAllText(Path.Combine(root, "agent", "models.yml"));
+        viewModel.SelectedOmpConfigurationTarget = viewModel.OmpConfigurationTargetChoices.First(choice => choice.ProviderId == "openai-codex");
+        viewModel.ReplaceOmpGptProviderCommand.Execute(null);
+        WaitFor(() => viewModel.StatusText.Contains("手动重启", StringComparison.Ordinal));
+        Assert(File.ReadAllText(Path.Combine(root, "agent", "models.yml")) == modelsAfterLocal
+            && activeRoute.Current == activeBeforeLaunch
+            && fakeOmpLauncher.Calls == 1,
+            "official OAuth replacement must not touch models.yml or independent runtime state");
+
         using var realTray = new WindowsTrayHost();
         realTray.Update(new TrayStatus("网关运行中", "活动路由已应用"));
         sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
         WaitFor(() => Equals(viewModel.GatewayStatusBrush, System.Windows.Media.Brushes.IndianRed));
-        Assert(Equals(((System.Windows.Shapes.Ellipse)window.FindName("GatewayStatusDot")).Fill, System.Windows.Media.Brushes.IndianRed), "gateway status dot must follow the sidecar lifecycle status instead of only validating the configured port");
-        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
+        Assert(Equals(((System.Windows.Shapes.Ellipse)window.FindName("GatewayStatusDot")).Fill, System.Windows.Media.Brushes.IndianRed), "gateway status dot must follow the sidecar lifecycle status");
         viewModel.SelectedProvider = new ProviderChoice("healthy");
         routeController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         viewModel.ApplyRouteCommand.Execute(null);
@@ -482,19 +516,13 @@ var windowThread = new Thread(() =>
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
-        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.NotTakenOver;
-        fakeTakeover.CurrentProviderId = ProviderPriceSwitcher.Application.OmpSidecarProvider.Id;
         var statusViewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
         statusViewModel.InitializeAsync().GetAwaiter().GetResult();
         var statusWindow = new MainWindow(statusViewModel);
         statusWindow.Show();
         statusWindow.UpdateLayout();
-        var statusDot = (System.Windows.Shapes.Ellipse)statusWindow.FindName("TakeoverStatusDot");
-        Assert(statusViewModel.TakeoverStatus == "OMP 已接管" && Equals(statusDot.Fill, System.Windows.Media.Brushes.SeaGreen), "homepage takeover status point must compare only the default ProviderId and expose the taken-over color");
-        var takeoverCallsBeforePartialDriftLaunch = fakeTakeover.TakeoverCalls;
-        statusViewModel.StartOmpCommand.Execute(null);
-        WaitFor(() => fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1);
-        Assert(fakeTakeover.TakeoverCalls == takeoverCallsBeforePartialDriftLaunch + 1, "partial-drift default status point must not bypass the launch-time takeover confirmation");
+        var statusDot2 = (System.Windows.Shapes.Ellipse)statusWindow.FindName("OmpConfigurationStatusDot");
+        Assert(statusViewModel.OmpConfigurationStatus == "可手动替换" && Equals(statusDot2.Fill, System.Windows.Media.Brushes.DarkOrange), "homepage must expose an independent OMP configuration status");
         statusWindow.Close();
         var trayHost = new FakeTrayHost();
         var trayExitRequested = false;
@@ -516,7 +544,6 @@ var windowThread = new Thread(() =>
         trayHost.Raise(TrayCommand.OpenWindow);
         Assert(window.IsVisible, "tray open command must restore the main window");
         var launchesBeforeTrayStart = fakeOmpLauncher.Calls;
-        fakeTakeover.Status = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
         trayHost.Raise(TrayCommand.StartOmp);
         WaitFor(() => fakeOmpLauncher.Calls == launchesBeforeTrayStart + 1);
         Assert(trayHost.Commands.SequenceEqual([TrayCommand.OpenWindow, TrayCommand.StartOmp]), "tray must expose open and start commands without a provider-switch command");
@@ -703,21 +730,6 @@ sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteContr
     {
         ClearCount++;
         return Task.CompletedTask;
-    }
-}
-sealed class FakeTakeover : ProviderPriceSwitcher.Application.IOmpTakeoverService
-{
-    public ProviderPriceSwitcher.Application.OmpTakeoverStatus Status { get; set; } = ProviderPriceSwitcher.Application.OmpTakeoverStatus.TakenOver;
-    public string? CurrentProviderId { get; set; }
-    public int TakeoverCalls { get; private set; }
-    public int LastPort { get; private set; }
-    public Task<ProviderPriceSwitcher.Application.OmpTakeoverCheckResult> CheckAsync(string ompRootDirectory, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverCheckResult(Status, CurrentProviderId));
-    public Task<ProviderPriceSwitcher.Application.OmpTakeoverOperationResult> TakeOverAsync(string ompRootDirectory, int gatewayPort, CancellationToken cancellationToken = default)
-    {
-        TakeoverCalls++;
-        LastPort = gatewayPort;
-        return Task.FromResult(new ProviderPriceSwitcher.Application.OmpTakeoverOperationResult(true));
     }
 }
 

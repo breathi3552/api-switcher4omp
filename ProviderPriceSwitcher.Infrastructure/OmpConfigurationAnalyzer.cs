@@ -26,11 +26,13 @@ public sealed class OmpConfigurationAnalysis
     public OmpConfigurationAnalysis(
         string text,
         OmpModelReference? defaultReference,
-        IReadOnlyList<OmpModelReference> modelReferences)
+        IReadOnlyList<OmpModelReference> modelReferences,
+        bool hasValidYamlSyntax = true)
     {
         Text = text;
         DefaultReference = defaultReference;
         ModelReferences = modelReferences;
+        HasValidYamlSyntax = hasValidYamlSyntax;
     }
 
     public string Text { get; }
@@ -38,9 +40,10 @@ public sealed class OmpConfigurationAnalysis
     public string? CurrentProvider => DefaultReference?.Provider;
     public IReadOnlyList<OmpModelReference> ModelReferences { get; }
     public IReadOnlyList<OmpModelReference> References => ModelReferences;
+    public bool HasValidYamlSyntax { get; }
     public bool HasValidDefault => DefaultReference is not null;
     public bool HasValidReferences => ModelReferences.Count != 0;
-    public bool IsValid => HasValidDefault && HasValidReferences;
+    public bool IsValid => HasValidYamlSyntax && HasValidDefault && HasValidReferences;
 }
 
 /// <summary>
@@ -59,7 +62,7 @@ public sealed class OmpConfigurationAnalyzer
         OmpModelReference? defaultReference = null;
         var stack = new List<YamlKey>();
         var offset = 0;
-
+        var hasValidYamlSyntax = HasValidYamlSyntax(yamlText);
         foreach (var line in EnumerateLines(yamlText))
         {
             var parsed = ParseKey(line.Content, offset);
@@ -119,7 +122,8 @@ public sealed class OmpConfigurationAnalyzer
         return new OmpConfigurationAnalysis(
             yamlText,
             defaultReference,
-            new ReadOnlyCollection<OmpModelReference>(refs));
+            new ReadOnlyCollection<OmpModelReference>(refs),
+            hasValidYamlSyntax);
     }
 
     public OmpConfigurationAnalysis AnalyzeText(string yamlText) => Analyze(yamlText);
@@ -140,6 +144,67 @@ public sealed class OmpConfigurationAnalyzer
         provider = value[..slash];
         model = value[(slash + 1)..];
         return true;
+    }
+
+    private static bool HasValidYamlSyntax(string text)
+    {
+        var flow = new Stack<char>();
+        var quote = '\0';
+        var escaped = false;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var ch = text[index];
+            if (quote == '\'')
+            {
+                if (ch == '\'' && index + 1 < text.Length && text[index + 1] == '\'')
+                {
+                    index++;
+                    continue;
+                }
+                if (ch == '\'')
+                    quote = '\0';
+                continue;
+            }
+            if (quote == '"')
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+                if (ch == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+                if (ch == '"')
+                    quote = '\0';
+                continue;
+            }
+            if (ch is '\'' or '"')
+            {
+                quote = ch;
+                continue;
+            }
+            if (ch == '#'
+                && (index == 0 || char.IsWhiteSpace(text[index - 1])))
+            {
+                while (index < text.Length && text[index] != '\n')
+                    index++;
+                continue;
+            }
+            if (ch is '[' or '{')
+            {
+                flow.Push(ch);
+                continue;
+            }
+            if (ch is ']' or '}')
+            {
+                if (flow.Count == 0 || (ch == ']' && flow.Pop() != '[') || (ch == '}' && flow.Pop() != '{'))
+                    return false;
+            }
+        }
+        return quote == '\0' && flow.Count == 0 && !escaped;
     }
 
     private static string BuildPath(IReadOnlyList<YamlKey> stack, string key)

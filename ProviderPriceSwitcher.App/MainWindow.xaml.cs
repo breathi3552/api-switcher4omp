@@ -76,13 +76,13 @@ public partial class MainWindow : Window
 
 public sealed class MainViewModel : ObservableObject
 {
-    private enum TakeoverDisplayState { Checking, TakenOver, NotTakenOver, Unavailable }
     private readonly IPricingSnapshotQuery _snapshotQuery;
     private readonly IActiveRouteController _activeRoute;
     private readonly PricingCheckUseCase _pricingCheck;
     private readonly SettingsUseCase _settingsUseCase;
     private readonly ApplyActiveRouteUseCase _applyActiveRoute;
     private readonly OmpLaunchUseCase _ompLaunch;
+    private readonly OmpConfigurationReplacementUseCase? _ompReplacement;
     private readonly IUserNotificationService _notifications;
     private readonly ISitesDialogFactory _sitesDialogFactory;
     private readonly ILogger<MainViewModel> _logger;
@@ -97,11 +97,12 @@ public sealed class MainViewModel : ObservableObject
     private string _currentProvider = "未应用";
     private string _recommendedProvider = "等待检查";
     private string _lastCheckedText = "尚未检查";
-    private string _takeoverStatus = "检查中";
-    private TakeoverDisplayState _takeoverDisplayState = TakeoverDisplayState.Checking;
+    private string _ompConfigurationStatus = "可手动替换";
+    private OmpConfigurationTargetChoice? _selectedOmpConfigurationTarget;
     private ProviderChoice? _selectedProvider;
     private bool _isApplyingRoute;
     private bool _isStartingOmp;
+    private bool _isReplacingOmpGptProvider;
     private string? _selectedOmpWorkingDirectory;
     private PricingRefreshResult? _lastResult;
     public MainViewModel(
@@ -116,12 +117,14 @@ public sealed class MainViewModel : ObservableObject
         IUserNotificationService notifications,
         ILogger<MainViewModel> logger,
         ISidecarStatus? sidecarStatus = null,
+        OmpConfigurationReplacementUseCase? ompReplacement = null,
         CancellationToken lifetimeCancellationToken = default)
     {
         _pricingCheck = pricingCheck;
         _settingsUseCase = settingsUseCase;
         _applyActiveRoute = applyActiveRoute;
         _ompLaunch = ompLaunch;
+        _ompReplacement = ompReplacement;
         _activeRoute = activeRoute;
         _snapshotQuery = snapshotQuery;
         _settings = settings;
@@ -138,19 +141,25 @@ public sealed class MainViewModel : ObservableObject
         CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
         CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
         ApplyRouteCommand = new AsyncCommand(ApplyRouteAsync, HandleCommandError, () => SelectedProvider is not null);
+        ReplaceOmpGptProviderCommand = new AsyncCommand(ReplaceOmpGptProviderAsync, HandleCommandError, () => _ompReplacement is not null && SelectedOmpConfigurationTarget is not null);
         StartOmpCommand = new AsyncCommand(StartOmpAsync, HandleCommandError);
         ManageSitesCommand = new RelayCommand(ManageSites);
         SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
+        foreach (var providerId in OmpConfigurationReplacementTargets.All)
+            OmpConfigurationTargetChoices.Add(new OmpConfigurationTargetChoice(providerId));
+        SelectedOmpConfigurationTarget = OmpConfigurationTargetChoices.FirstOrDefault();
         LoadWorkingDirectories(settings);
     }
 
     public ObservableCollection<PriceRow> Rows { get; } = [];
     public ObservableCollection<ProviderChoice> ProviderChoices { get; } = [];
+    public ObservableCollection<OmpConfigurationTargetChoice> OmpConfigurationTargetChoices { get; } = [];
     public ObservableCollection<string> OmpWorkingDirectoryChoices { get; } = [];
     public AsyncCommand InitializeCommand { get; }
     public AsyncCommand CheckCommand { get; }
     public RelayCommand CancelCommand { get; }
     public AsyncCommand ApplyRouteCommand { get; }
+    public AsyncCommand ReplaceOmpGptProviderCommand { get; }
     public AsyncCommand StartOmpCommand { get; }
     public RelayCommand ManageSitesCommand { get; }
     public AsyncCommand SettingsCommand { get; }
@@ -158,7 +167,13 @@ public sealed class MainViewModel : ObservableObject
     public string CurrentProvider { get => _currentProvider; private set => SetProperty(ref _currentProvider, value); }
     public string RecommendedProvider { get => _recommendedProvider; private set => SetProperty(ref _recommendedProvider, value); }
     public string LastCheckedText { get => _lastCheckedText; private set => SetProperty(ref _lastCheckedText, value); }
-    public string TakeoverStatus { get => _takeoverStatus; private set => SetProperty(ref _takeoverStatus, value); }
+    public string OmpConfigurationStatus { get => _ompConfigurationStatus; private set => SetProperty(ref _ompConfigurationStatus, value); }
+    public Brush OmpConfigurationStatusBrush => OmpConfigurationStatus switch
+    {
+        "配置已替换" => Brushes.SeaGreen,
+        "配置替换失败" => Brushes.IndianRed,
+        _ => Brushes.DarkOrange
+    };
     public string GatewayPortStatus => _settings.GatewayPort == _settings.CurrentGatewayPort
         ? $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}"
         : $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}；下次启动：{_settings.GatewayPort}";
@@ -195,23 +210,28 @@ public sealed class MainViewModel : ObservableObject
         SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => Brushes.IndianRed,
         _ => Brushes.Gray
     };
-    public Brush TakeoverStatusBrush => _takeoverDisplayState switch
+    public OmpConfigurationTargetChoice? SelectedOmpConfigurationTarget
     {
-        TakeoverDisplayState.TakenOver => Brushes.SeaGreen,
-        TakeoverDisplayState.NotTakenOver => Brushes.DarkOrange,
-        _ => Brushes.Gray
-    };
+        get => _selectedOmpConfigurationTarget;
+        set
+        {
+            if (SetProperty(ref _selectedOmpConfigurationTarget, value))
+                ReplaceOmpGptProviderCommand.RaiseCanExecuteChanged();
+        }
+    }
     public ProviderChoice? SelectedProvider { get => _selectedProvider; set { if (SetProperty(ref _selectedProvider, value)) { OnPropertyChanged(nameof(SelectionHint)); ApplyRouteCommand.RaiseCanExecuteChanged(); } } }
     public string? SelectedOmpWorkingDirectory { get => _selectedOmpWorkingDirectory; set => SetProperty(ref _selectedOmpWorkingDirectory, value); }
     public bool IsApplyingRoute { get => _isApplyingRoute; private set { if (SetProperty(ref _isApplyingRoute, value)) OnPropertyChanged(nameof(ApplyRouteButtonText)); } }
     public bool IsStartingOmp { get => _isStartingOmp; private set { if (SetProperty(ref _isStartingOmp, value)) OnPropertyChanged(nameof(StartOmpButtonText)); } }
+    public bool IsReplacingOmpGptProvider { get => _isReplacingOmpGptProvider; private set { if (SetProperty(ref _isReplacingOmpGptProvider, value)) OnPropertyChanged(nameof(ReplaceOmpGptProviderButtonText)); } }
     public string ApplyRouteButtonText => IsApplyingRoute ? "应用中…" : "应用供应商";
+    public string ReplaceOmpGptProviderButtonText => IsReplacingOmpGptProvider ? "替换中…" : "替换 OMP GPT";
     public string StartOmpButtonText => IsStartingOmp ? "启动中…" : "启动 OMP";
     public static string SelectionHint => "仅当前绑定分组可应用；最低价分组只读比较。";
 
     public async Task InitializeAsync()
     {
-        var restored = await _applyActiveRoute.RestoreAsync();
+        var restored = await _applyActiveRoute.RestoreAsync(_lifetimeCancellationToken);
         _settings = restored.Settings with { CurrentGatewayPort = _settings.CurrentGatewayPort };
         LoadWorkingDirectories(_settings);
         OnPropertyChanged(nameof(GatewayPortStatus));
@@ -220,7 +240,6 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ActiveRouteStatusText));
         OnPropertyChanged(nameof(ActiveRouteStatusBrush));
         CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-        await RefreshTakeoverStatusAsync(_lifetimeCancellationToken);
         LoadPersistedPrices();
         if (!restored.Succeeded)
             StatusText = UserErrorMessages.ForApplyRouteStatus(restored.Status);
@@ -277,29 +296,6 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ActiveRouteStatusBrush));
     }
 
-    private void SetTakeoverDisplayState(TakeoverDisplayState state)
-    {
-        _takeoverDisplayState = state;
-        TakeoverStatus = state switch
-        {
-            TakeoverDisplayState.TakenOver => "OMP 已接管",
-            TakeoverDisplayState.NotTakenOver => "OMP 未接管",
-            TakeoverDisplayState.Unavailable => "OMP 接管状态不可读取",
-            _ => "检查中"
-        };
-        OnPropertyChanged(nameof(TakeoverStatusBrush));
-    }
-
-    private async Task RefreshTakeoverStatusAsync(CancellationToken cancellationToken)
-    {
-        var takeover = await _ompLaunch.CheckTakeoverAsync(_settings, cancellationToken);
-        var state = takeover.Status == OmpTakeoverStatus.ReadFailed
-            ? TakeoverDisplayState.Unavailable
-            : string.Equals(takeover.CurrentProviderId, OmpSidecarProvider.Id, StringComparison.Ordinal)
-                ? TakeoverDisplayState.TakenOver
-                : TakeoverDisplayState.NotTakenOver;
-        SetTakeoverDisplayState(state);
-    }
 
     private async Task StartOmpAsync()
     {
@@ -308,27 +304,8 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             _lifetimeCancellationToken.ThrowIfCancellationRequested();
-            var workingDirectory = SelectedOmpWorkingDirectory
-                ?? _settings.OmpRootDirectory;
+            var workingDirectory = SelectedOmpWorkingDirectory ?? _settings.OmpRootDirectory;
             var outcome = await _ompLaunch.LaunchAsync(_settings, workingDirectory, _lifetimeCancellationToken);
-            if (outcome.Status == OmpLaunchStatus.TakeoverRequired)
-            {
-                var confirmed = _notifications.Confirm(
-                    "OMP 尚未接管。继续将备份现有配置，并将受管 model roles 指向固定本地 Provider；真实供应商和 API key 不会写入 OMP 配置。\n\n选择“是”执行“设置并启动”，选择“否”取消。",
-                    "接管 OMP");
-                if (!confirmed)
-                {
-                    StatusText = "已取消启动。";
-                    return;
-                }
-                outcome = await _ompLaunch.TakeOverAndLaunchAsync(
-                    _settings,
-                    workingDirectory,
-                    _settings.CurrentGatewayPort,
-                    _lifetimeCancellationToken);
-            }
-            if (outcome.Status is OmpLaunchStatus.Started or OmpLaunchStatus.LaunchFailed or OmpLaunchStatus.SettingsPersistenceFailed)
-                SetTakeoverDisplayState(TakeoverDisplayState.TakenOver);
             _settings = outcome.Settings;
             StatusText = UserErrorMessages.ForOmpLaunchStatus(outcome);
             OnPropertyChanged(nameof(GatewayPortStatus));
@@ -337,6 +314,75 @@ public sealed class MainViewModel : ObservableObject
         finally
         {
             IsStartingOmp = false;
+        }
+    }
+
+    private async Task ReplaceOmpGptProviderAsync()
+    {
+        if (_ompReplacement is null || SelectedOmpConfigurationTarget is null || IsReplacingOmpGptProvider)
+            return;
+
+        IsReplacingOmpGptProvider = true;
+        try
+        {
+            _lifetimeCancellationToken.ThrowIfCancellationRequested();
+            var target = SelectedOmpConfigurationTarget.ProviderId;
+            var preview = await _ompReplacement.PreviewAsync(_settings, target, _lifetimeCancellationToken);
+            if (!preview.Succeeded)
+            {
+                OmpConfigurationStatus = "配置替换失败";
+                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
+                StatusText = preview.ErrorMessage ?? "无法预览 OMP 配置替换。";
+                return;
+            }
+
+            if (!preview.HasChanges)
+            {
+                OmpConfigurationStatus = "无可变更 GPT";
+                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
+                StatusText = "没有需要替换的 GPT 路由，未写入文件。";
+                return;
+            }
+
+            var rows = string.Join(
+                Environment.NewLine,
+                preview.Changes.Select(change =>
+                    $"{change.RolePath}: {change.OriginalProvider} -> {change.TargetProvider}，ModelId={change.ModelId}"));
+            var modelsText = preview.ModelsChangeKind switch
+            {
+                OmpModelsProviderChangeKind.Added => Environment.NewLine + "同时新增本地 provider-price-switcher 定义。",
+                OmpModelsProviderChangeKind.Updated => Environment.NewLine + "同时更新本地 provider-price-switcher 定义。",
+                _ => string.Empty
+            };
+            var confirmed = _notifications.Confirm(
+                $"将替换以下 OMP GPT 路由到 {target}：{Environment.NewLine}{rows}{modelsText}{Environment.NewLine}{Environment.NewLine}确认写入 OMP 配置吗？",
+                "预览 OMP GPT 供应商替换");
+            if (!confirmed)
+            {
+                StatusText = "已取消 OMP 配置替换，未写入文件。";
+                return;
+            }
+
+            var result = await _ompReplacement.ExecuteAsync(_settings, preview, _lifetimeCancellationToken);
+            if (!result.Succeeded)
+            {
+                OmpConfigurationStatus = "配置替换失败";
+                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
+                StatusText = result.ErrorMessage ?? "OMP 配置替换失败，未报告成功。";
+                return;
+            }
+
+            OmpConfigurationStatus = "配置已替换";
+            OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
+            StatusText = !result.BackupRetentionSucceeded
+                ? "OMP 配置已替换，但旧备份清理失败；请检查备份数量后再手动重启 OMP。"
+                : result.Preview.IsNoOp
+                    ? "没有需要替换的 GPT 路由，未写入文件。"
+                    : "OMP 配置已替换；已运行的 OMP 需要手动重启后生效。";
+        }
+        finally
+        {
+            IsReplacingOmpGptProvider = false;
         }
     }
 
@@ -430,7 +476,6 @@ public sealed class MainViewModel : ObservableObject
     }
 
 
-
     private async Task ApplyRouteAsync()
     {
         var choice = SelectedProvider;
@@ -438,7 +483,7 @@ public sealed class MainViewModel : ObservableObject
         IsApplyingRoute = true;
         try
         {
-            var outcome = await _applyActiveRoute.ExecuteAsync(_settings, choice.ProviderId);
+            var outcome = await _applyActiveRoute.ExecuteAsync(_settings, choice.ProviderId, _lifetimeCancellationToken);
             _settings = outcome.Settings;
             CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
             OnPropertyChanged(nameof(ActiveRouteStatusText));
@@ -468,7 +513,6 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(GatewayStatusText));
             OnPropertyChanged(nameof(ActiveRouteStatusText));
             OnPropertyChanged(nameof(ActiveRouteStatusBrush));
-            await RefreshTakeoverStatusAsync(_lifetimeCancellationToken);
             CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
             LoadPersistedPrices();
         }
@@ -500,6 +544,12 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(ActiveRouteStatusBrush));
         LoadPersistedPrices(previousSelection);
     }
+}
+public sealed record OmpConfigurationTargetChoice(string ProviderId)
+{
+    public string Display => ProviderId == OmpConfigurationReplacementTargets.LocalProviderId
+        ? "provider-price-switcher（本地）"
+        : "openai-codex（官方 OAuth）";
 }
 
 public sealed record ProviderChoice(string ProviderId) { public string Display => ProviderId; }

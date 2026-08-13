@@ -217,6 +217,15 @@
 - **未执行项:** 真实 Provider、真实凭据、真实用户 data/OMP root 按安全隔离要求不执行；CrossLayer 验证不承担发布，发布产物与 sidecar manifest hash 由独立 `eng/Publish.ps1` 入口验收并另行记录。
 - **Final fixed-base dual-axis review:** Standards 与 Spec 首轮分别发现 5 项和 0 项；取消/期限、协议校验、ADR、重复流程和验证登记均修正后，针对 `cd09aa23cac025d97fd92fe99e3171c2e0e43e49` 到当前工作区的复审均无剩余发现。
 
+## Issue #9 OMP GPT 配置替换证据
+
+- **status:** implementation complete; final CrossLayer evidence complete on `2026-08-14`; release evidence refreshed after the stale/YAML/Provider fixes.
+- **scope:** 独立 OMP GPT Provider 预览/确认/执行、`provider-price-switcher` 与 `openai-codex` 双目标、GPT-only 路由筛选、`models.yml` 所有权边界、Start OMP 解耦和主页 STA 交互。
+- **OMP configuration runner:** 临时 OMP root 覆盖混合 GPT/DeepSeek/Claude 路由、大小写不敏感匹配、ModelId 保留、重复目标 no-op、带 inline comment 的本地 Provider 键识别、四格缩进局部更新、缺失定义修复、models/config stale 拒绝、非法 YAML 零写入及其他 Provider/注释保留；官方目标拒绝读取 `models.yml`；取消、缺失/无效 config、锁定文件失败和无变化均验证无未声明写入。
+- **Application/App runner:** `ProviderPriceSwitcher.Application.Tests`、`ProviderPriceSwitcher.OmpConfig.Tests` 和 `ProviderPriceSwitcher.App.Tests` 均通过；App STA runner 验证替换取消/确认、手动重启提示、Start OMP 独立、活动路由和已有启动状态不受配置替换影响；UI 已增加备份清理失败提示，未在 runner 中注入该权限异常。
+- **Final verification:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-14` 通过 static manifest/dependency checks、SDK 8.0.423、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 重新生成并验收 framework-dependent（173568 bytes）和 self-contained（106214704 bytes）产物及 sidecar manifest hash；models/config 双文件失败回滚与有界备份清理由实现覆盖，未在 runner 中模拟全部权限/锁定组合。
+- **Isolation:** 所有 runner 使用临时目录、合成配置和 fake/loopback；未触及真实 Provider、真实凭据或生产 OMP root，清理后无残留进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

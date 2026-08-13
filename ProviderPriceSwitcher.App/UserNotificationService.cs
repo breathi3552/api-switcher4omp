@@ -15,7 +15,6 @@ public static class UserErrorMessages
     public const string ConfigurationReadFailed = "暂时无法读取 OMP 配置，请检查配置后重试。";
     public const string ApplicationStartupFailed = "应用启动失败：无法加载本地设置或初始化服务。";
     public const string GatewayPortUnavailable = "本地网关目标端口已被占用，请在设置中更改端口后重新启动应用。";
-    public const string OmpBackupRetentionFailed = "OMP 启动准备已完成，但配置备份保留失败；请检查 OMP 配置目录权限。";
     public const string SettingsRecoveryFailed = "设置未保存，请检查文件权限后重新启动应用。";
     public const string Unhandled = "发生未处理错误，请查看日志或重新启动应用。";
 
@@ -32,32 +31,19 @@ public static class UserErrorMessages
     public static string ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus status) => status switch
     {
         ProviderPriceSwitcher.Application.OmpLaunchStatus.Started => "已创建新的 OMP 实例；活动供应商未改变。",
-        ProviderPriceSwitcher.Application.OmpLaunchStatus.TakeoverRequired => "OMP 尚未接管。",
-        ProviderPriceSwitcher.Application.OmpLaunchStatus.TakeoverFailed => "OMP 接管失败，未启动实例；请检查 OMP 配置权限。",
-        ProviderPriceSwitcher.Application.OmpLaunchStatus.TakeoverReadFailed => "无法读取 OMP 接管状态，未启动实例。",
         ProviderPriceSwitcher.Application.OmpLaunchStatus.SettingsPersistenceFailed => "OMP 未启动：无法保存工作目录设置。",
         ProviderPriceSwitcher.Application.OmpLaunchStatus.LaunchFailed => "OMP 启动失败；活动供应商未改变。",
         _ => Unexpected
     };
+
     public static string ForOmpStartupOutcome(ProviderPriceSwitcher.Application.OmpStartupOutcome outcome) => outcome.Status switch
     {
-        ProviderPriceSwitcher.Application.OmpStartupStatus.TakeoverReadFailed => ConfigurationReadFailed,
-        ProviderPriceSwitcher.Application.OmpStartupStatus.PortMigrationFailed
-            when outcome.TakeoverFailureKind == ProviderPriceSwitcher.Application.OmpTakeoverFailureKind.RollbackFailed
-            => "OMP 端口迁移失败且配置无法回滚，请先恢复配置后重试。",
-        ProviderPriceSwitcher.Application.OmpStartupStatus.PortMigrationFailed
-            => "OMP 端口迁移失败，应用未启动；请检查 OMP 配置权限。",
-        ProviderPriceSwitcher.Application.OmpStartupStatus.SettingsPersistenceFailed
-            => "应用启动失败：无法保存 OMP 端口设置。",
+        ProviderPriceSwitcher.Application.OmpStartupStatus.SettingsPersistenceFailed => "应用启动失败：无法保存 OMP 端口设置。",
         _ => ApplicationStartupFailed
     };
-    public static string ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchOutcome outcome) =>
-        outcome.TakeoverFailureKind == ProviderPriceSwitcher.Application.OmpTakeoverFailureKind.RollbackFailed
-            ? "OMP 接管失败：无法回滚模型配置，请先恢复配置后重试。"
-            : !outcome.BackupRetentionSucceeded
-                ? $"{ForOmpLaunchStatus(outcome.Status)}；配置备份保留失败，请检查 OMP 配置目录权限。"
-                : ForOmpLaunchStatus(outcome.Status);
 
+    public static string ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchOutcome outcome) =>
+        ForOmpLaunchStatus(outcome.Status);
 
     public static string ForApplyRouteStatus(ProviderPriceSwitcher.Application.ApplyActiveRouteStatus status) => status switch
     {
