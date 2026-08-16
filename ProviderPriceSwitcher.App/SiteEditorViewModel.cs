@@ -66,7 +66,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(CurrentGroup))
         {
-            KeyActionMessage = "请先填写当前绑定分组和 API key。";
+            KeyActionMessage = "请先填写当前分组和 API key。";
             return false;
         }
         _inferenceKeyUseCase.Save(ProviderId, apiKey, CurrentGroup);

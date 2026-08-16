@@ -23,7 +23,7 @@
             <Border Padding="16" Background="White" BorderBrush="#D9DEE7" BorderThickness="1" CornerRadius="5" Margin="0,0,0,16">
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
-                    <StackPanel><TextBlock Text="当前活动 Provider" Foreground="#6B7280"/><TextBlock Text="{Binding CurrentProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
+                    <StackPanel><TextBlock Text="当前供应商" Foreground="#6B7280"/><TextBlock Text="{Binding CurrentProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                     <StackPanel Grid.Column="1"><TextBlock Text="推荐 Provider" Foreground="#6B7280"/><TextBlock Text="{Binding RecommendedProvider}" FontSize="16" FontWeight="SemiBold"/></StackPanel>
                     <StackPanel Grid.Column="2">
                         <StackPanel Orientation="Horizontal"><Ellipse x:Name="OmpConfigurationStatusDot" Width="9" Height="9" Fill="{Binding OmpConfigurationStatusBrush}" Margin="0,0,6,0"/><TextBlock Text="OMP 配置" Foreground="#6B7280"/></StackPanel>

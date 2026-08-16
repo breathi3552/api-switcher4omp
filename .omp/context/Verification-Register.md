@@ -174,19 +174,19 @@
 - **status:** `closed`
 - **priority:** `P0`
 - **evidence:** [`App runner`](../../ProviderPriceSwitcher.App.Tests/Program.cs)
-- **DoD:** 运行 App runner（`$dotnet run --project ProviderPriceSwitcher.App.Tests/ProviderPriceSwitcher.App.Tests.csproj`）并执行隔离 WPF smoke，断言推荐供应商只进入待应用选择、活动供应商不变；底部目标供应商/应用供应商与 OMP 工作目录/启动 OMP 两组动作拥有独立状态；网关和接管状态点只读；编辑器包含基础、价格查询、模型推理三段，单一可编辑分组 ComboBox 在回填、探测刷新、焦点变化和重复探测中保留当前值；凭据摘要、推理 key 更新/删除/取消均不泄露原文；使用临时 roots、合成 settings、fake/loopback adapter 并正常关闭无残留。
+- **DoD:** 运行 App runner（`$dotnet run --project ProviderPriceSwitcher.App.Tests/ProviderPriceSwitcher.App.Tests.csproj`）并执行隔离 WPF smoke，断言推荐供应商只进入待应用选择、当前供应商不变；底部目标供应商/应用供应商与 OMP 工作目录/启动 OMP 两组动作拥有独立状态；网关、OMP 配置和当前供应商状态点只读；编辑器包含基础、价格查询、模型推理三段，单一可编辑分组 ComboBox 在回填、探测刷新、焦点变化和重复探测中保留当前值；凭据摘要、推理 key 更新/删除/取消均不泄露原文；使用临时 roots、合成 settings、fake/loopback adapter 并正常关闭无残留。
 - **scope:** App composition, MainViewModel/SitesDialog/SiteEditorDialog, Issue #6 isolated WPF behavior.
 - **dependencies:** QD-07-001; QD-07-002; QD-07-003; QD-07-004
 - **last_verified:** `2026-08-09`（Issue #6 实现后验证）
 
-## Issue #5 takeover and repeat-launch evidence
+## Issue #5 port migration and repeat-launch evidence
 
 - **status:** verified in isolation
 - **last_verified:** `2026-08-09`
-- **Application runner:** `OmpStartupUseCase` owns startup takeover checks, target-port migration and effective-port settings persistence; `OmpLaunchUseCase` proves an un-taken-over OMP cannot be bypassed, launch cancellation performs no write or process launch, and `OmpProcessFailureKind` reaches the Application outcome without collapsing to a boolean.
-- **OMP configuration runner:** takeover requires every managed direct `modelRoles` and `agentModelOverrides` reference to use fixed `provider-price-switcher`; partial fast/override drift returns `NotTakenOver`. The runner also proves in-progress configuration reads honor cancellation, the sidecar endpoint parser stops at sibling providers and top-level mappings, no real provider or API key is written, and a complete backup created before a simulated replacement failure remains part of newest-five retention.
+- **Application runner:** `OmpStartupUseCase` owns target-port migration and effective-port settings persistence; `OmpLaunchUseCase` proves cancellation before launch does not create a process, every launch is an independent attempt, and `OmpProcessFailureKind` reaches the Application outcome without collapsing to a boolean.
+- **OMP configuration runner:** configuration reads honor cancellation, the sidecar endpoint parser stops at sibling providers and top-level mappings, no real provider or API key is written, and a complete backup created before a simulated replacement failure remains part of newest-five retention.
 - **OMP process and Infrastructure runners:** with an existing-process hint, fake process launches from the same and a different working directory each create a new attempt. The Application `OmpRootDirectory` is translated by `AppPathDefaults` to the managed agent directory at the process boundary. The real Windows OMP/sidecar smoke holds the first isolated OMP instance active, then starts distinct second and third PIDs from the same and a different temporary working directory; all three reach loopback and exit successfully without changing `ActiveRoute`.
-- **App runner:** WPF main-page launch/takeover interaction proves cancel and setup-and-start behavior, repeated launch is not coupled to routing, and the active supplier remains unchanged.
+- **App runner:** WPF main-page launch interaction proves startup is independent from OMP configuration replacement, repeated launch is not coupled to routing, and the active supplier remains unchanged.
 - **Cross-layer command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-09` 最终通过 static manifest/dependency checks、solution build（0 warnings / 0 errors）、format verification 和全部 8 个注册 runner。
 - **Publish command:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 于 `2026-08-09` 成功生成 framework-dependent 与 self-contained 两个 win-x64 产物，并分别校验可执行文件和 sidecar manifest hash。
 - **Final fixed-base dual-axis review:** 针对 `69b64086a20d616d304949c001a0438071f3018c...HEAD` 的 Standards 与 Spec 审查均无阻塞发现。
@@ -195,7 +195,8 @@
 
 - **status:** implementation complete; isolated App/Infrastructure evidence, final CrossLayer, dual-axis review and release evidence complete
 - **scope:** MainWindow bottom action layout, recommendation pending selection, OMP working-directory selection, status dots, SiteEditorDialog sections, credential summaries, editable current-group candidates and inference key lifecycle.
-- **evidence:** App runner covers the WPF seam with temporary data/root and synthetic credentials, including current/minimum row projection, pending recommendation versus unchanged active route, independent apply/start busy states, read-only status points, ComboBox backfill/focus/repeated-probe retention, short and long credential summaries, inference-key close/cancel/empty-update/delete behavior, and takeover prompt behavior. Infrastructure runner covers storage-boundary token/Cookie summaries and secret exclusion. Real providers, credentials and user configuration are not touched.
+- **evidence:** App runner covers the WPF seam with temporary data/root and synthetic credentials, including current/minimum row projection, pending recommendation versus unchanged active route, independent apply/start busy states, read-only status points, ComboBox backfill/focus/repeated-probe retention, short and long credential summaries, inference-key close/cancel/empty-update/delete behavior, and OMP configuration replacement preview/confirmation behavior. Infrastructure runner covers storage-boundary token/Cookie summaries and secret exclusion. Real providers, credentials and user configuration are not touched.
+
 
 ## Issue #7 tray lifecycle and end-to-end evidence
 
@@ -222,12 +223,12 @@
 - **status:** implementation complete; final CrossLayer evidence complete on `2026-08-14`; release evidence refreshed after the stale/YAML/Provider fixes.
 - **scope:** 独立 OMP GPT Provider 预览/确认/执行、`provider-price-switcher` 与 `openai-codex` 双目标、GPT-only 路由筛选、`models.yml` 所有权边界、Start OMP 解耦和主页 STA 交互。
 - **OMP configuration runner:** 临时 OMP root 覆盖混合 GPT/DeepSeek/Claude 路由、大小写不敏感匹配、ModelId 保留、重复目标 no-op、带 inline comment 的本地 Provider 键识别、四格缩进局部更新、缺失定义修复、models/config stale 拒绝、非法 YAML 零写入及其他 Provider/注释保留；官方目标拒绝读取 `models.yml`；取消、缺失/无效 config、锁定文件失败和无变化均验证无未声明写入。
-- **Application/App runner:** `ProviderPriceSwitcher.Application.Tests`、`ProviderPriceSwitcher.OmpConfig.Tests` 和 `ProviderPriceSwitcher.App.Tests` 均通过；App STA runner 验证替换取消/确认、手动重启提示、Start OMP 独立、活动路由和已有启动状态不受配置替换影响；UI 已增加备份清理失败提示，未在 runner 中注入该权限异常。
+- **Application/App runner:** `ProviderPriceSwitcher.Application.Tests`、`ProviderPriceSwitcher.OmpConfig.Tests` 和 `ProviderPriceSwitcher.App.Tests` 均通过；App STA runner 验证替换取消/确认、手动重启提示、Start OMP 独立、当前供应商和已有启动状态不受配置替换影响；UI 已增加备份清理失败提示，未在 runner 中注入该权限异常。
 - **Final verification:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-14` 通过 static manifest/dependency checks、SDK 8.0.423、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 重新生成并验收 framework-dependent（173568 bytes）和 self-contained（106214704 bytes）产物及 sidecar manifest hash；config.yml 使用既有有界备份策略，models.yml 使用内存原文回滚且不创建包含目录凭据的备份，未在 runner 中模拟全部权限/锁定组合。
 - **Isolation:** 所有 runner 使用临时目录、合成配置和 fake/loopback；未触及真实 Provider、真实凭据或生产 OMP root，清理后无残留进程。
 
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
- - 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 路径不负责 OMP 接管或进程生命周期；Issue #5 的接管、端口、配置备份和重复启动证据见上节。
+- 未执行的外部边界包括真实 Provider、真实凭据和真实用户 data/OMP root；loopback 已覆盖真实 OMP 请求、无活动路由错误、路由切换和在途请求快照。Issue #4 路径不负责 OMP 配置替换或进程生命周期；Issue #5 的端口、配置备份和重复启动证据见上节；Issue #9 的独立 GPT 配置替换证据见下节。
 > **底部证据索引（2026-08-09）。** 共享实际验证证据见文件顶部；本底部仅重复证据入口，避免各条目复制长文本。

@@ -227,7 +227,7 @@ public sealed class MainViewModel : ObservableObject
     public string ApplyRouteButtonText => IsApplyingRoute ? "应用中…" : "应用供应商";
     public string ReplaceOmpGptProviderButtonText => IsReplacingOmpGptProvider ? "替换中…" : "替换 OMP GPT";
     public string StartOmpButtonText => IsStartingOmp ? "启动中…" : "启动 OMP";
-    public static string SelectionHint => "仅当前绑定分组可应用；最低价分组只读比较。";
+    public static string SelectionHint => "仅当前分组可应用；最低价分组只读比较。";
 
     public async Task InitializeAsync()
     {

@@ -97,7 +97,7 @@ catch (OperationCanceledException)
 {
 }
 Assert(canceledRecoveryAttempts == 0, "canceled gateway recovery must not start another attempt");
-Assert(UserErrorMessages.ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus.Started).Contains("活动供应商未改变", StringComparison.Ordinal), "launch status mapping mismatch");
+Assert(UserErrorMessages.ForOmpLaunchStatus(ProviderPriceSwitcher.Application.OmpLaunchStatus.Started).Contains("当前供应商未改变", StringComparison.Ordinal), "launch status mapping mismatch");
 var launchFailureMapping = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
     ProviderPriceSwitcher.Application.OmpLaunchStatus.SettingsPersistenceFailed,
     new ProviderPriceSwitcher.Application.LocalAppSettings());
@@ -181,7 +181,7 @@ var windowThread = new Thread(() =>
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
         var activeBeforeLaunch = activeRoute.Current;
         viewModel.StartOmpCommand.Execute(null);
-        WaitFor(() => viewModel.StatusText.Contains("活动供应商未改变", StringComparison.Ordinal));
+        WaitFor(() => viewModel.StatusText.Contains("当前供应商未改变", StringComparison.Ordinal));
         Assert(fakeOmpLauncher.Calls == 1
             && fakeOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(root, "other-working")
             && !viewModel.IsStartingOmp
