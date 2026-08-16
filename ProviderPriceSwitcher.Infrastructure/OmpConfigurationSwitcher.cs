@@ -17,42 +17,148 @@ public sealed record OmpConfigurationChange(
     public string New => NewValue;
 }
 
-public sealed class OmpConfigurationPreview
+internal sealed record OmpConfigurationRouteEdit(
+    string ConfigurationPath,
+    string Key,
+    string OriginalProvider,
+    string ModelId,
+    string OriginalReference,
+    string NewReference,
+    bool IsDefault,
+    bool IsAgentModelOverride,
+    int ValueStart,
+    int ValueEnd);
+
+internal sealed class OmpConfigurationRoutePlan
 {
-    internal OmpConfigurationPreview(
+    private static readonly Regex SafeProviderId = new(
+        "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private OmpConfigurationRoutePlan(
         string sourceText,
         string targetProvider,
         OmpConfigurationAnalysis analysis,
-        IReadOnlyList<OmpConfigurationChange> changes,
+        IReadOnlyList<OmpConfigurationRouteEdit> routeEdits,
+        string updatedText,
         string? error)
     {
         SourceText = sourceText;
         TargetProvider = targetProvider;
         Analysis = analysis;
-        Changes = changes;
+        RouteEdits = routeEdits;
+        Changes = new ReadOnlyCollection<OmpConfigurationChange>(
+            routeEdits.Select(edit => new OmpConfigurationChange(
+                edit.ConfigurationPath,
+                edit.Key,
+                edit.OriginalReference,
+                edit.NewReference,
+                edit.IsDefault,
+                edit.IsAgentModelOverride)).ToArray());
+        UpdatedText = updatedText;
         Error = error;
     }
 
     public string SourceText { get; }
     public string TargetProvider { get; }
     public OmpConfigurationAnalysis Analysis { get; }
+    public IReadOnlyList<OmpConfigurationRouteEdit> RouteEdits { get; }
     public IReadOnlyList<OmpConfigurationChange> Changes { get; }
-    public IReadOnlyList<OmpConfigurationChange> Items => Changes;
+    public string UpdatedText { get; }
     public string? Error { get; }
     public bool IsValid => Error is null;
-    public bool CanApply => IsValid && Changes.Count != 0;
+    public bool CanApply => IsValid && RouteEdits.Count != 0;
+
+    public static OmpConfigurationRoutePlan Create(
+        OmpConfigurationAnalyzer analyzer,
+        string sourceText,
+        string targetProvider)
+    {
+        ArgumentNullException.ThrowIfNull(analyzer);
+        ArgumentNullException.ThrowIfNull(sourceText);
+        targetProvider ??= string.Empty;
+
+        var analysis = analyzer.Analyze(sourceText);
+        string? error = null;
+        if (!SafeProviderId.IsMatch(targetProvider))
+            error = "Target provider must be a non-empty safe provider ID.";
+        else if (!analysis.HasValidYamlSyntax)
+            error = "OMP config.yml contains invalid YAML syntax.";
+        else if (!analysis.HasValidDefault)
+            error = "modelRoles.default must contain a direct provider/model reference.";
+        else if (!analysis.HasValidReferences)
+            error = "No direct model references were found.";
+
+        var routeEdits = error is null
+            ? analysis.ModelReferences
+                .Where(reference =>
+                    reference.Model.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(reference.Provider, targetProvider, StringComparison.Ordinal))
+                .Select(reference => new OmpConfigurationRouteEdit(
+                    reference.ConfigurationPath,
+                    reference.Key,
+                    reference.Provider,
+                    reference.Model,
+                    reference.Value,
+                    targetProvider + "/" + reference.Model,
+                    reference.IsDefault,
+                    reference.IsAgentModelOverride,
+                    reference.ValueStart,
+                    reference.ValueEnd))
+                .ToArray()
+            : [];
+        var updatedText = error is null
+            ? ApplyChanges(sourceText, routeEdits)
+            : sourceText;
+        return new OmpConfigurationRoutePlan(
+            sourceText,
+            targetProvider,
+            analysis,
+            new ReadOnlyCollection<OmpConfigurationRouteEdit>(routeEdits),
+            updatedText,
+            error);
+    }
+
+    public OmpConfigurationRoutePlan WithError(string error) =>
+        new(SourceText, TargetProvider, Analysis, RouteEdits, SourceText, error);
+
+    public OmpConfigurationPreview ToPreview() => new(this);
+
+    private static string ApplyChanges(
+        string source,
+        IReadOnlyList<OmpConfigurationRouteEdit> routeEdits)
+    {
+        var replacements = routeEdits
+            .OrderByDescending(edit => edit.ValueStart)
+            .ToArray();
+        var builder = new StringBuilder(source);
+        foreach (var replacement in replacements)
+            builder.Remove(replacement.ValueStart, replacement.ValueEnd - replacement.ValueStart)
+                .Insert(replacement.ValueStart, replacement.NewReference);
+        return builder.ToString();
+    }
+}
+
+public sealed class OmpConfigurationPreview
+{
+    private readonly OmpConfigurationRoutePlan _plan;
+
+    internal OmpConfigurationPreview(OmpConfigurationRoutePlan plan)
+    {
+        _plan = plan;
+    }
+
+    public string SourceText => _plan.SourceText;
+    public string TargetProvider => _plan.TargetProvider;
+    public OmpConfigurationAnalysis Analysis => _plan.Analysis;
+    public IReadOnlyList<OmpConfigurationChange> Changes => _plan.Changes;
+    public IReadOnlyList<OmpConfigurationChange> Items => Changes;
+    public string? Error => _plan.Error;
+    public bool IsValid => _plan.IsValid;
+    public bool CanApply => _plan.CanApply;
     public string? CurrentProvider => Analysis.CurrentProvider;
     public int AffectedCount => Changes.Count;
-    public string NewText => IsValid
-        ? OmpConfigurationSwitcher.ApplyChanges(
-            SourceText,
-            Analysis.ModelReferences.Where(reference => IsEligible(reference, TargetProvider)).ToArray(),
-            TargetProvider)
-        : SourceText;
-
-    internal static bool IsEligible(OmpModelReference reference, string targetProvider) =>
-        reference.Model.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
-        && !string.Equals(reference.Provider, targetProvider, StringComparison.Ordinal);
+    public string NewText => _plan.UpdatedText;
 }
 
 public sealed class OmpConfigurationSwitchResult
@@ -92,7 +198,6 @@ internal sealed class OmpConfigurationStaleException : IOException
 }
 public sealed class OmpConfigurationSwitcher
 {
-    private static readonly Regex SafeProviderId = new("^[A-Za-z0-9][A-Za-z0-9._-]*$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private readonly OmpConfigurationAnalyzer _analyzer;
 
     public OmpConfigurationSwitcher(OmpConfigurationAnalyzer? analyzer = null)
@@ -100,40 +205,17 @@ public sealed class OmpConfigurationSwitcher
         _analyzer = analyzer ?? new OmpConfigurationAnalyzer();
     }
 
-    public OmpConfigurationPreview Preview(string text, string targetProvider)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        targetProvider ??= string.Empty;
-        var analysis = _analyzer.Analyze(text);
-        string? error = null;
-        if (!SafeProviderId.IsMatch(targetProvider))
-            error = "Target provider must be a non-empty safe provider ID.";
-        else if (!analysis.HasValidYamlSyntax)
-            error = "OMP config.yml contains invalid YAML syntax.";
-        else if (!analysis.HasValidDefault)
-            error = "modelRoles.default must contain a direct provider/model reference.";
-        else if (!analysis.HasValidReferences)
-            error = "No direct model references were found.";
+    internal OmpConfigurationRoutePlan CreatePlan(string text, string targetProvider) =>
+        OmpConfigurationRoutePlan.Create(_analyzer, text, targetProvider);
 
-        var changes = error is null
-            ? analysis.ModelReferences
-                .Where(reference => OmpConfigurationPreview.IsEligible(reference, targetProvider))
-                .Select(reference => new OmpConfigurationChange(
-                    reference.ConfigurationPath,
-                    reference.Key,
-                    reference.Value,
-                    targetProvider + "/" + reference.Model,
-                    reference.IsDefault,
-                    reference.IsAgentModelOverride))
-                .ToArray()
-            : Array.Empty<OmpConfigurationChange>();
-        return new OmpConfigurationPreview(text, targetProvider, analysis, new ReadOnlyCollection<OmpConfigurationChange>(changes), error);
-    }
+    public OmpConfigurationPreview Preview(string text, string targetProvider) =>
+        CreatePlan(text, targetProvider).ToPreview();
 
     public OmpConfigurationPreview PreviewText(string text, string targetProvider) => Preview(text, targetProvider);
 
     public Task<OmpConfigurationSwitchResult> SwitchFileAsync(string path, string targetProvider, CancellationToken cancellationToken = default) =>
         SwitchFileAsync(path, targetProvider, expectedVersion: null, cancellationToken);
+
     public async Task<OmpConfigurationSwitchResult> SwitchFileAsync(
         string path,
         string targetProvider,
@@ -151,36 +233,66 @@ public sealed class OmpConfigurationSwitcher
         var text = exists
             ? encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength)
             : string.Empty;
-        var preview = Preview(text, targetProvider);
+        var plan = CreatePlan(text, targetProvider);
         if (expectedVersion is not null && (!exists || !string.Equals(Hash(bytes), expectedVersion, StringComparison.Ordinal)))
-            return new OmpConfigurationSwitchResult(false, path, null, preview, new OmpConfigurationStaleException());
+            return new OmpConfigurationSwitchResult(false, path, null, plan.ToPreview(), new OmpConfigurationStaleException());
         if (!exists)
         {
-            preview = new OmpConfigurationPreview(
-                text,
-                targetProvider,
-                preview.Analysis,
-                preview.Changes,
-                "OMP 主 config.yml 不存在。");
+            plan = plan.WithError("OMP 主 config.yml 不存在。");
+            return new OmpConfigurationSwitchResult(false, path, null, plan.ToPreview(), null);
         }
-        if (!preview.IsValid)
+
+        return await WritePlanAsync(
+            path,
+            plan,
+            expectedVersion ?? Hash(bytes),
+            encoding,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<OmpConfigurationSwitchResult> ApplyPlanAsync(
+        string path,
+        OmpConfigurationRoutePlan plan,
+        string expectedVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedVersion);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!File.Exists(path))
+            return new OmpConfigurationSwitchResult(false, path, null, plan.ToPreview(), new OmpConfigurationStaleException());
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(Hash(bytes), expectedVersion, StringComparison.Ordinal))
+            return new OmpConfigurationSwitchResult(false, path, null, plan.ToPreview(), new OmpConfigurationStaleException());
+        var encoding = DetectEncoding(bytes, out _);
+        return await WritePlanAsync(path, plan, expectedVersion, encoding, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<OmpConfigurationSwitchResult> WritePlanAsync(
+        string path,
+        OmpConfigurationRoutePlan plan,
+        string expectedVersion,
+        Encoding encoding,
+        CancellationToken cancellationToken)
+    {
+        var preview = plan.ToPreview();
+        if (!plan.IsValid)
             return new OmpConfigurationSwitchResult(false, path, null, preview, null);
-        if (preview.Changes.Count == 0)
+        if (!plan.CanApply)
             return new OmpConfigurationSwitchResult(true, path, null, preview, null);
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
-        Directory.CreateDirectory(directory);
         var fileName = Path.GetFileName(path);
-        var backupPath = exists ? CreateBackupPath(path) : null;
+        string? backupPath = null;
+        string? backupCandidatePath = null;
         var tempPath = Path.Combine(directory, "." + fileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
         Exception? backupRetentionException = null;
         OmpConfigurationSwitchResult result;
         try
         {
-            if (backupPath is not null)
-                File.Copy(path, backupPath, overwrite: false);
-            cancellationToken.ThrowIfCancellationRequested();
-            var output = encoding.GetPreamble().Concat(encoding.GetBytes(preview.NewText)).ToArray();
+            var output = encoding.GetPreamble().Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
             await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
             {
                 await stream.WriteAsync(output, cancellationToken).ConfigureAwait(false);
@@ -188,12 +300,13 @@ public sealed class OmpConfigurationSwitcher
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (expectedVersion is not null)
-            {
-                var currentBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-                if (!string.Equals(Hash(currentBytes), expectedVersion, StringComparison.Ordinal))
-                    throw new OmpConfigurationStaleException();
-            }
+            var currentBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(Hash(currentBytes), expectedVersion, StringComparison.Ordinal))
+                throw new OmpConfigurationStaleException();
+            cancellationToken.ThrowIfCancellationRequested();
+            backupCandidatePath = CreateBackupPath(path);
+            File.Copy(path, backupCandidatePath, overwrite: false);
+            backupPath = backupCandidatePath;
             File.Move(tempPath, path, overwrite: true);
             result = new OmpConfigurationSwitchResult(true, path, backupPath, preview, null);
         }
@@ -205,6 +318,8 @@ public sealed class OmpConfigurationSwitcher
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             TryDelete(tempPath);
+            if (backupPath is null && backupCandidatePath is not null)
+                TryDelete(backupCandidatePath);
             result = new OmpConfigurationSwitchResult(false, path, backupPath, preview, exception);
         }
         catch
@@ -237,18 +352,6 @@ public sealed class OmpConfigurationSwitcher
     public Task<OmpConfigurationSwitchResult> SwitchAsync(string path, string targetProvider, CancellationToken cancellationToken = default) =>
         SwitchFileAsync(path, targetProvider, cancellationToken);
 
-    internal static string ApplyChanges(string source, IReadOnlyList<OmpModelReference> references, string targetProvider)
-    {
-        var replacements = references
-            .Select(reference => (reference.ValueStart, reference.ValueEnd, Value: targetProvider + "/" + reference.Model))
-            .OrderByDescending(item => item.ValueStart)
-            .ToArray();
-        var builder = new StringBuilder(source);
-        foreach (var replacement in replacements)
-            builder.Remove(replacement.ValueStart, replacement.ValueEnd - replacement.ValueStart)
-                .Insert(replacement.ValueStart, replacement.Value);
-        return builder.ToString();
-    }
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
     internal static string CreateBackupPath(string path)

@@ -227,6 +227,16 @@
 - **Final verification:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 于 `2026-08-14` 通过 static manifest/dependency checks、SDK 8.0.423、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 重新生成并验收 framework-dependent（173568 bytes）和 self-contained（106214704 bytes）产物及 sidecar manifest hash；config.yml 使用既有有界备份策略，models.yml 使用内存原文回滚且不创建包含目录凭据的备份，未在 runner 中模拟全部权限/锁定组合。
 - **Isolation:** 所有 runner 使用临时目录、合成配置和 fake/loopback；未触及真实 Provider、真实凭据或生产 OMP root，清理后无残留进程。
 
+## Issue #15 统一 OMP GPT 路由计划证据
+
+- **status:** implementation complete; final CrossLayer、三轮 fixed-base 双轴审查和 release evidence 于 `2026-08-17` 完成。
+- **scope:** OMP 配置替换 implementation 内部新增单一 `config.yml` GPT 路由语义计划；既有 Application 预览/执行 interface、`models.yml` policy、当前供应商、RouteSnapshot、OMP 进程和用户 workflow 均未改变。
+- **OMP configuration runner:** 通过真实 `OmpConfigurationReplacementUseCase` 与 Infrastructure adapter 在临时 OMP root 验证混合路由、大小写不敏感的 `gpt` 前缀、ModelId 原样保留、non-GPT/no-op/非法与缺失 YAML、注释和无关文本保留；精确断言预览项顺序及最终完整 `config.yml`，拒绝语义字段与计划不一致的篡改预览，并验证预览/执行取消传播且 config、models 和备份数量不变。
+- **Commit semantics:** 执行重新建立同一语义计划并完整匹配所有预览字段，版本未变化时直接提交该计划的 line-preserving 输出；可取消临时写入、版本复查和最终取消检查均先于备份与不可取消提交点，只有实际创建的备份路径才进入结果。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -ExecutionPolicy Bypass -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106217142` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 固定基线 `7b4c1d44b8cbbadc7ec8b7700a08942d8643a474`；首轮 Standards/Spec 分别为 0/1 项，修复取消前残留备份；第二轮为 1/0 项，修复 stale 失败误报未创建备份路径；第三轮 Standards 与 Spec 均无剩余发现。
+- **Isolation:** 全部场景只使用临时 OMP root 与合成 YAML；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

@@ -16,6 +16,7 @@ var paths = new TestPaths(ompRoot);
 var configPath = paths.OmpConfigPath(ompRoot);
 var modelsPath = paths.OmpModelsPath(ompRoot);
 var config = "# keep this comment\r\nmodelRoles:\r\n  default: old-provider/gpt-5\r\n  fast: another-provider/GPT-4o\r\n  deepseek: deepseek/deepseek-chat\r\n  suffix: another-provider/my-gpt\r\n  official: openai-codex/gpt-5\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: another-provider/gpt-4o-mini\r\n    claude: anthropic/claude-sonnet\r\nunrelated: old-provider/untouched\r\n";
+var expectedOfficialConfig = "# keep this comment\r\nmodelRoles:\r\n  default: openai-codex/gpt-5\r\n  fast: openai-codex/GPT-4o\r\n  deepseek: deepseek/deepseek-chat\r\n  suffix: another-provider/my-gpt\r\n  official: openai-codex/gpt-5\r\ntask:\r\n  agentModelOverrides:\r\n    reviewer: openai-codex/gpt-4o-mini\r\n    claude: anthropic/claude-sonnet\r\nunrelated: old-provider/untouched\r\n";
 var models = "# preserve this catalog\r\nproviders:\r\n    existing:\r\n      baseUrl: https://example.test/v1\r\n      models:\r\n        - id: existing-model\r\n    provider-price-switcher: # managed definition\r\n      baseUrl: https://old.example/v1\r\n      apiKey: old-placeholder\r\n# keep comment between providers\r\n    other:\r\n      baseUrl: https://other.example/v1\r\nmetadata:\r\n  note: preserve-me\r\n";
 
 try
@@ -36,20 +37,30 @@ try
     var officialPreview = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
     Assert(officialPreview.Succeeded && officialPreview.Changes.Count == 3, "official preview must contain only eligible GPT routes");
     Assert(officialPreview.Changes.All(change => change.TargetProvider == "openai-codex" && change.ModelId.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)), "official preview target or model id mismatch");
+    var expectedOfficialChanges = new[]
+    {
+        new OmpConfigurationReplacementChange("modelRoles.default", "old-provider", "openai-codex", "gpt-5", "old-provider/gpt-5", "openai-codex/gpt-5"),
+        new OmpConfigurationReplacementChange("modelRoles.fast", "another-provider", "openai-codex", "GPT-4o", "another-provider/GPT-4o", "openai-codex/GPT-4o"),
+        new OmpConfigurationReplacementChange("task.agentModelOverrides.reviewer", "another-provider", "openai-codex", "gpt-4o-mini", "another-provider/gpt-4o-mini", "openai-codex/gpt-4o-mini")
+    };
+    Assert(officialPreview.Changes.SequenceEqual(expectedOfficialChanges), "preview must describe the exact ordered route plan");
     Assert(paths.ModelsReadCount == 0, "official preview must not read models.yml");
     var modelsBeforeOfficial = await File.ReadAllTextAsync(modelsPath);
+    var tamperedChanges = officialPreview.Changes
+        .Select((change, index) => index == 0 ? change with { ModelId = "gpt-tampered" } : change)
+        .ToArray();
+    var tamperedPreview = officialPreview with { Changes = tamperedChanges };
+    var tamperedResult = await useCase.ExecuteAsync(settings, tamperedPreview);
+    Assert(
+        !tamperedResult.Succeeded
+        && tamperedResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview
+        && await File.ReadAllTextAsync(configPath) == config,
+        "execution must reject a preview whose semantic route items do not match the shared plan");
     var officialResult = await useCase.ExecuteAsync(settings, officialPreview);
     Assert(officialResult.Succeeded && paths.ModelsReadCount == 0, "official execution must not touch models.yml");
     Assert(await File.ReadAllTextAsync(modelsPath) == modelsBeforeOfficial, "official execution changed models.yml");
     var officialConfig = await File.ReadAllTextAsync(configPath);
-    Assert(officialConfig.Contains("default: openai-codex/gpt-5", StringComparison.Ordinal)
-        && officialConfig.Contains("fast: openai-codex/GPT-4o", StringComparison.Ordinal)
-        && officialConfig.Contains("reviewer: openai-codex/gpt-4o-mini", StringComparison.Ordinal)
-        && officialConfig.Contains("deepseek: deepseek/deepseek-chat", StringComparison.Ordinal)
-        && officialConfig.Contains("suffix: another-provider/my-gpt", StringComparison.Ordinal)
-        && officialConfig.Contains("unrelated: old-provider/untouched", StringComparison.Ordinal)
-        && officialConfig.Contains("\r\n", StringComparison.Ordinal),
-        "official execution must preserve non-GPT routes and unrelated configuration text");
+    Assert(officialConfig == expectedOfficialConfig, "execution must write every previewed route and preserve every unpreviewed route and source line");
 
     var officialNoOp = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
     Assert(officialNoOp.IsNoOp && officialNoOp.Changes.Count == 0, "repeated official replacement must be a no-op");
@@ -134,6 +145,57 @@ try
         Assert(!failed.Succeeded && failed.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed, "locked config must report a write failure");
         Assert(await File.ReadAllTextAsync(configPath) == config, "failed config write must preserve the source");
     }
+    var configBackupsBeforeCancellation = Directory.GetFiles(
+        Path.GetDirectoryName(configPath)!,
+        "config.yml.bak-*.yml").Length;
+    var modelsBeforeCancellation = await File.ReadAllTextAsync(modelsPath);
+    using (var previewCancellation = new CancellationTokenSource())
+    {
+        previewCancellation.Cancel();
+        try
+        {
+            await useCase.PreviewAsync(
+                portSettings,
+                OmpConfigurationReplacementTargets.OfficialOAuthProviderId,
+                previewCancellation.Token);
+            throw new InvalidOperationException("canceled configuration preview was accepted");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+    using (var executionCancellation = new CancellationTokenSource())
+    {
+        executionCancellation.Cancel();
+        try
+        {
+            await useCase.ExecuteAsync(
+                portSettings,
+                failurePreview,
+                executionCancellation.Token);
+            throw new InvalidOperationException("canceled configuration execution was accepted");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+    Assert(
+        await File.ReadAllTextAsync(configPath) == config
+        && await File.ReadAllTextAsync(modelsPath) == modelsBeforeCancellation
+        && Directory.GetFiles(Path.GetDirectoryName(configPath)!, "config.yml.bak-*.yml").Length == configBackupsBeforeCancellation,
+        "preview and execution cancellation must propagate without file writes");
+
+    File.Delete(configPath);
+    var missingPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+    var missingResult = await useCase.ExecuteAsync(portSettings, missingPreview);
+    Assert(
+        !missingPreview.Succeeded
+        && missingPreview.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationMissing
+        && !missingResult.Succeeded
+        && missingResult.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationMissing
+        && !File.Exists(configPath)
+        && await File.ReadAllTextAsync(modelsPath) == modelsBeforeCancellation,
+        "a missing primary configuration must remain a structured zero-write failure");
 
     Console.WriteLine("OMP configuration runner passed.");
 }

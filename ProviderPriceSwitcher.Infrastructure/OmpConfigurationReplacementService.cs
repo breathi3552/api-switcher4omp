@@ -56,18 +56,18 @@ public sealed class OmpConfigurationService(
             return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
         }
 
-        var configPreview = switcher.Preview(config.Text, request.TargetProvider);
-        if (!configPreview.IsValid)
+        var configPlan = switcher.CreatePlan(config.Text, request.TargetProvider);
+        if (!configPlan.IsValid)
             return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "OMP 主 config.yml 缺少有效的 modelRoles.default 或模型角色结构。");
 
-        var changes = configPreview.Changes
-            .Select(change => new OmpConfigurationReplacementChange(
-                change.ConfigurationPath,
-                change.OldValue[..change.OldValue.IndexOf('/')],
+        var changes = configPlan.RouteEdits
+            .Select(edit => new OmpConfigurationReplacementChange(
+                edit.ConfigurationPath,
+                edit.OriginalProvider,
                 request.TargetProvider,
-                change.OldValue[(change.OldValue.IndexOf('/') + 1)..],
-                change.OldValue,
-                change.NewValue))
+                edit.ModelId,
+                edit.OriginalReference,
+                edit.NewReference))
             .ToArray();
         var modelsChangeKind = OmpModelsProviderChangeKind.None;
         string? modelsVersion = null;
@@ -141,8 +141,8 @@ public sealed class OmpConfigurationService(
         if (!string.Equals(config.Version, preview.ConfigurationVersion, StringComparison.Ordinal))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP config.yml 在确认前发生变化，请重新预览。");
 
-        var configPreview = switcher.Preview(config.Text, request.TargetProvider);
-        if (!configPreview.IsValid || !Matches(preview, configPreview))
+        var configPlan = switcher.CreatePlan(config.Text, request.TargetProvider);
+        if (!configPlan.IsValid || !Matches(preview, configPlan))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "配置预览已失效，请重新预览后重试。");
 
         ModelsFile? models = null;
@@ -215,7 +215,11 @@ public sealed class OmpConfigurationService(
             var configChanged = false;
             if (preview.HasRouteChanges)
             {
-                var switchResult = await switcher.SwitchFileAsync(configPath, request.TargetProvider, preview.ConfigurationVersion, cancellationToken).ConfigureAwait(false);
+                var switchResult = await OmpConfigurationSwitcher.ApplyPlanAsync(
+                    configPath,
+                    configPlan,
+                    config.Version,
+                    cancellationToken).ConfigureAwait(false);
                 backupRetentionSucceeded &= switchResult.BackupRetentionSucceeded;
                 if (!switchResult.Succeeded)
                 {
@@ -289,14 +293,17 @@ public sealed class OmpConfigurationService(
         return new ModelsFile(path, true, Hash(bytes), bytes, text);
     }
 
-    private static bool Matches(OmpConfigurationReplacementPreview expected, OmpConfigurationPreview actual)
+    private static bool Matches(OmpConfigurationReplacementPreview expected, OmpConfigurationRoutePlan actual)
     {
-        if (expected.Changes.Count != actual.Changes.Count)
+        if (expected.Changes.Count != actual.RouteEdits.Count)
             return false;
-        return expected.Changes.Zip(actual.Changes).All(pair =>
+        return expected.Changes.Zip(actual.RouteEdits).All(pair =>
             string.Equals(pair.First.RolePath, pair.Second.ConfigurationPath, StringComparison.Ordinal)
-            && string.Equals(pair.First.OriginalReference, pair.Second.OldValue, StringComparison.Ordinal)
-            && string.Equals(pair.First.NewReference, pair.Second.NewValue, StringComparison.Ordinal));
+            && string.Equals(pair.First.OriginalProvider, pair.Second.OriginalProvider, StringComparison.Ordinal)
+            && string.Equals(pair.First.TargetProvider, actual.TargetProvider, StringComparison.Ordinal)
+            && string.Equals(pair.First.ModelId, pair.Second.ModelId, StringComparison.Ordinal)
+            && string.Equals(pair.First.OriginalReference, pair.Second.OriginalReference, StringComparison.Ordinal)
+            && string.Equals(pair.First.NewReference, pair.Second.NewReference, StringComparison.Ordinal));
     }
 
     private static bool RequestsMatch(OmpConfigurationReplacementRequest current, OmpConfigurationReplacementRequest preview) =>
