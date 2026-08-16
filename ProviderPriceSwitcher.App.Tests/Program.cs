@@ -226,7 +226,11 @@ var windowThread = new Thread(() =>
         var modelsAfterLocal = File.ReadAllText(Path.Combine(root, "agent", "models.yml"));
         viewModel.SelectedOmpConfigurationTarget = viewModel.OmpConfigurationTargetChoices.First(choice => choice.ProviderId == "openai-codex");
         viewModel.ReplaceOmpGptProviderCommand.Execute(null);
-        WaitFor(() => viewModel.StatusText.Contains("手动重启", StringComparison.Ordinal));
+        WaitFor(() =>
+            !viewModel.IsReplacingOmpGptProvider
+            && File.ReadAllText(Path.Combine(root, "agent", "config.yml")).Contains(
+                "default: openai-codex/gpt-5",
+                StringComparison.Ordinal));
         Assert(File.ReadAllText(Path.Combine(root, "agent", "models.yml")) == modelsAfterLocal
             && activeRoute.Current == activeBeforeLaunch
             && fakeOmpLauncher.Calls == 1,
@@ -553,6 +557,9 @@ var windowThread = new Thread(() =>
         notifications.ConfirmResult = true;
         trayHost.Raise(TrayCommand.Exit);
         Assert(trayExitRequested && notifications.LastConfirmMessage?.Contains("停止本地网关", StringComparison.Ordinal) == true && notifications.LastConfirmMessage.Contains("不会终止", StringComparison.Ordinal), "confirmed tray exit must request shutdown only after explaining that OMP processes remain running");
+        trayController.Dispose();
+        window.Close();
+        application.Shutdown();
 
     }
     catch (Exception ex) { windowFailure = ex; }

@@ -32,7 +32,7 @@ ProviderPriceSwitcher 是一个面向 OMP 用户的 Windows 桌面工具。不�
 - 固定 Bifrost fork 已作为 Windows x64 sidecar 随应用发布并校验 SHA-256；当前用户私有 Named Pipe 提交不可变 `RouteSnapshot` 并按请求解析 `keyHandle`。OMP 使用固定 `provider-price-switcher` OpenAI Responses Provider，普通配置只含占位凭据。OMP 的每次 `/v1/models` 查询由 sidecar 按请求捕获当前供应商并实时转发，只返回当前供应商的 OpenAI-compatible 模型列表，不聚合、不缓存，也不建立隐式模型路由。
 - 生产 loopback runner 已验证真实 OMP 请求经过 sidecar，以及 Responses 非流式/流式 SSE、tools/tool results、reasoning、ModelId 透传、endpoint/key 隔离、路由切换、无活动路由错误和无残留进程；模型发现隔离场景另验证两个不同供应商列表、重复实时查询、切换后下一次查询、上游 HTTP 失败状态与脱敏错误。真实供应商与真实凭据未触及。
 - 推荐和成本计算使用固定的 Codex 高缓存默认用量；站内计价单位与人民币统一换算尚未完成。
-- OMP GPT 配置替换和重复启动已实现：替换只扫描主 `config.yml` 的约定模型角色引用，按 `/` 后模型名的 `gpt` 不区分大小写前缀筛选，支持 `provider-price-switcher` 与 `openai-codex`；本地目标仅局部维护自有 `models.yml` Provider 定义，官方目标完全不读写 `models.yml`，配置写入后提示手动重启 OMP。每次启动请求均尝试创建新实例，不改变当前供应商。目标 loopback 端口保存后在下次完整应用启动时迁移，端口冲突不自动换端口或连接未知进程；主页同时显示 OMP 配置、网关和当前供应商的独立状态。
+- OMP GPT 配置替换和重复启动已实现：替换通过同一语义计划组合主 `config.yml` 的 GPT 路由与本地 Provider 所有权，按 `/` 后模型名的 `gpt` 不区分大小写前缀筛选，支持 `provider-price-switcher` 与 `openai-codex`；本地目标按当前网关端口局部维护自有 `models.yml` Provider 定义，官方目标完全不读写 `models.yml`，配置写入后提示手动重启 OMP。每次启动请求均尝试创建新实例，不改变当前供应商。目标 loopback 端口保存后在下次完整应用启动时迁移，端口冲突不自动换端口或连接未知进程；主页同时显示 OMP 配置、网关和当前供应商的独立状态。
 - 主窗口关闭后由托盘生命周期控制器隐藏而不停止应用；托盘只提供打开窗口、启动 OMP、网关/当前供应商只读状态和显式退出。显式退出停止 sidecar 但不终止已有 OMP 进程；sidecar 断线或协议故障时自动重启并恢复最后确认的路由快照。
 - 生产 composition root 负责装配凭据、查询端口、repositories、adapter registry、推理 key 用例和当前供应商状态，再注入窗口及 ViewModel。
 

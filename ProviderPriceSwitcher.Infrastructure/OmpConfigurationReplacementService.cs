@@ -34,74 +34,11 @@ public sealed class OmpConfigurationService(
         if (request.GatewayPort is < 1 or > 65535)
             return InvalidPreview(request, OmpConfigurationReplacementFailureKind.InvalidGatewayPort, "本地网关端口无效。");
 
-        var configPath = pathDefaults.OmpConfigPath(request.OmpRootDirectory);
-        if (!File.Exists(configPath))
-            return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationMissing, "OMP 主 config.yml 不存在。");
+        var buildResult = await BuildPlanAsync(request, null, cancellationToken).ConfigureAwait(false);
+        if (buildResult.Plan is null)
+            return InvalidPreview(request, buildResult.FailureKind, buildResult.ErrorMessage!);
 
-        ConfigFile config;
-        try
-        {
-            config = await ReadConfigAsync(configPath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (IOException)
-        {
-            return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
-        }
-
-        var configPlan = switcher.CreatePlan(config.Text, request.TargetProvider);
-        if (!configPlan.IsValid)
-            return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "OMP 主 config.yml 缺少有效的 modelRoles.default 或模型角色结构。");
-
-        var changes = configPlan.RouteEdits
-            .Select(edit => new OmpConfigurationReplacementChange(
-                edit.ConfigurationPath,
-                edit.OriginalProvider,
-                request.TargetProvider,
-                edit.ModelId,
-                edit.OriginalReference,
-                edit.NewReference))
-            .ToArray();
-        var modelsChangeKind = OmpModelsProviderChangeKind.None;
-        string? modelsVersion = null;
-        if (string.Equals(request.TargetProvider, OmpConfigurationReplacementTargets.LocalProviderId, StringComparison.Ordinal))
-        {
-            var modelsPath = pathDefaults.OmpModelsPath(request.OmpRootDirectory);
-            try
-            {
-                var models = await ReadModelsAsync(modelsPath, cancellationToken).ConfigureAwait(false);
-                modelsVersion = models.Version;
-                var plan = ModelsProviderUpdater.Prepare(modelsPath, models.Exists ? models.Text : string.Empty, models.Exists, request.GatewayPort, models.OriginalBytes);
-                modelsChangeKind = plan.ChangeKind;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (IOException)
-            {
-                return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return InvalidPreview(request, OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
-            }
-        }
-
-        return new(
-            true,
-            request,
-            changes,
-            modelsChangeKind,
-            config.Version,
-            modelsVersion);
+        return CreatePreview(buildResult.Plan);
     }
 
     public async Task<OmpConfigurationReplacementResult> ExecuteAsync(
@@ -116,65 +53,21 @@ public sealed class OmpConfigurationService(
         if (!RequestsMatch(request, preview.Request))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "配置预览已失效，请重新预览后重试。");
 
-        var configPath = pathDefaults.OmpConfigPath(request.OmpRootDirectory);
-        if (!File.Exists(configPath))
-            return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationMissing, "OMP 主 config.yml 不存在。");
+        var buildResult = await BuildPlanAsync(request, preview, cancellationToken).ConfigureAwait(false);
+        if (buildResult.Plan is null)
+            return Failed(preview, buildResult.FailureKind, buildResult.ErrorMessage);
 
-        ConfigFile config;
-        try
-        {
-            config = await ReadConfigAsync(configPath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (IOException)
-        {
-            return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
-        }
-
-        if (!string.Equals(config.Version, preview.ConfigurationVersion, StringComparison.Ordinal))
-            return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP config.yml 在确认前发生变化，请重新预览。");
-
-        var configPlan = switcher.CreatePlan(config.Text, request.TargetProvider);
-        if (!configPlan.IsValid || !Matches(preview, configPlan))
+        var replacementPlan = buildResult.Plan;
+        if (!Matches(preview, replacementPlan))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "配置预览已失效，请重新预览后重试。");
-
-        ModelsFile? models = null;
-        ModelsPlan? modelsPlan = null;
-        var isLocalTarget = string.Equals(request.TargetProvider, OmpConfigurationReplacementTargets.LocalProviderId, StringComparison.Ordinal);
-        if (isLocalTarget)
-        {
-            var modelsPath = pathDefaults.OmpModelsPath(request.OmpRootDirectory);
-            try
-            {
-                models = await ReadModelsAsync(modelsPath, cancellationToken).ConfigureAwait(false);
-                if (!string.Equals(models.Version, preview.ModelsVersion, StringComparison.Ordinal))
-                    return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP models.yml 在确认前发生变化，请重新预览。");
-                modelsPlan = ModelsProviderUpdater.Prepare(modelsPath, models.Exists ? models.Text : string.Empty, models.Exists, request.GatewayPort, models.OriginalBytes);
-                if (modelsPlan.ChangeKind != preview.ModelsChangeKind)
-                    return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP models.yml 在确认前发生变化，请重新预览。");
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (IOException)
-            {
-                return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
-            }
-            catch (UnauthorizedAccessException)
-            {
-                return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
-            }
-        }
-        if (!preview.HasChanges)
+        if (!replacementPlan.HasChanges)
             return new(true, preview);
+
+        var configPath = replacementPlan.ConfigurationPath;
+        var config = replacementPlan.Configuration;
+        var configPlan = replacementPlan.RoutePlan;
+        var models = replacementPlan.Models;
+        var modelsPlan = replacementPlan.ModelsPlan;
 
         string? modelsBackupPath = null;
         var modelsChanged = false;
@@ -213,7 +106,7 @@ public sealed class OmpConfigurationService(
 
             string? configBackupPath = null;
             var configChanged = false;
-            if (preview.HasRouteChanges)
+            if (replacementPlan.HasRouteChanges)
             {
                 var switchResult = await OmpConfigurationSwitcher.ApplyPlanAsync(
                     configPath,
@@ -269,6 +162,114 @@ public sealed class OmpConfigurationService(
         }
     }
 
+    private async Task<PlanBuildResult> BuildPlanAsync(
+        OmpConfigurationReplacementRequest request,
+        OmpConfigurationReplacementPreview? expectedPreview,
+        CancellationToken cancellationToken)
+    {
+        var configPath = pathDefaults.OmpConfigPath(request.OmpRootDirectory);
+        if (!File.Exists(configPath))
+            return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ConfigurationMissing, "OMP 主 config.yml 不存在。");
+
+        ConfigFile config;
+        try
+        {
+            config = await ReadConfigAsync(configPath, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (IOException)
+        {
+            return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ConfigurationReadFailed, "无法读取 OMP 主 config.yml。");
+        }
+        if (expectedPreview is not null
+            && !string.Equals(config.Version, expectedPreview.ConfigurationVersion, StringComparison.Ordinal))
+        {
+            return PlanBuildResult.Failed(
+                OmpConfigurationReplacementFailureKind.StalePreview,
+                "OMP config.yml 在确认前发生变化，请重新预览。");
+        }
+
+        var routePlan = switcher.CreatePlan(config.Text, request.TargetProvider);
+        if (!routePlan.IsValid)
+            return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "OMP 主 config.yml 缺少有效的 modelRoles.default 或模型角色结构。");
+
+        var changes = routePlan.RouteEdits
+            .Select(edit => new OmpConfigurationReplacementChange(
+                edit.ConfigurationPath,
+                edit.OriginalProvider,
+                request.TargetProvider,
+                edit.ModelId,
+                edit.OriginalReference,
+                edit.NewReference))
+            .ToArray();
+
+        ModelsFile? models = null;
+        ModelsPlan? modelsPlan = null;
+        var isLocalTarget = string.Equals(
+            request.TargetProvider,
+            OmpConfigurationReplacementTargets.LocalProviderId,
+            StringComparison.Ordinal);
+        if (isLocalTarget)
+        {
+            var modelsPath = pathDefaults.OmpModelsPath(request.OmpRootDirectory);
+            try
+            {
+                models = await ReadModelsAsync(modelsPath, cancellationToken).ConfigureAwait(false);
+                if (expectedPreview is not null
+                    && !string.Equals(models.Version, expectedPreview.ModelsVersion, StringComparison.Ordinal))
+                {
+                    return PlanBuildResult.Failed(
+                        OmpConfigurationReplacementFailureKind.StalePreview,
+                        "OMP models.yml 在确认前发生变化，请重新预览。");
+                }
+                modelsPlan = ModelsProviderUpdater.Prepare(
+                    modelsPath,
+                    models.Exists ? models.Text : string.Empty,
+                    models.Exists,
+                    request.GatewayPort,
+                    models.OriginalBytes);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (IOException)
+            {
+                return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ModelsReadFailed, "无法读取 OMP models.yml。");
+            }
+        }
+
+        return new(new OmpConfigurationReplacementPlan(
+            request,
+            configPath,
+            config,
+            routePlan,
+            changes,
+            isLocalTarget,
+            models,
+            modelsPlan));
+    }
+
+    private static OmpConfigurationReplacementPreview CreatePreview(OmpConfigurationReplacementPlan plan) =>
+        new(
+            true,
+            plan.Request,
+            plan.Changes,
+            plan.ModelsChangeKind,
+            plan.Configuration.Version,
+            plan.ModelsVersion);
+
     private async Task<ConfigFile> ReadConfigAsync(string path, CancellationToken cancellationToken)
     {
         if (readTextAsync is not null)
@@ -293,18 +294,14 @@ public sealed class OmpConfigurationService(
         return new ModelsFile(path, true, Hash(bytes), bytes, text);
     }
 
-    private static bool Matches(OmpConfigurationReplacementPreview expected, OmpConfigurationRoutePlan actual)
-    {
-        if (expected.Changes.Count != actual.RouteEdits.Count)
-            return false;
-        return expected.Changes.Zip(actual.RouteEdits).All(pair =>
-            string.Equals(pair.First.RolePath, pair.Second.ConfigurationPath, StringComparison.Ordinal)
-            && string.Equals(pair.First.OriginalProvider, pair.Second.OriginalProvider, StringComparison.Ordinal)
-            && string.Equals(pair.First.TargetProvider, actual.TargetProvider, StringComparison.Ordinal)
-            && string.Equals(pair.First.ModelId, pair.Second.ModelId, StringComparison.Ordinal)
-            && string.Equals(pair.First.OriginalReference, pair.Second.OriginalReference, StringComparison.Ordinal)
-            && string.Equals(pair.First.NewReference, pair.Second.NewReference, StringComparison.Ordinal));
-    }
+    private static bool Matches(
+        OmpConfigurationReplacementPreview expected,
+        OmpConfigurationReplacementPlan actual) =>
+        RequestsMatch(actual.Request, expected.Request)
+        && string.Equals(actual.Configuration.Version, expected.ConfigurationVersion, StringComparison.Ordinal)
+        && string.Equals(actual.ModelsVersion, expected.ModelsVersion, StringComparison.Ordinal)
+        && actual.ModelsChangeKind == expected.ModelsChangeKind
+        && expected.Changes.SequenceEqual(actual.Changes);
 
     private static bool RequestsMatch(OmpConfigurationReplacementRequest current, OmpConfigurationReplacementRequest preview) =>
         string.Equals(current.OmpRootDirectory, preview.OmpRootDirectory, StringComparison.Ordinal)
@@ -422,6 +419,35 @@ public sealed class OmpConfigurationService(
         {
             // Preserve the write failure and let the caller report the stable failure kind.
         }
+    }
+
+    private sealed record PlanBuildResult(
+        OmpConfigurationReplacementPlan? Plan,
+        OmpConfigurationReplacementFailureKind FailureKind = OmpConfigurationReplacementFailureKind.None,
+        string? ErrorMessage = null)
+    {
+        public static PlanBuildResult Failed(
+            OmpConfigurationReplacementFailureKind failureKind,
+            string errorMessage) =>
+            new(null, failureKind, errorMessage);
+    }
+
+    private sealed record OmpConfigurationReplacementPlan(
+        OmpConfigurationReplacementRequest Request,
+        string ConfigurationPath,
+        ConfigFile Configuration,
+        OmpConfigurationRoutePlan RoutePlan,
+        IReadOnlyList<OmpConfigurationReplacementChange> Changes,
+        bool IsLocalTarget,
+        ModelsFile? Models,
+        ModelsPlan? ModelsPlan)
+    {
+        public bool HasRouteChanges => Changes.Count != 0;
+        public OmpModelsProviderChangeKind ModelsChangeKind =>
+            ModelsPlan?.ChangeKind ?? OmpModelsProviderChangeKind.None;
+        public string? ModelsVersion => Models?.Version;
+        public bool HasChanges =>
+            HasRouteChanges || ModelsChangeKind != OmpModelsProviderChangeKind.None;
     }
 
     private sealed record ConfigFile(string Text, string Version);

@@ -56,6 +56,18 @@ try
         && tamperedResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview
         && await File.ReadAllTextAsync(configPath) == config,
         "execution must reject a preview whose semantic route items do not match the shared plan");
+    var tamperedOfficialOwnershipPreview = officialPreview with
+    {
+        ModelsChangeKind = OmpModelsProviderChangeKind.Added,
+        ModelsVersion = "tampered-models-version"
+    };
+    var tamperedOfficialOwnershipResult = await useCase.ExecuteAsync(settings, tamperedOfficialOwnershipPreview);
+    Assert(
+        !tamperedOfficialOwnershipResult.Succeeded
+        && tamperedOfficialOwnershipResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview
+        && paths.ModelsReadCount == 0
+        && await File.ReadAllTextAsync(configPath) == config,
+        "official execution must reject models ownership metadata that is not part of its unified plan without reading models.yml");
     var officialResult = await useCase.ExecuteAsync(settings, officialPreview);
     Assert(officialResult.Succeeded && paths.ModelsReadCount == 0, "official execution must not touch models.yml");
     Assert(await File.ReadAllTextAsync(modelsPath) == modelsBeforeOfficial, "official execution changed models.yml");
@@ -71,8 +83,15 @@ try
     var localPreview = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.LocalProviderId);
     Assert(localPreview.Succeeded && localPreview.Changes.Count == 4 && localPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Updated, "local preview must include all eligible GPT routes and a managed provider update");
     await File.AppendAllTextAsync(configPath, "# concurrent config change\r\n");
+    var modelsReadsBeforeStaleConfig = paths.ModelsReadCount;
+    paths.RejectModelsReads = true;
     var staleConfigResult = await useCase.ExecuteAsync(settings, localPreview);
-    Assert(!staleConfigResult.Succeeded && staleConfigResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview, "config changes after preview must reject execution");
+    paths.RejectModelsReads = false;
+    Assert(
+        !staleConfigResult.Succeeded
+        && staleConfigResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview
+        && paths.ModelsReadCount == modelsReadsBeforeStaleConfig,
+        "a stale config must reject execution before local models.yml is accessed");
     localPreview = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.LocalProviderId);
     await File.AppendAllTextAsync(modelsPath, "# concurrent models change\r\n");
     var staleModelsResult = await useCase.ExecuteAsync(settings, localPreview);
@@ -96,11 +115,68 @@ try
         && localModels.Contains("api: openai-responses", StringComparison.Ordinal)
         && localModels.Split("provider-price-switcher:", StringSplitOptions.None).Length == 2,
         "local provider update must preserve unrelated models.yml content and remain unique");
-    File.Delete(modelsPath);
+    var syntheticCredential = "PPS_SYNTHETIC_CREDENTIAL_MUST_NOT_SURVIVE";
+    var duplicateManagedModels = $"""
+        # preserve this catalog
+        providers:
+            existing:
+              baseUrl: https://example.test/v1
+            provider-price-switcher: # first managed definition
+              baseUrl: https://old.example/v1
+              apiKey: {syntheticCredential}
+        # keep comment between duplicates
+            'provider-price-switcher': # duplicate managed definition
+              baseUrl: https://duplicate.example/v1
+              apiKey: another-old-placeholder
+            other:
+              baseUrl: https://other.example/v1
+        metadata:
+          note: preserve-me
+        """.Replace("\n", "\r\n", StringComparison.Ordinal);
+    await File.WriteAllTextAsync(modelsPath, duplicateManagedModels);
+    var duplicateManagedPreview = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.LocalProviderId);
+    Assert(
+        duplicateManagedPreview.Succeeded
+        && duplicateManagedPreview.Changes.Count == 0
+        && duplicateManagedPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Updated,
+        "duplicate managed Provider definitions must preview as one local ownership update");
+    var duplicateManagedResult = await useCase.ExecuteAsync(settings, duplicateManagedPreview);
+    var convergedModels = await File.ReadAllTextAsync(modelsPath);
+    Assert(
+        duplicateManagedResult.Succeeded
+        && duplicateManagedResult.ModelsChanged
+        && convergedModels.Split("provider-price-switcher:", StringSplitOptions.None).Length == 2
+        && convergedModels.Contains("# keep comment between duplicates", StringComparison.Ordinal)
+        && convergedModels.Contains("existing:", StringComparison.Ordinal)
+        && convergedModels.Contains("other:", StringComparison.Ordinal)
+        && convergedModels.Contains("metadata:", StringComparison.Ordinal)
+        && !convergedModels.Contains(syntheticCredential, StringComparison.Ordinal),
+        "local ownership execution must converge duplicate inline-comment keys without leaking replaced credentials or changing unrelated content");
+
+    var modelsWithoutManagedProvider = """
+        # preserve this catalog
+        providers:
+            existing:
+              baseUrl: https://example.test/v1
+            other:
+              baseUrl: https://other.example/v1
+        metadata:
+          note: preserve-me
+        """.Replace("\n", "\r\n", StringComparison.Ordinal);
+    await File.WriteAllTextAsync(modelsPath, modelsWithoutManagedProvider);
     var missingLocalProviderPreview = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.LocalProviderId);
     Assert(missingLocalProviderPreview.Succeeded && missingLocalProviderPreview.IsNoOp == false && missingLocalProviderPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Added && missingLocalProviderPreview.Changes.Count == 0, "local target must maintain its provider definition even when every GPT route already uses it");
     var missingLocalProviderResult = await useCase.ExecuteAsync(settings, missingLocalProviderPreview);
-    Assert(missingLocalProviderResult.Succeeded && !missingLocalProviderResult.ConfigurationChanged && missingLocalProviderResult.ModelsChanged && File.ReadAllText(modelsPath).Contains("provider-price-switcher:", StringComparison.Ordinal), "local target must restore a missing managed provider definition without route changes");
+    var modelsWithManagedProvider = await File.ReadAllTextAsync(modelsPath);
+    Assert(
+        missingLocalProviderResult.Succeeded
+        && !missingLocalProviderResult.ConfigurationChanged
+        && missingLocalProviderResult.ModelsChanged
+        && modelsWithManagedProvider.Contains("provider-price-switcher:", StringComparison.Ordinal)
+        && modelsWithManagedProvider.Contains("existing:", StringComparison.Ordinal)
+        && modelsWithManagedProvider.Contains("other:", StringComparison.Ordinal)
+        && modelsWithManagedProvider.Contains("metadata:", StringComparison.Ordinal),
+        "local target must add only the missing managed Provider definition");
 
     var localNoOp = await useCase.PreviewAsync(settings, OmpConfigurationReplacementTargets.LocalProviderId);
     Assert(localNoOp.IsNoOp, "repeated local replacement with the same port must be a no-op");
@@ -114,6 +190,23 @@ try
     Assert((await File.ReadAllTextAsync(modelsPath)) != modelsBeforeNoOp
         && Directory.GetFiles(Path.GetDirectoryName(modelsPath)!, "models.yml.bak-*.yml").Length == backupsBeforeNoOp,
         "a managed Provider update must not create a backup containing catalog credentials");
+    var configBeforeModelsReadFailure = await File.ReadAllTextAsync(configPath);
+    using (var modelsLock = new FileStream(modelsPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var localReadFailure = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+        Assert(
+            !localReadFailure.Succeeded
+            && localReadFailure.FailureKind == OmpConfigurationReplacementFailureKind.ModelsReadFailed
+            && localReadFailure.ErrorMessage is not null
+            && !localReadFailure.ErrorMessage.Contains(syntheticCredential, StringComparison.Ordinal)
+            && await File.ReadAllTextAsync(configPath) == configBeforeModelsReadFailure,
+            "a local models.yml read failure must be structured, sanitized, and leave config.yml unchanged");
+        var officialWhileModelsUnreadable = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+        Assert(
+            officialWhileModelsUnreadable.Succeeded,
+            "official Provider preview must not read models.yml even when that file is unreadable");
+    }
+
 
     await File.WriteAllTextAsync(configPath, "modelRoles:\r\n  default: old-provider/gpt-5\r\nnot-a-mapping\r\n");
     var malformedShapePreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);

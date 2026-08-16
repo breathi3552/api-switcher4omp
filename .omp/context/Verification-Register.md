@@ -237,6 +237,16 @@
 - **Final fixed-base dual-axis review:** 固定基线 `7b4c1d44b8cbbadc7ec8b7700a08942d8643a474`；首轮 Standards/Spec 分别为 0/1 项，修复取消前残留备份；第二轮为 1/0 项，修复 stale 失败误报未创建备份路径；第三轮 Standards 与 Spec 均无剩余发现。
 - **Isolation:** 全部场景只使用临时 OMP root 与合成 YAML；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #16 本地 Provider 所有权统一计划证据
+
+- **status:** implementation complete; final CrossLayer、两轮 fixed-base 双轴审查和 release evidence 于 `2026-08-17` 完成。
+- **scope:** Infrastructure 替换 module 的单一语义计划同时承载 `config.yml` GPT 路由和本地 `models.yml` Provider 所有权；既有 Application 预览/执行 interface、当前供应商、`RouteSnapshot`、OMP 进程和手动重启 workflow 均未改变。
+- **OMP configuration runner:** 通过真实 `OmpConfigurationReplacementUseCase` 与 Infrastructure adapter 在临时 OMP root 覆盖 local Added/Updated/no-op、网关端口变化、缺少定义时只新增、重复及带 inline comment 的受管键收敛、其他 Provider/模型/注释/metadata 保留、本地读取失败的结构化且脱敏结果，以及 official preview/execute 在 `models.yml` 不可读时仍保持零访问；执行拒绝被篡改的 official 所有权字段，并在 config stale 时先返回 `StalePreview` 而不读取 models。
+- **App runner:** official 替换等待精确磁盘结果和 `IsReplacingOmpGptProvider` 收尾，STA 场景退出前显式释放托盘控制器、关闭窗口并 shutdown `Application`；定向压力复验连续 10 次通过，最终 CrossLayer App runner 通过且无残留 WPF 进程。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106219095` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 固定基线 `6a08de501c815040aa5b8e65f9816f4543ecc11e`；首轮 Standards/Spec 各发现 1 项同源 P2，修复 config stale 判定前不必要读取本地 `models.yml` 及错误失败分类；第二轮 Standards 与 Spec 均无剩余发现。按 Issue #16 停止条件，review 收敛为 0 后未再次触发审查。
+- **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；App runner 使用隔离临时 data/OMP root；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
