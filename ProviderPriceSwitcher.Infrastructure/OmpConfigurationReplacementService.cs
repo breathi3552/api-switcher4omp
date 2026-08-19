@@ -7,7 +7,8 @@ namespace ProviderPriceSwitcher.Infrastructure;
 public sealed class OmpConfigurationService(
     OmpConfigurationSwitcher switcher,
     IAppPathDefaults pathDefaults,
-    Func<string, CancellationToken, Task<string>>? readTextAsync = null) : IOmpConfigurationReplacementPort
+    Func<string, CancellationToken, Task<string>>? readTextAsync = null,
+    Action<string>? onFileWrittenForTesting = null) : IOmpConfigurationReplacementPort
 {
     private const string LocalProviderTemplate = """
           provider-price-switcher:
@@ -60,106 +61,12 @@ public sealed class OmpConfigurationService(
         var replacementPlan = buildResult.Plan;
         if (!Matches(preview, replacementPlan))
             return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "配置预览已失效，请重新预览后重试。");
-        if (!replacementPlan.HasChanges)
-            return new(true, preview);
 
-        var configPath = replacementPlan.ConfigurationPath;
-        var config = replacementPlan.Configuration;
-        var configPlan = replacementPlan.RoutePlan;
-        var models = replacementPlan.Models;
-        var modelsPlan = replacementPlan.ModelsPlan;
-
-        string? modelsBackupPath = null;
-        var modelsChanged = false;
-        var backupRetentionSucceeded = true;
-        try
-        {
-            if (modelsPlan is not null && modelsPlan.ChangeKind != OmpModelsProviderChangeKind.None)
-            {
-                ModelsWriteResult modelsWrite;
-                try
-                {
-                    modelsWrite = await WriteModelsAsync(modelsPlan, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (IOException)
-                {
-                    return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
-                }
-                if (!modelsWrite.Succeeded)
-                {
-                    if (modelsWrite.IsStale)
-                        return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP models.yml 在写入前发生变化，请重新预览。");
-                    return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
-                }
-                modelsBackupPath = modelsWrite.BackupPath;
-                modelsChanged = true;
-                backupRetentionSucceeded &= modelsWrite.BackupRetentionSucceeded;
-            }
-
-            string? configBackupPath = null;
-            var configChanged = false;
-            if (replacementPlan.HasRouteChanges)
-            {
-                var switchResult = await OmpConfigurationSwitcher.ApplyPlanAsync(
-                    configPath,
-                    configPlan,
-                    config.Version,
-                    cancellationToken).ConfigureAwait(false);
-                backupRetentionSucceeded &= switchResult.BackupRetentionSucceeded;
-                if (!switchResult.Succeeded)
-                {
-                    if (modelsChanged && models is not null && !await RestoreModelsAsync(models, cancellationToken).ConfigureAwait(false))
-                        return Failed(preview, OmpConfigurationReplacementFailureKind.RollbackFailed, "配置替换失败且无法回滚 models.yml。");
-                    if (switchResult.Exception is OmpConfigurationStaleException)
-                        return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP config.yml 在写入前发生变化，请重新预览。");
-                    return new(
-                        false,
-                        preview,
-                        ModelsChanged: false,
-                        ModelsBackupPath: modelsBackupPath,
-                        BackupRetentionSucceeded: backupRetentionSucceeded,
-                        FailureKind: OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed,
-                        ErrorMessage: "OMP config.yml 写入失败。");
-                }
-                configBackupPath = switchResult.BackupPath;
-                configChanged = true;
-            }
-
-            return new(
-                true,
-                preview,
-                configChanged,
-                modelsChanged,
-                configBackupPath,
-                modelsBackupPath,
-                backupRetentionSucceeded);
-        }
-        catch (OperationCanceledException)
-        {
-            if (modelsChanged && models is not null && !await RestoreModelsAsync(models, CancellationToken.None).ConfigureAwait(false))
-                throw new IOException("omp_models_rollback_failed");
-            throw;
-        }
-        catch (IOException)
-        {
-            if (modelsChanged && models is not null && !await RestoreModelsAsync(models, CancellationToken.None).ConfigureAwait(false))
-                return Failed(preview, OmpConfigurationReplacementFailureKind.RollbackFailed, "配置替换失败且无法回滚 models.yml。");
-            return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed, "OMP 配置写入失败。");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            if (modelsChanged && models is not null && !await RestoreModelsAsync(models, CancellationToken.None).ConfigureAwait(false))
-                return Failed(preview, OmpConfigurationReplacementFailureKind.RollbackFailed, "配置替换失败且无法回滚 models.yml。");
-            return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed, "OMP 配置写入失败。");
-        }
+        return await OmpConfigurationTransaction.CommitAsync(
+            replacementPlan,
+            preview,
+            onFileWrittenForTesting,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<PlanBuildResult> BuildPlanAsync(
@@ -322,105 +229,301 @@ public sealed class OmpConfigurationService(
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 
-    private static async Task<ModelsWriteResult> WriteModelsAsync(ModelsPlan plan, CancellationToken cancellationToken)
+    private static class OmpConfigurationTransaction
     {
-        var currentBytes = File.Exists(plan.Path)
-            ? await File.ReadAllBytesAsync(plan.Path, cancellationToken).ConfigureAwait(false)
-            : null;
-        var currentVersion = currentBytes is null ? null : Hash(currentBytes);
-        if (!string.Equals(currentVersion, plan.OriginalVersion, StringComparison.Ordinal))
-            return new(false, null, true, true);
-        var directory = Path.GetDirectoryName(Path.GetFullPath(plan.Path))!;
-        Directory.CreateDirectory(directory);
-        var encoding = plan.OriginalBytes is { Length: > 0 }
-            ? OmpConfigurationSwitcher.DetectEncoding(plan.OriginalBytes, out _)
-            : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        var preamble = plan.OriginalBytes is { Length: > 0 } && plan.OriginalBytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF })
-            ? encoding.GetPreamble()
-            : Array.Empty<byte>();
-        var output = preamble.Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
-        string? backupPath = null;
-        var tempPath = Path.Combine(directory, "." + Path.GetFileName(plan.Path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
-        var succeeded = false;
-        try
-        {
-            await WriteBytesAtomicallyAsync(tempPath, plan.Path, output, cancellationToken).ConfigureAwait(false);
-            succeeded = true;
-        }
-        catch (IOException)
-        {
-            TryDelete(tempPath);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            TryDelete(tempPath);
-        }
-        return new(succeeded, backupPath, true);
-    }
-
-    private static async Task WriteBytesAtomicallyAsync(
-        string tempPath,
-        string destinationPath,
-        byte[] bytes,
-        CancellationToken cancellationToken)
-    {
-        try
+        public static async Task<OmpConfigurationReplacementResult> CommitAsync(
+            OmpConfigurationReplacementPlan plan,
+            OmpConfigurationReplacementPreview preview,
+            Action<string>? onFileWrittenForTesting,
+            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
+            if (!plan.HasChanges)
+                return new(true, preview);
+
+            var configPath = plan.ConfigurationPath;
+            var config = plan.Configuration;
+            var configPlan = plan.RoutePlan;
+            var models = plan.Models;
+            var modelsPlan = plan.ModelsPlan;
+
+            var modelsChanged = false;
+            var configChanged = false;
+            string? configBackupPath = null;
+            var backupRetentionSucceeded = true;
+
+            try
             {
-                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                stream.Flush(flushToDisk: true);
+                if (modelsPlan is not null && modelsPlan.ChangeKind != OmpModelsProviderChangeKind.None)
+                {
+                    var modelsWrite = await WriteModelsAtomicallyAsync(
+                        modelsPlan,
+                        onFileWrittenForTesting,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!modelsWrite.Succeeded)
+                    {
+                        if (modelsWrite.IsStale)
+                            return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP models.yml 在写入前发生变化，请重新预览。");
+                        return Failed(preview, OmpConfigurationReplacementFailureKind.ModelsWriteFailed, "OMP models.yml 写入失败。");
+                    }
+                    modelsChanged = true;
+                }
+
+                if (plan.HasRouteChanges)
+                {
+                    var configWrite = await WriteConfigAtomicallyAsync(
+                        configPath,
+                        configPlan,
+                        config.Version,
+                        onFileWrittenForTesting,
+                        cancellationToken).ConfigureAwait(false);
+                    backupRetentionSucceeded &= configWrite.BackupRetentionSucceeded;
+                    if (!configWrite.Succeeded)
+                    {
+                        if (modelsChanged && models is not null && !await RestoreModelsAsync(models).ConfigureAwait(false))
+                            return Failed(preview, OmpConfigurationReplacementFailureKind.RollbackFailed, "配置替换失败且无法回滚 models.yml。");
+                        if (configWrite.IsStale)
+                            return Failed(preview, OmpConfigurationReplacementFailureKind.StalePreview, "OMP config.yml 在写入前发生变化，请重新预览。");
+                        return new(
+                            false,
+                            preview,
+                            ModelsChanged: false,
+                            BackupRetentionSucceeded: backupRetentionSucceeded,
+                            FailureKind: OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed,
+                            ErrorMessage: "OMP config.yml 写入失败。");
+                    }
+                    configBackupPath = configWrite.BackupPath;
+                    configChanged = true;
+                }
+
+                return new(
+                    true,
+                    preview,
+                    ConfigurationChanged: configChanged,
+                    ModelsChanged: modelsChanged,
+                    ConfigurationBackupPath: configBackupPath,
+                    ModelsBackupPath: null,
+                    BackupRetentionSucceeded: backupRetentionSucceeded);
             }
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(tempPath, destinationPath, overwrite: true);
-        }
-        finally
-        {
-            TryDelete(tempPath);
-        }
-    }
-
-    private static async Task<bool> RestoreModelsAsync(ModelsFile original, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (!original.Exists)
+            catch (OperationCanceledException)
             {
-                if (File.Exists(original.Path))
-                    File.Delete(original.Path);
+                if (modelsChanged && models is not null && !await RestoreModelsAsync(models).ConfigureAwait(false))
+                    throw new IOException("omp_models_rollback_failed");
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                if (modelsChanged && models is not null && !await RestoreModelsAsync(models).ConfigureAwait(false))
+                    return Failed(preview, OmpConfigurationReplacementFailureKind.RollbackFailed, "配置替换失败且无法回滚 models.yml。");
+                return Failed(preview, OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed, "OMP 配置写入失败。");
+            }
+        }
+
+        private static async Task<ModelsWriteResult> WriteModelsAtomicallyAsync(
+            ModelsPlan plan,
+            Action<string>? onFileWrittenForTesting,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var currentBytes = File.Exists(plan.Path)
+                ? await File.ReadAllBytesAsync(plan.Path, cancellationToken).ConfigureAwait(false)
+                : null;
+            var currentVersion = currentBytes is null ? null : Hash(currentBytes);
+            if (!string.Equals(currentVersion, plan.OriginalVersion, StringComparison.Ordinal))
+                return new(false, null, true, IsStale: true);
+
+            var directory = Path.GetDirectoryName(Path.GetFullPath(plan.Path))!;
+            Directory.CreateDirectory(directory);
+            var encoding = plan.OriginalBytes is { Length: > 0 }
+                ? OmpConfigurationSwitcher.DetectEncoding(plan.OriginalBytes, out _)
+                : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+            var preamble = plan.OriginalBytes is { Length: > 0 } && plan.OriginalBytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF })
+                ? encoding.GetPreamble()
+                : Array.Empty<byte>();
+            var output = preamble.Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
+            var tempPath = Path.Combine(directory, "." + Path.GetFileName(plan.Path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            var succeeded = false;
+            try
+            {
+                await WriteBytesAtomicallyAsync(tempPath, plan.Path, output, cancellationToken).ConfigureAwait(false);
+                succeeded = true;
+                onFileWrittenForTesting?.Invoke(plan.Path);
+            }
+            catch (OperationCanceledException)
+            {
+                TryDelete(tempPath);
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                TryDelete(tempPath);
+                return new(false, null, true, IsStale: false);
+            }
+            finally
+            {
+                TryDelete(tempPath);
+            }
+            return new(succeeded, null, true, IsStale: false);
+        }
+
+        private static async Task<ConfigWriteResult> WriteConfigAtomicallyAsync(
+            string path,
+            OmpConfigurationRoutePlan plan,
+            string expectedVersion,
+            Action<string>? onFileWrittenForTesting,
+            CancellationToken cancellationToken)
+        {
+            if (!plan.IsValid)
+                return new(false, null, true, IsStale: false);
+            if (!plan.CanApply)
+                return new(true, null, true, IsStale: false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(path))
+                return new(false, null, true, IsStale: true);
+
+            var currentBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(Hash(currentBytes), expectedVersion, StringComparison.Ordinal))
+                return new(false, null, true, IsStale: true);
+
+            var encoding = OmpConfigurationSwitcher.DetectEncoding(currentBytes, out var preambleLength);
+            var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+            var fileName = Path.GetFileName(path);
+            Directory.CreateDirectory(directory);
+
+            string? backupPath = null;
+            string? backupCandidatePath = null;
+            var tempPath = Path.Combine(directory, "." + fileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            var backupRetentionSucceeded = true;
+            var succeeded = false;
+
+            try
+            {
+                var output = encoding.GetPreamble().Concat(encoding.GetBytes(plan.UpdatedText)).ToArray();
+                await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
+                {
+                    await stream.WriteAsync(output, cancellationToken).ConfigureAwait(false);
+                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var recheckBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(Hash(recheckBytes), expectedVersion, StringComparison.Ordinal))
+                    return new(false, null, true, IsStale: true);
+
+                cancellationToken.ThrowIfCancellationRequested();
+                backupCandidatePath = OmpConfigurationSwitcher.CreateBackupPath(path);
+                File.Copy(path, backupCandidatePath, overwrite: false);
+                backupPath = backupCandidatePath;
+
+                File.Move(tempPath, path, overwrite: true);
+                succeeded = true;
+                onFileWrittenForTesting?.Invoke(path);
+            }
+            catch (OperationCanceledException)
+            {
+                TryDelete(tempPath);
+                if (backupPath is null && backupCandidatePath is not null)
+                    TryDelete(backupCandidatePath);
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                TryDelete(tempPath);
+                if (backupPath is null && backupCandidatePath is not null)
+                    TryDelete(backupCandidatePath);
+                return new(false, null, true, IsStale: false);
+            }
+            finally
+            {
+                TryDelete(tempPath);
+                if (succeeded)
+                {
+                    try
+                    {
+                        OmpConfigurationSwitcher.PruneBackups(directory, fileName);
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        backupRetentionSucceeded = false;
+                    }
+                }
+            }
+
+            return new(succeeded, backupPath, backupRetentionSucceeded, IsStale: false);
+        }
+
+        private static async Task<bool> RestoreModelsAsync(ModelsFile original)
+        {
+            try
+            {
+                if (!original.Exists)
+                {
+                    if (File.Exists(original.Path))
+                        File.Delete(original.Path);
+                    return true;
+                }
+
+                var directory = Path.GetDirectoryName(Path.GetFullPath(original.Path))!;
+                Directory.CreateDirectory(directory);
+                var tempPath = Path.Combine(directory, "." + Path.GetFileName(original.Path) + ".rollback." + Guid.NewGuid().ToString("N") + ".tmp");
+                await WriteBytesAtomicallyAsync(tempPath, original.Path, original.OriginalBytes ?? [], CancellationToken.None).ConfigureAwait(false);
                 return true;
             }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
 
-            var directory = Path.GetDirectoryName(Path.GetFullPath(original.Path))!;
-            Directory.CreateDirectory(directory);
-            var tempPath = Path.Combine(directory, "." + Path.GetFileName(original.Path) + ".rollback." + Guid.NewGuid().ToString("N") + ".tmp");
-            await WriteBytesAtomicallyAsync(tempPath, original.Path, original.OriginalBytes ?? [], cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch (IOException)
+        private static async Task WriteBytesAtomicallyAsync(
+            string tempPath,
+            string destinationPath,
+            byte[] bytes,
+            CancellationToken cancellationToken)
         {
-            return false;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.SequentialScan))
+                {
+                    await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+                    await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    stream.Flush(flushToDisk: true);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Move(tempPath, destinationPath, overwrite: true);
+            }
+            finally
+            {
+                TryDelete(tempPath);
+            }
         }
-        catch (UnauthorizedAccessException)
+
+        private static void TryDelete(string path)
         {
-            return false;
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+                // Preserve the write failure and let the caller report the stable failure kind.
+            }
         }
     }
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-                File.Delete(path);
-        }
-        catch
-        {
-            // Preserve the write failure and let the caller report the stable failure kind.
-        }
-    }
 
+    private sealed record ConfigWriteResult(
+        bool Succeeded,
+        string? BackupPath,
+        bool BackupRetentionSucceeded,
+        bool IsStale = false);
     private sealed record PlanBuildResult(
         OmpConfigurationReplacementPlan? Plan,
         OmpConfigurationReplacementFailureKind FailureKind = OmpConfigurationReplacementFailureKind.None,

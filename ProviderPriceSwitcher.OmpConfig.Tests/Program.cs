@@ -277,7 +277,6 @@ try
         && await File.ReadAllTextAsync(modelsPath) == modelsBeforeCancellation
         && Directory.GetFiles(Path.GetDirectoryName(configPath)!, "config.yml.bak-*.yml").Length == configBackupsBeforeCancellation,
         "preview and execution cancellation must propagate without file writes");
-
     File.Delete(configPath);
     var missingPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
     var missingResult = await useCase.ExecuteAsync(portSettings, missingPreview);
@@ -290,6 +289,154 @@ try
         && await File.ReadAllTextAsync(modelsPath) == modelsBeforeCancellation,
         "a missing primary configuration must remain a structured zero-write failure");
 
+    // Scenario: Dual-file rollback when models.yml originally existed
+    await File.WriteAllTextAsync(configPath, config);
+    await File.WriteAllTextAsync(modelsPath, models);
+    var dualRollbackPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+    Assert(dualRollbackPreview.Succeeded && dualRollbackPreview.HasRouteChanges && dualRollbackPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Updated, "dual rollback setup must preview both route and models changes");
+    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var rollbackResult = await useCase.ExecuteAsync(portSettings, dualRollbackPreview);
+        Assert(
+            !rollbackResult.Succeeded
+            && rollbackResult.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed
+            && !rollbackResult.ConfigurationChanged
+            && !rollbackResult.ModelsChanged
+            && await File.ReadAllTextAsync(configPath) == config
+            && await File.ReadAllTextAsync(modelsPath) == models,
+            "failed config write after models write must roll back models.yml to original content and report ConfigurationWriteFailed");
+    }
+
+    // Scenario: Dual-file rollback when models.yml did not exist originally
+    await File.WriteAllTextAsync(configPath, config);
+    if (File.Exists(modelsPath))
+        File.Delete(modelsPath);
+    var nonExistentModelsPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+    Assert(nonExistentModelsPreview.Succeeded && nonExistentModelsPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Added, "setup must create a plan adding models.yml");
+    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var rollbackNonExistentResult = await useCase.ExecuteAsync(portSettings, nonExistentModelsPreview);
+        Assert(
+            !rollbackNonExistentResult.Succeeded
+            && rollbackNonExistentResult.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationWriteFailed
+            && !rollbackNonExistentResult.ConfigurationChanged
+            && !rollbackNonExistentResult.ModelsChanged
+            && !File.Exists(modelsPath)
+            && await File.ReadAllTextAsync(configPath) == config,
+            "failed config write when models.yml did not exist originally must delete the written models.yml");
+    }
+
+    // Scenario: Dual-file rollback failure classification (RollbackFailed)
+    await File.WriteAllTextAsync(configPath, config);
+    await File.WriteAllTextAsync(modelsPath, models);
+    FileStream? modelsLockDuringRollback = null;
+    var serviceWithRollbackBlock = new OmpConfigurationService(
+        new OmpConfigurationSwitcher(),
+        paths,
+        onFileWrittenForTesting: path =>
+        {
+            if (path == modelsPath)
+                modelsLockDuringRollback = new FileStream(modelsPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        });
+    var useCaseWithRollbackBlock = new OmpConfigurationReplacementUseCase(serviceWithRollbackBlock);
+    var rollbackBlockPreview = await useCaseWithRollbackBlock.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+    try
+    {
+        using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var rollbackFailedResult = await useCaseWithRollbackBlock.ExecuteAsync(portSettings, rollbackBlockPreview);
+            Assert(
+                !rollbackFailedResult.Succeeded
+                && rollbackFailedResult.FailureKind == OmpConfigurationReplacementFailureKind.RollbackFailed
+                && rollbackFailedResult.ErrorMessage?.Contains("回滚", StringComparison.Ordinal) == true,
+                "when models.yml cannot be rolled back, RollbackFailed must be reported as a distinct failure kind");
+        }
+    }
+    finally
+    {
+        modelsLockDuringRollback?.Dispose();
+    }
+
+    // Scenario: Cancellation after models.yml write with uncancelable rollback
+    await File.WriteAllTextAsync(configPath, config);
+    await File.WriteAllTextAsync(modelsPath, models);
+    using var cancelAfterModelsWriteCts = new CancellationTokenSource();
+    var serviceWithCancelHook = new OmpConfigurationService(
+        new OmpConfigurationSwitcher(),
+        paths,
+        onFileWrittenForTesting: path =>
+        {
+            if (path == modelsPath)
+                cancelAfterModelsWriteCts.Cancel();
+        });
+    var useCaseWithCancelHook = new OmpConfigurationReplacementUseCase(serviceWithCancelHook);
+    var cancelPreview = await useCaseWithCancelHook.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+    var canceledThrown = false;
+    try
+    {
+        await useCaseWithCancelHook.ExecuteAsync(portSettings, cancelPreview, cancelAfterModelsWriteCts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        canceledThrown = true;
+    }
+    Assert(canceledThrown, "cancellation after models.yml write must propagate OperationCanceledException");
+    Assert(await File.ReadAllTextAsync(modelsPath) == models, "cancellation after models.yml write must restore original models.yml");
+
+    // Scenario: Cancellation after models.yml write when rollback fails
+    await File.WriteAllTextAsync(configPath, config);
+    await File.WriteAllTextAsync(modelsPath, models);
+    using var cancelAndLockCts = new CancellationTokenSource();
+    FileStream? modelsLockOnCancel = null;
+    var serviceWithCancelAndLock = new OmpConfigurationService(
+        new OmpConfigurationSwitcher(),
+        paths,
+        onFileWrittenForTesting: path =>
+        {
+            if (path == modelsPath)
+            {
+                modelsLockOnCancel = new FileStream(modelsPath, FileMode.Open, FileAccess.Read, FileShare.None);
+                cancelAndLockCts.Cancel();
+            }
+        });
+    var useCaseWithCancelAndLock = new OmpConfigurationReplacementUseCase(serviceWithCancelAndLock);
+    var cancelAndLockPreview = await useCaseWithCancelAndLock.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
+    var rollbackFailedExceptionThrown = false;
+    try
+    {
+        await useCaseWithCancelAndLock.ExecuteAsync(portSettings, cancelAndLockPreview, cancelAndLockCts.Token);
+    }
+    catch (IOException ex) when (ex.Message.Contains("omp_models_rollback_failed", StringComparison.Ordinal))
+    {
+        rollbackFailedExceptionThrown = true;
+    }
+    finally
+    {
+        modelsLockOnCancel?.Dispose();
+    }
+    Assert(rollbackFailedExceptionThrown, "cancellation when rollback fails must throw an IOException with omp_models_rollback_failed");
+
+    // Scenario: Config backup retention failure coexisting with replacement success
+    await File.WriteAllTextAsync(configPath, config);
+    var agentDir = paths.OmpAgentDirectory(ompRoot);
+    var mockOldBackup = Path.Combine(agentDir, "config.yml.bak-20260101000000001.yml");
+    for (var i = 1; i <= 6; i++)
+    {
+        var backupFile = Path.Combine(agentDir, $"config.yml.bak-2026010100000000{i}.yml");
+        await File.WriteAllTextAsync(backupFile, "# dummy old backup");
+    }
+    using (var backupLock = new FileStream(mockOldBackup, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var backupRetentionPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+        var backupRetentionResult = await useCase.ExecuteAsync(portSettings, backupRetentionPreview);
+        Assert(
+            backupRetentionResult.Succeeded
+            && backupRetentionResult.ConfigurationChanged
+            && !backupRetentionResult.BackupRetentionSucceeded
+            && backupRetentionResult.ConfigurationBackupPath is not null
+            && (await File.ReadAllTextAsync(configPath)) == expectedOfficialConfig,
+            "backup retention failure must coexist with replacement success without undoing the configuration replacement");
+    }
     Console.WriteLine("OMP configuration runner passed.");
 }
 finally

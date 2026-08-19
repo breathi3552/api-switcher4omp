@@ -247,6 +247,15 @@
 - **Final fixed-base dual-axis review:** 固定基线 `6a08de501c815040aa5b8e65f9816f4543ecc11e`；首轮 Standards/Spec 各发现 1 项同源 P2，修复 config stale 判定前不必要读取本地 `models.yml` 及错误失败分类；第二轮 Standards 与 Spec 均无剩余发现。按 Issue #16 停止条件，review 收敛为 0 后未再次触发审查。
 - **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；App runner 使用隔离临时 data/OMP root；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #17 替换计划驱动原子提交与回滚证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-19` 完成。
+- **scope:** Infrastructure 替换 module 内部将 stale 检测、原子写入、config 备份保留、models.yml 原文回滚、回滚失败分类和取消无取消回滚收拢至单一事务实现；既有 Application 预览/执行 interface、当前供应商、`RouteSnapshot`、OMP 进程和手动重启 workflow 保持不变。
+- **OMP configuration runner:** 通过真实 `OmpConfigurationReplacementUseCase` 与 Infrastructure adapter 在临时 OMP root 覆盖主配置与 `models.yml` 的 stale 拒绝、双文件提交中途失败时的 models.yml 原文回滚（包含原文件存在时恢复内容与原文件缺失时恢复删除状态）、models.yml 回滚失败时的 `RollbackFailed` 独立分类、取消发生在写入后触发无取消回滚、取消中回滚失败抛出 `IOException("omp_models_rollback_failed")`，以及 config backup retention 失败与配置替换成功并存（`BackupRetentionSucceeded = false`, `Succeeded = true`）。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106220697` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
+- **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
