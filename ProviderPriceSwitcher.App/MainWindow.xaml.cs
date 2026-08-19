@@ -93,6 +93,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ISidecarStatus? _sidecarStatus;
     private SidecarStatus? _gatewayStatus;
     private CancellationTokenSource? _checkCancellation;
+    private HomepageState _state;
     private string _statusText = "准备就绪";
     private string _currentProvider = "未应用";
     private string _recommendedProvider = "等待检查";
@@ -105,6 +106,7 @@ public sealed class MainViewModel : ObservableObject
     private bool _isReplacingOmpGptProvider;
     private string? _selectedOmpWorkingDirectory;
     private PricingRefreshResult? _lastResult;
+
     public MainViewModel(
         PricingCheckUseCase pricingCheck,
         SettingsUseCase settingsUseCase,
@@ -134,9 +136,11 @@ public sealed class MainViewModel : ObservableObject
         _lifetimeCancellationToken = lifetimeCancellationToken;
         _sidecarStatus = sidecarStatus;
         _gatewayStatus = sidecarStatus?.Current;
+
         if (_sidecarStatus is not null)
             _sidecarStatus.Changed += HandleSidecarStatusChanged;
         _activeRoute.Changed += HandleActiveRouteChanged;
+
         InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
         CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _checkCancellation is null);
         CancelCommand = new RelayCommand(() => _checkCancellation?.Cancel(), () => _checkCancellation is not null);
@@ -145,12 +149,12 @@ public sealed class MainViewModel : ObservableObject
         StartOmpCommand = new AsyncCommand(StartOmpAsync, HandleCommandError);
         ManageSitesCommand = new RelayCommand(ManageSites);
         SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
-        foreach (var providerId in OmpConfigurationReplacementTargets.All)
-            OmpConfigurationTargetChoices.Add(new OmpConfigurationTargetChoice(providerId));
-        SelectedOmpConfigurationTarget = OmpConfigurationTargetChoices.FirstOrDefault();
-        LoadWorkingDirectories(settings);
+
+        _state = HomepageStateProjector.ProjectInitial(settings, _activeRoute.CurrentProviderId, _gatewayStatus, null);
+        ApplyState(_state);
     }
 
+    public HomepageState State => _state;
     public ObservableCollection<PriceRow> Rows { get; } = [];
     public ObservableCollection<ProviderChoice> ProviderChoices { get; } = [];
     public ObservableCollection<OmpConfigurationTargetChoice> OmpConfigurationTargetChoices { get; } = [];
@@ -174,26 +178,9 @@ public sealed class MainViewModel : ObservableObject
         "配置替换失败" => Brushes.IndianRed,
         _ => Brushes.DarkOrange
     };
-    public string GatewayPortStatus => _settings.GatewayPort == _settings.CurrentGatewayPort
-        ? $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}"
-        : $"网关端口：127.0.0.1:{_settings.CurrentGatewayPort}；下次启动：{_settings.GatewayPort}";
-    public string GatewayStatusText => _gatewayStatus?.Status switch
-    {
-        SidecarConnectionStatus.Ready => "网关运行中",
-        SidecarConnectionStatus.Starting => "网关启动中",
-        SidecarConnectionStatus.Disconnected => "网关连接断开",
-        SidecarConnectionStatus.Faulted => "网关故障",
-        SidecarConnectionStatus.Stopped => "网关已停止",
-        _ => "网关状态未知"
-    };
-    public string ActiveRouteStatusText => _gatewayStatus?.Status switch
-    {
-        SidecarConnectionStatus.Ready => _activeRoute.CurrentProviderId is null ? "无活动路由" : "活动路由已应用",
-        SidecarConnectionStatus.Starting => "网关恢复中",
-        SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => "网关不可用",
-        SidecarConnectionStatus.Stopped => "网关已停止",
-        _ => _activeRoute.CurrentProviderId is null ? "无活动路由" : "网关状态未知"
-    };
+    public string GatewayPortStatus => _state.GatewayPortStatus;
+    public string GatewayStatusText => _state.GatewayStatusText;
+    public string ActiveRouteStatusText => _state.ActiveRouteStatusText;
     public Brush GatewayStatusBrush => _gatewayStatus?.Status switch
     {
         SidecarConnectionStatus.Ready => Brushes.SeaGreen,
@@ -216,47 +203,115 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (SetProperty(ref _selectedOmpConfigurationTarget, value))
+            {
+                _state = HomepageStateProjector.ProjectSelectedOmpTarget(_state, value);
                 ReplaceOmpGptProviderCommand.RaiseCanExecuteChanged();
+            }
         }
     }
-    public ProviderChoice? SelectedProvider { get => _selectedProvider; set { if (SetProperty(ref _selectedProvider, value)) { OnPropertyChanged(nameof(SelectionHint)); ApplyRouteCommand.RaiseCanExecuteChanged(); } } }
-    public string? SelectedOmpWorkingDirectory { get => _selectedOmpWorkingDirectory; set => SetProperty(ref _selectedOmpWorkingDirectory, value); }
+    public ProviderChoice? SelectedProvider
+    {
+        get => _selectedProvider;
+        set
+        {
+            if (SetProperty(ref _selectedProvider, value))
+            {
+                _state = HomepageStateProjector.ProjectSelectedProvider(_state, value);
+                OnPropertyChanged(nameof(SelectionHint));
+                ApplyRouteCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+    public string? SelectedOmpWorkingDirectory
+    {
+        get => _selectedOmpWorkingDirectory;
+        set
+        {
+            if (SetProperty(ref _selectedOmpWorkingDirectory, value))
+            {
+                _state = HomepageStateProjector.ProjectSelectedWorkingDirectory(_state, value);
+            }
+        }
+    }
     public bool IsApplyingRoute { get => _isApplyingRoute; private set { if (SetProperty(ref _isApplyingRoute, value)) OnPropertyChanged(nameof(ApplyRouteButtonText)); } }
     public bool IsStartingOmp { get => _isStartingOmp; private set { if (SetProperty(ref _isStartingOmp, value)) OnPropertyChanged(nameof(StartOmpButtonText)); } }
     public bool IsReplacingOmpGptProvider { get => _isReplacingOmpGptProvider; private set { if (SetProperty(ref _isReplacingOmpGptProvider, value)) OnPropertyChanged(nameof(ReplaceOmpGptProviderButtonText)); } }
-    public string ApplyRouteButtonText => IsApplyingRoute ? "应用中…" : "应用供应商";
-    public string ReplaceOmpGptProviderButtonText => IsReplacingOmpGptProvider ? "替换中…" : "替换 OMP GPT";
-    public string StartOmpButtonText => IsStartingOmp ? "启动中…" : "启动 OMP";
-    public static string SelectionHint => "仅当前分组可应用；最低价分组只读比较。";
+    public string ApplyRouteButtonText => _state.ApplyRouteButtonText;
+    public string ReplaceOmpGptProviderButtonText => _state.ReplaceOmpGptProviderButtonText;
+    public string StartOmpButtonText => _state.StartOmpButtonText;
+    public static string SelectionHint => HomepageState.DefaultSelectionHint;
+
+    private void ApplyState(HomepageState state)
+    {
+        _state = state;
+
+        Rows.Clear();
+        foreach (var row in state.Rows) Rows.Add(row);
+
+        ProviderChoices.Clear();
+        foreach (var choice in state.ProviderChoices) ProviderChoices.Add(choice);
+
+        OmpConfigurationTargetChoices.Clear();
+        foreach (var target in state.OmpConfigurationTargetChoices) OmpConfigurationTargetChoices.Add(target);
+
+        OmpWorkingDirectoryChoices.Clear();
+        foreach (var dir in state.OmpWorkingDirectoryChoices) OmpWorkingDirectoryChoices.Add(dir);
+
+        StatusText = state.StatusText;
+        CurrentProvider = state.CurrentProvider;
+        RecommendedProvider = state.RecommendedProvider;
+        LastCheckedText = state.LastCheckedText;
+        OmpConfigurationStatus = state.OmpConfigurationStatus;
+        SelectedProvider = state.SelectedProvider;
+        SelectedOmpConfigurationTarget = state.SelectedOmpConfigurationTarget;
+        SelectedOmpWorkingDirectory = state.SelectedOmpWorkingDirectory;
+        IsApplyingRoute = state.IsApplyingRoute;
+        IsStartingOmp = state.IsStartingOmp;
+        IsReplacingOmpGptProvider = state.IsReplacingOmpGptProvider;
+
+        OnPropertyChanged(nameof(GatewayPortStatus));
+        OnPropertyChanged(nameof(GatewayStatusText));
+        OnPropertyChanged(nameof(ActiveRouteStatusText));
+        OnPropertyChanged(nameof(GatewayStatusBrush));
+        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
+        OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
+        OnPropertyChanged(nameof(ApplyRouteButtonText));
+        OnPropertyChanged(nameof(ReplaceOmpGptProviderButtonText));
+        OnPropertyChanged(nameof(StartOmpButtonText));
+
+        CheckCommand.RaiseCanExecuteChanged();
+        CancelCommand.RaiseCanExecuteChanged();
+        ApplyRouteCommand.RaiseCanExecuteChanged();
+        ReplaceOmpGptProviderCommand.RaiseCanExecuteChanged();
+        StartOmpCommand.RaiseCanExecuteChanged();
+    }
 
     public async Task InitializeAsync()
     {
         var restored = await _applyActiveRoute.RestoreAsync(_lifetimeCancellationToken);
         _settings = restored.Settings with { CurrentGatewayPort = _settings.CurrentGatewayPort };
-        LoadWorkingDirectories(_settings);
-        OnPropertyChanged(nameof(GatewayPortStatus));
-        OnPropertyChanged(nameof(GatewayStatusBrush));
-        OnPropertyChanged(nameof(GatewayStatusText));
-        OnPropertyChanged(nameof(ActiveRouteStatusText));
-        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
-        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-        LoadPersistedPrices();
+        var snapshotResult = _snapshotQuery.Load();
+        var snapshots = snapshotResult.IsSuccess ? snapshotResult.Snapshots : null;
+        var initialState = HomepageStateProjector.ProjectInitial(
+            _settings,
+            _activeRoute.CurrentProviderId,
+            _gatewayStatus,
+            snapshots,
+            snapshotResult.IsSuccess);
+
         if (!restored.Succeeded)
-            StatusText = UserErrorMessages.ForApplyRouteStatus(restored.Status);
+        {
+            initialState = initialState with { StatusText = UserErrorMessages.ForApplyRouteStatus(restored.Status) };
+        }
+
+        ApplyState(initialState);
+
+        if (!snapshotResult.IsSuccess)
+        {
+            LogUiFailure(_logger, "SnapshotReadFailed", null);
+        }
     }
-    private void LoadWorkingDirectories(LocalAppSettings settings)
-    {
-        OmpWorkingDirectoryChoices.Clear();
-        foreach (var directory in settings.OmpWorkingDirectories
-                     .Where(path => !string.IsNullOrWhiteSpace(path))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-            OmpWorkingDirectoryChoices.Add(directory);
-        if (OmpWorkingDirectoryChoices.Count == 0 && !string.IsNullOrWhiteSpace(settings.OmpRootDirectory))
-            OmpWorkingDirectoryChoices.Add(settings.OmpRootDirectory);
-        SelectedOmpWorkingDirectory =
-            OmpWorkingDirectoryChoices.FirstOrDefault(path => string.Equals(path, settings.LastOmpWorkingDirectory, StringComparison.OrdinalIgnoreCase))
-            ?? OmpWorkingDirectoryChoices.FirstOrDefault();
-    }
+
     private void HandleSidecarStatusChanged(SidecarStatus status)
     {
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
@@ -281,39 +336,32 @@ public sealed class MainViewModel : ObservableObject
 
     private void SetActiveRouteStatus()
     {
-        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-        OnPropertyChanged(nameof(ActiveRouteStatusText));
-        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
+        ApplyState(HomepageStateProjector.ProjectActiveRoute(_state, _activeRoute.CurrentProviderId, _gatewayStatus));
     }
 
     private void SetGatewayStatus(SidecarStatus status)
     {
         if (_gatewayStatus == status) return;
         _gatewayStatus = status;
-        OnPropertyChanged(nameof(GatewayStatusText));
-        OnPropertyChanged(nameof(GatewayStatusBrush));
-        OnPropertyChanged(nameof(ActiveRouteStatusText));
-        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
+        ApplyState(HomepageStateProjector.ProjectGatewayStatus(_state, status, _activeRoute.CurrentProviderId, _settings.CurrentGatewayPort, _settings.GatewayPort));
     }
-
 
     private async Task StartOmpAsync()
     {
         if (IsStartingOmp) return;
-        IsStartingOmp = true;
+        ApplyState(HomepageStateProjector.ProjectStartingOmpStarted(_state));
         try
         {
             _lifetimeCancellationToken.ThrowIfCancellationRequested();
             var workingDirectory = SelectedOmpWorkingDirectory ?? _settings.OmpRootDirectory;
             var outcome = await _ompLaunch.LaunchAsync(_settings, workingDirectory, _lifetimeCancellationToken);
             _settings = outcome.Settings;
-            StatusText = UserErrorMessages.ForOmpLaunchStatus(outcome);
-            OnPropertyChanged(nameof(GatewayPortStatus));
-            OnPropertyChanged(nameof(GatewayStatusBrush));
+            ApplyState(HomepageStateProjector.ProjectStartingOmpCompleted(_state, outcome, _settings));
         }
         finally
         {
-            IsStartingOmp = false;
+            if (IsStartingOmp)
+                ApplyState(_state with { IsStartingOmp = false });
         }
     }
 
@@ -322,7 +370,7 @@ public sealed class MainViewModel : ObservableObject
         if (_ompReplacement is null || SelectedOmpConfigurationTarget is null || IsReplacingOmpGptProvider)
             return;
 
-        IsReplacingOmpGptProvider = true;
+        ApplyState(HomepageStateProjector.ProjectReplacingOmpStarted(_state));
         try
         {
             _lifetimeCancellationToken.ThrowIfCancellationRequested();
@@ -330,17 +378,13 @@ public sealed class MainViewModel : ObservableObject
             var preview = await _ompReplacement.PreviewAsync(_settings, target, _lifetimeCancellationToken);
             if (!preview.Succeeded)
             {
-                OmpConfigurationStatus = "配置替换失败";
-                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
-                StatusText = preview.ErrorMessage ?? "无法预览 OMP 配置替换。";
+                ApplyState(HomepageStateProjector.ProjectReplacingOmpPreview(_state, preview, false));
                 return;
             }
 
             if (!preview.HasChanges)
             {
-                OmpConfigurationStatus = "无可变更 GPT";
-                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
-                StatusText = "没有需要替换的 GPT 路由，未写入文件。";
+                ApplyState(HomepageStateProjector.ProjectReplacingOmpPreview(_state, preview, false));
                 return;
             }
 
@@ -359,30 +403,17 @@ public sealed class MainViewModel : ObservableObject
                 "预览 OMP GPT 供应商替换");
             if (!confirmed)
             {
-                StatusText = "已取消 OMP 配置替换，未写入文件。";
+                ApplyState(HomepageStateProjector.ProjectReplacingOmpPreview(_state, preview, false, "已取消 OMP 配置替换，未写入文件。"));
                 return;
             }
 
             var result = await _ompReplacement.ExecuteAsync(_settings, preview, _lifetimeCancellationToken);
-            if (!result.Succeeded)
-            {
-                OmpConfigurationStatus = "配置替换失败";
-                OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
-                StatusText = result.ErrorMessage ?? "OMP 配置替换失败，未报告成功。";
-                return;
-            }
-
-            OmpConfigurationStatus = "配置已替换";
-            OnPropertyChanged(nameof(OmpConfigurationStatusBrush));
-            StatusText = !result.BackupRetentionSucceeded
-                ? "OMP 配置已替换，但旧备份清理失败；请检查备份数量后再手动重启 OMP。"
-                : result.Preview.IsNoOp
-                    ? "没有需要替换的 GPT 路由，未写入文件。"
-                    : "OMP 配置已替换；已运行的 OMP 需要手动重启后生效。";
+            ApplyState(HomepageStateProjector.ProjectReplacingOmpCompleted(_state, result));
         }
         finally
         {
-            IsReplacingOmpGptProvider = false;
+            if (IsReplacingOmpGptProvider)
+                ApplyState(_state with { IsReplacingOmpGptProvider = false });
         }
     }
 
@@ -391,25 +422,17 @@ public sealed class MainViewModel : ObservableObject
         if (_checkCancellation is not null) return;
         using var checkCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellationToken);
         _checkCancellation = checkCancellation;
-        CheckCommand.RaiseCanExecuteChanged();
-        CancelCommand.RaiseCanExecuteChanged();
-        StatusText = "正在检查已启用站点的价格…";
+        ApplyState(HomepageStateProjector.ProjectPriceCheckStarted(_state));
         try
         {
             var outcome = await _pricingCheck.ExecuteAsync(_settings, _activeRoute.CurrentProviderId, checkCancellation.Token);
             _settings = outcome.Settings;
             _lastResult = outcome.RefreshResult;
-            MapResult(_lastResult, LocalAppSettings.DefaultUsageProfile);
-            LastCheckedText = _lastResult.CompletedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-            StatusText = "检查完成。";
+            ApplyState(HomepageStateProjector.ProjectPriceCheckCompleted(_state, _settings, _lastResult, _activeRoute.CurrentProviderId, LocalAppSettings.DefaultUsageProfile));
         }
         catch (OperationCanceledException)
         {
-            StatusText = "已取消检查。";
-        }
-        catch (Exception)
-        {
-            throw;
+            ApplyState(HomepageStateProjector.ProjectPriceCheckCanceled(_state));
         }
         finally
         {
@@ -420,101 +443,21 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void MapResult(PricingRefreshResult result, UsageProfile usage)
-    {
-        Rows.Clear();
-        var previousSelection = SelectedProvider?.ProviderId;
-        foreach (var site in _settings.Sites)
-        {
-            var state = result.Sites.FirstOrDefault(x => x.ProviderId == site.ProviderId);
-            var pricing = state?.PricingResult;
-            var snapshot = pricing?.Snapshot ?? state?.PreviousSnapshot ?? result.LatestSnapshots.GetValueOrDefault(site.ProviderId);
-            AddRows(site, snapshot, usage, state, pricing);
-        }
-        var recommended = result.Recommendation.Selected?.Site.ProviderId;
-        RecommendedProvider = recommended ?? "无可自动推荐项";
-        LoadProviderChoices(recommended ?? previousSelection);
-    }
-
-    private void LoadPersistedPrices(string? preferredProvider = null)
-    {
-        var result = _snapshotQuery.Load();
-        if (!result.IsSuccess)
-        {
-            StatusText = "无法读取上次价格记录，请检查本地数据文件。";
-            LogUiFailure(_logger, "SnapshotReadFailed", null);
-            return;
-        }
-
-        var snapshots = result.Snapshots;
-        var usage = LocalAppSettings.DefaultUsageProfile;
-        Rows.Clear();
-        DateTimeOffset? latest = null;
-        foreach (var site in _settings.Sites)
-        {
-            var snapshot = snapshots.GetValueOrDefault(site.ProviderId);
-            AddRows(site, snapshot, usage, null, null);
-            if (snapshot is not null && (latest is null || snapshot.RefreshedAt > latest)) latest = snapshot.RefreshedAt;
-        }
-        LastCheckedText = latest?.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "尚未检查";
-        RecommendedProvider = "等待手动检查";
-        LoadProviderChoices(preferredProvider ?? CurrentProvider);
-        StatusText = snapshots.Count > 0 ? "已加载上次检查结果；点击“检查价格”更新。" : "尚无价格记录；点击“检查价格”。";
-    }
-
-    private void AddRows(SiteConfiguration site, PricingSnapshot? snapshot, UsageProfile usage, PricingRefreshSiteResult? state, SitePricingResult? pricing)
-    {
-        var unavailable = snapshot is not null && !snapshot.Matches(site);
-        var failed = state is not null && state.Status == PricingRefreshSiteStatus.Failed;
-        var stale = unavailable || failed;
-        var warning = pricing?.Warnings.Count > 0;
-        var status = state is null
-            ? site.Enabled ? snapshot is null ? "未检查" : unavailable ? "不可用" : "已保存" : "已禁用"
-            : state.Status == PricingRefreshSiteStatus.Succeeded ? warning ? "成功（警告）" : "成功"
-            : state.Status == PricingRefreshSiteStatus.Disabled ? "已禁用"
-            : state.FailureKind == PricingRefreshFailureKind.Authentication ? "需认证"
-            : "失败";
-        var issue = state?.Status == PricingRefreshSiteStatus.Failed
-            ? UserErrorMessages.ForPricingFailure(state.FailureKind)
-            : warning ? "价格数据包含提示，请谨慎核对。" : string.Empty;
-        if (snapshot is null)
-        {
-            Rows.Add(new PriceRow(site.ProviderId, status, site.CurrentGroup + " [当前]", site.CurrentGroupRatio, null, usage, "—", site.GroupRatioSource, null, issue, stale, warning, true, site.BaseUrl, site.ConfigurationApiAddress));
-            return;
-        }
-        var effective = site.CurrentGroupRatio is > 0
-            ? snapshot.WithCurrentRatio(site.CurrentGroupRatio.Value, site.GroupRatioSource)
-            : snapshot;
-        var minimumSame = string.Equals(effective.MinimumGroup, site.CurrentGroup, StringComparison.Ordinal);
-        var currentLabel = site.CurrentGroup + (minimumSame ? " [当前][最低]" : " [当前]");
-        Rows.Add(new PriceRow(site.ProviderId, status, currentLabel, effective.CurrentGroupRatio ?? site.CurrentGroupRatio, effective.Prices, usage, "—", effective.GroupRatioSource, effective.RefreshedAt, issue, stale, warning, true, site.BaseUrl, site.ConfigurationApiAddress));
-        if (!minimumSame && !string.IsNullOrWhiteSpace(effective.MinimumGroup) && effective.MinimumGroupPrices is not null)
-            Rows.Add(new PriceRow(site.ProviderId, status, effective.MinimumGroup + " [最低]", effective.MinimumGroupRatio, effective.MinimumGroupPrices, usage, "—", "自动", effective.RefreshedAt, state?.FailureKind == PricingRefreshFailureKind.Authentication ? "需先绑定或更新凭据" : "仅供手动选择，未参与自动推荐", stale, warning));
-    }
-
-
     private async Task ApplyRouteAsync()
     {
         var choice = SelectedProvider;
         if (choice is null || IsApplyingRoute) return;
-        IsApplyingRoute = true;
+        ApplyState(HomepageStateProjector.ProjectApplyingRouteStarted(_state));
         try
         {
             var outcome = await _applyActiveRoute.ExecuteAsync(_settings, choice.ProviderId, _lifetimeCancellationToken);
             _settings = outcome.Settings;
-            CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-            OnPropertyChanged(nameof(ActiveRouteStatusText));
-            OnPropertyChanged(nameof(ActiveRouteStatusBrush));
-            StatusText = UserErrorMessages.ForApplyRouteStatus(outcome.Status);
+            ApplyState(HomepageStateProjector.ProjectApplyingRouteCompleted(_state, outcome, _activeRoute.CurrentProviderId, _gatewayStatus));
         }
         catch (Exception)
         {
-            StatusText = UserErrorMessages.Unexpected;
+            ApplyState(_state with { IsApplyingRoute = false, StatusText = UserErrorMessages.Unexpected });
             LogUiFailure(_logger, "ApplyRouteUnexpected", null);
-        }
-        finally
-        {
-            IsApplyingRoute = false;
         }
     }
 
@@ -524,14 +467,9 @@ public sealed class MainViewModel : ObservableObject
         if (dialog.ShowDialog() == true)
         {
             _settings = _settingsUseCase.Save(dialog.Settings) with { CurrentGatewayPort = _settings.CurrentGatewayPort };
-            LoadWorkingDirectories(_settings);
-            OnPropertyChanged(nameof(GatewayPortStatus));
-            OnPropertyChanged(nameof(GatewayStatusBrush));
-            OnPropertyChanged(nameof(GatewayStatusText));
-            OnPropertyChanged(nameof(ActiveRouteStatusText));
-            OnPropertyChanged(nameof(ActiveRouteStatusBrush));
-            CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-            LoadPersistedPrices();
+            var snapshotResult = _snapshotQuery.Load();
+            var snapshots = snapshotResult.IsSuccess ? snapshotResult.Snapshots : null;
+            ApplyState(HomepageStateProjector.ProjectSettingsUpdated(_state, _settings, _activeRoute.CurrentProviderId, snapshots, snapshotResult.IsSuccess));
         }
         await Task.CompletedTask;
     }
@@ -543,51 +481,14 @@ public sealed class MainViewModel : ObservableObject
         _notifications.ShowError(StatusText, "操作失败");
     }
 
-    private void LoadProviderChoices(string? preferredProvider)
-    {
-        ProviderChoices.Clear();
-        foreach (var providerId in _settings.Sites.Where(x => x.Enabled).Select(x => x.ProviderId).Distinct(StringComparer.Ordinal)) ProviderChoices.Add(new ProviderChoice(providerId));
-        SelectedProvider = ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, preferredProvider, StringComparison.Ordinal)) ?? ProviderChoices.FirstOrDefault(x => string.Equals(x.ProviderId, CurrentProvider, StringComparison.Ordinal));
-    }
-
     private void ManageSites()
     {
         var previousSelection = SelectedProvider?.ProviderId;
         var dialog = _sitesDialogFactory.Create(_settings, CurrentProvider);
         dialog.ShowDialog();
         _settings = dialog.Settings;
-        CurrentProvider = _activeRoute.CurrentProviderId ?? "未应用";
-        OnPropertyChanged(nameof(ActiveRouteStatusText));
-        OnPropertyChanged(nameof(ActiveRouteStatusBrush));
-        LoadPersistedPrices(previousSelection);
+        var snapshotResult = _snapshotQuery.Load();
+        var snapshots = snapshotResult.IsSuccess ? snapshotResult.Snapshots : null;
+        ApplyState(HomepageStateProjector.ProjectSettingsUpdated(_state, _settings, _activeRoute.CurrentProviderId, snapshots, snapshotResult.IsSuccess, previousSelection));
     }
-}
-public sealed record OmpConfigurationTargetChoice(string ProviderId)
-{
-    public string Display => ProviderId == OmpConfigurationReplacementTargets.LocalProviderId
-        ? "provider-price-switcher（本地）"
-        : "openai-codex（官方 OAuth）";
-}
-
-public sealed record ProviderChoice(string ProviderId) { public string Display => ProviderId; }
-public sealed class PriceRow
-{
-    public PriceRow(string providerId, string status, string group, decimal? ratio, TokenPrices? prices, UsageProfile usage, string cacheHitRate, string ratioSource, DateTimeOffset? checkedAt, string issue, bool isStale, bool hasWarning, bool isSiteFirstRow = false, Uri? baseUrl = null, string? configurationApiAddress = null)
-    { ProviderId = providerId; Status = status; Group = group; Ratio = ratio?.ToString("0.####", CultureInfo.InvariantCulture) ?? "—"; InputPrice = prices?.InputPerMillion.ToString("0.####") ?? "—"; CachedPrice = prices?.CachedInputPerMillion.ToString("0.####") ?? "—"; OutputPrice = prices?.OutputPerMillion.ToString("0.####") ?? "—"; EstimatedCost = prices is null ? "—" : PricingCalculator.Calculate(usage, prices).ToString("0.####"); CacheHitRate = cacheHitRate; RatioSource = string.IsNullOrWhiteSpace(ratioSource) ? "—" : ratioSource; UpdatedAt = checkedAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "—"; Issue = issue; IsStale = isStale; HasWarning = hasWarning; IsSiteFirstRow = isSiteFirstRow; KeysUri = isSiteFirstRow ? MainWindow.BuildKeysUri(baseUrl, configurationApiAddress) : null; }
-    public string ProviderId { get; }
-    public string Status { get; }
-    public string Group { get; }
-    public string Ratio { get; }
-    public string InputPrice { get; }
-    public string CachedPrice { get; }
-    public string OutputPrice { get; }
-    public string EstimatedCost { get; }
-    public string CacheHitRate { get; }
-    public string RatioSource { get; }
-    public string UpdatedAt { get; }
-    public string Issue { get; }
-    public bool IsStale { get; }
-    public bool HasWarning { get; }
-    public bool IsSiteFirstRow { get; }
-    public Uri? KeysUri { get; }
 }

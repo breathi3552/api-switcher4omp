@@ -266,6 +266,15 @@
 - **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106216899` bytes）产物及 sidecar manifest hash。
 - **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；App runner 使用隔离临时 data/OMP root；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #19 建立首页 Presentation Workflow 核心契约与结构化状态投影证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-19` 完成。
+- **scope:** 在 App 层建立单一、结构化的 `HomepageState` 页面投影模型与 `HomepageStateProjector` 状态计算器；统一收敛价格行、当前供应商、网关状态、OMP 配置状态、待应用推荐、操作提示文案与各操作独立的 Busy 状态；`MainViewModel` 接入投影计算；新增无 STA Window 依赖的纯内存契约测试。
+- **App runner:** 新增内存契约测试覆盖无快照初始投影、快照分组匹配（当前组与最低组相同合并 `[当前][最低]`，不同时拆分 `[当前]` 与 `[最低]` 独立行）、快照加载失败降级、价格检查成功推荐更新待应用选择且当前供应商不变、价格检查取消恢复、价格检查失败保留旧快照标记 stale 与认证失败文案、各操作独立的 Busy 标记与按钮文案变化（应用供应商、启动 OMP、替换 OMP 配置）、5 种 SidecarConnectionStatus 与活动路由 6 种组合独立投影、设置与工作目录更新等 8 大核心场景；既有 STA 场景保持全部通过。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106222236` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

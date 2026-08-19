@@ -118,6 +118,289 @@ editor.Descriptor = editor.Descriptors[1];
 Assert(editor.AuthenticationMode == "令牌" && editor.CredentialVisible, "descriptor switch must reset auth and credential visibility");
 Assert(editor.CanSave == false, "invalid draft must not save");
 
+var hpSites = new ProviderPriceSwitcher.Core.SiteConfiguration[]
+{
+    new()
+    {
+        ProviderId = "site-a",
+        ConfigurationKey = "key-a",
+        BaseUrl = new Uri("https://a.example/api"),
+        ConfigurationApiAddress = "/custom/keys",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "default-group",
+        CurrentGroupRatio = 1.2m,
+        GroupRatioSource = "手动",
+        Enabled = true
+    },
+    new()
+    {
+        ProviderId = "site-b",
+        ConfigurationKey = "key-b",
+        BaseUrl = new Uri("https://b.example"),
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "group-vip",
+        CurrentGroupRatio = 1.0m,
+        GroupRatioSource = "自动",
+        Enabled = true
+    },
+    new()
+    {
+        ProviderId = "site-disabled",
+        ConfigurationKey = "key-c",
+        BaseUrl = new Uri("https://c.example"),
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "default",
+        Enabled = false
+    }
+};
+var hpSettings = new ProviderPriceSwitcher.Application.LocalAppSettings
+{
+    Model = "gpt-5.6-sol",
+    GatewayPort = 16222,
+    CurrentGatewayPort = 15722,
+    OmpRootDirectory = "C:\\test\\omp-root",
+    OmpWorkingDirectories = ["C:\\test\\dir1", "C:\\test\\dir2", "C:\\test\\dir1"],
+    LastOmpWorkingDirectory = "C:\\test\\dir2",
+    Sites = hpSites
+};
+var initStateNoSnap = HomepageStateProjector.ProjectInitial(
+    hpSettings,
+    activeProviderId: null,
+    gatewayStatus: new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Stopped),
+    persistedSnapshots: null,
+    snapshotReadSuccess: true);
+Assert(initStateNoSnap.Rows.Count == 3, "initial projection without snapshots must yield one row per site");
+Assert(initStateNoSnap.CurrentProvider == "未应用", "null active provider must project as '未应用'");
+Assert(initStateNoSnap.RecommendedProvider == "等待手动检查", "initial recommended provider must be '等待手动检查'");
+Assert(initStateNoSnap.LastCheckedText == "尚未检查", "initial last checked text with no snapshots must be '尚未检查'");
+Assert(initStateNoSnap.GatewayPortStatus == "网关端口：127.0.0.1:15722；下次启动：16222", "different gateway port must format with next startup note");
+Assert(initStateNoSnap.GatewayStatusText == "网关已停止", "stopped gateway status text mismatch");
+Assert(initStateNoSnap.ActiveRouteStatusText == "网关已停止", "stopped active route status text mismatch");
+Assert(initStateNoSnap.OmpWorkingDirectoryChoices.SequenceEqual(["C:\\test\\dir1", "C:\\test\\dir2"]), "working directories must deduplicate and preserve order");
+Assert(initStateNoSnap.SelectedOmpWorkingDirectory == "C:\\test\\dir2", "selected working directory must prefer LastOmpWorkingDirectory");
+Assert(initStateNoSnap.OmpConfigurationTargetChoices.Count == 2 && initStateNoSnap.SelectedOmpConfigurationTarget?.ProviderId == "provider-price-switcher", "target choices must include local and official");
+Assert(initStateNoSnap.ProviderChoices.Select(c => c.ProviderId).SequenceEqual(["site-a", "site-b"]), "provider choices must include only enabled sites");
+Assert(initStateNoSnap.SelectedProvider?.ProviderId == "site-a", "selected provider must default to first choice when no active provider exists");
+Assert(!initStateNoSnap.IsCheckingPrices && !initStateNoSnap.IsApplyingRoute && !initStateNoSnap.IsStartingOmp && !initStateNoSnap.IsReplacingOmpGptProvider, "initial busy states must all be false");
+Assert(initStateNoSnap.ApplyRouteButtonText == "应用供应商" && initStateNoSnap.StartOmpButtonText == "启动 OMP" && initStateNoSnap.ReplaceOmpGptProviderButtonText == "替换 OMP GPT", "initial button texts must be idle");
+Assert(initStateNoSnap.Rows[0].IsSiteFirstRow && initStateNoSnap.Rows[0].KeysUri?.AbsoluteUri == "https://a.example/api/custom/keys", "first site row must construct keys URI");
+var now = DateTimeOffset.UtcNow;
+var snapA = new ProviderPriceSwitcher.Core.PricingSnapshot
+{
+    ProviderId = "site-a",
+    ConfigurationKey = "key-a",
+    Model = "gpt-5.6-sol",
+    CurrentGroup = "default-group",
+    CurrentGroupRatio = 1.2m,
+    Prices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 10m, CachedInputPerMillion = 5m, OutputPerMillion = 30m },
+    GroupRatioSource = "手动",
+    RefreshedAt = now.AddMinutes(-10),
+    MinimumGroup = "default-group",
+    MinimumGroupRatio = 1.2m,
+    MinimumGroupPrices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 10m, CachedInputPerMillion = 5m, OutputPerMillion = 30m }
+};
+var snapB = new ProviderPriceSwitcher.Core.PricingSnapshot
+{
+    ProviderId = "site-b",
+    ConfigurationKey = "key-b",
+    Model = "gpt-5.6-sol",
+    CurrentGroup = "group-vip",
+    CurrentGroupRatio = 1.0m,
+    Prices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 8m, CachedInputPerMillion = 4m, OutputPerMillion = 24m },
+    GroupRatioSource = "自动",
+    RefreshedAt = now.AddMinutes(-5),
+    MinimumGroup = "group-svip",
+    MinimumGroupRatio = 0.8m,
+    MinimumGroupPrices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 6m, CachedInputPerMillion = 3m, OutputPerMillion = 18m }
+};
+var snapshotsDict = new Dictionary<string, ProviderPriceSwitcher.Core.PricingSnapshot>
+{
+    ["site-a"] = snapA,
+    ["site-b"] = snapB
+};
+var initStateWithSnaps = HomepageStateProjector.ProjectInitial(
+    hpSettings,
+    activeProviderId: "site-b",
+    gatewayStatus: new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready),
+    persistedSnapshots: snapshotsDict,
+    snapshotReadSuccess: true);
+Assert(initStateWithSnaps.Rows.Count == 4, "projection with distinct minimum group must expand to 4 rows");
+Assert(initStateWithSnaps.Rows[0].ProviderId == "site-a" && initStateWithSnaps.Rows[0].Group == "default-group [当前][最低]", "site-a must merge current and lowest group tag");
+Assert(initStateWithSnaps.Rows[1].ProviderId == "site-b" && initStateWithSnaps.Rows[1].Group == "group-vip [当前]" && initStateWithSnaps.Rows[1].IsSiteFirstRow, "site-b first row must be current group");
+Assert(initStateWithSnaps.Rows[2].ProviderId == "site-b" && initStateWithSnaps.Rows[2].Group == "group-svip [最低]" && !initStateWithSnaps.Rows[2].IsSiteFirstRow && initStateWithSnaps.Rows[2].Issue == "仅供手动选择，未参与自动推荐", "site-b second row must be lowest group");
+Assert(initStateWithSnaps.CurrentProvider == "site-b", "active provider must be reflected");
+Assert(initStateWithSnaps.SelectedProvider?.ProviderId == "site-b", "selected provider must match active provider when initialized");
+Assert(initStateWithSnaps.GatewayStatusText == "网关运行中", "ready gateway must project as '网关运行中'");
+Assert(initStateWithSnaps.ActiveRouteStatusText == "活动路由已应用", "ready gateway with active route must project as '活动路由已应用'");
+Assert(initStateWithSnaps.LastCheckedText == now.AddMinutes(-5).LocalDateTime.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture), "last checked text must be max snapshot timestamp");
+var initSnapshotFailed = HomepageStateProjector.ProjectInitial(
+    hpSettings,
+    activeProviderId: null,
+    gatewayStatus: null,
+    persistedSnapshots: null,
+    snapshotReadSuccess: false);
+Assert(initSnapshotFailed.StatusText == "无法读取上次价格记录，请检查本地数据文件。", "snapshot read failure must project error message");
+Assert(initSnapshotFailed.Rows.Count == 3 && initSnapshotFailed.Rows.All(r => r.InputPrice == "—"), "snapshot read failure must produce empty price rows");
+var checkStarted = HomepageStateProjector.ProjectPriceCheckStarted(initStateWithSnaps);
+Assert(checkStarted.IsCheckingPrices && checkStarted.StatusText == "正在检查已启用站点的价格…", "price check started must set busy and status text");
+var refreshCompletedAt = DateTimeOffset.UtcNow;
+var pricingResultA = new ProviderPriceSwitcher.Application.SitePricingResult
+{
+    Snapshot = snapA,
+    GroupRatios = new Dictionary<string, decimal> { ["default-group"] = 1.2m },
+    MinimumValidGroup = "default-group",
+    MinimumGroupRatio = 1.2m,
+    Warnings = []
+};
+var pricingResultB = new ProviderPriceSwitcher.Application.SitePricingResult
+{
+    Snapshot = snapB,
+    GroupRatios = new Dictionary<string, decimal> { ["group-vip"] = 1.0m, ["group-svip"] = 0.8m },
+    MinimumValidGroup = "group-svip",
+    MinimumGroupRatio = 0.8m,
+    Warnings = ["rate_limit_warning"]
+};
+var refreshSiteA = new ProviderPriceSwitcher.Application.PricingRefreshSiteResult
+{
+    ProviderId = "site-a",
+    Status = ProviderPriceSwitcher.Application.PricingRefreshSiteStatus.Succeeded,
+    PricingResult = pricingResultA,
+    PreviousSnapshot = null
+};
+var refreshSiteB = new ProviderPriceSwitcher.Application.PricingRefreshSiteResult
+{
+    ProviderId = "site-b",
+    Status = ProviderPriceSwitcher.Application.PricingRefreshSiteStatus.Succeeded,
+    PricingResult = pricingResultB,
+    PreviousSnapshot = null
+};
+var refreshResult = new ProviderPriceSwitcher.Application.PricingRefreshResult
+{
+    StartedAt = now,
+    CompletedAt = refreshCompletedAt,
+    Sites = [refreshSiteA, refreshSiteB],
+    SuccessfulResults = new Dictionary<string, ProviderPriceSwitcher.Application.SitePricingResult> { ["site-a"] = pricingResultA, ["site-b"] = pricingResultB },
+    LatestSnapshots = snapshotsDict,
+    Recommendation = new ProviderPriceSwitcher.Core.RecommendationDecision
+    {
+        Selected = new ProviderPriceSwitcher.Core.RecommendationCandidate { Site = hpSites[1], Snapshot = snapB, EstimatedCost = 0.5m },
+        EligibleCandidates = [],
+        ManualSelectionCandidates = [],
+        ExcludedReasons = new Dictionary<string, string>()
+    }
+};
+var checkCompleted = HomepageStateProjector.ProjectPriceCheckCompleted(
+    checkStarted,
+    hpSettings,
+    refreshResult,
+    activeProviderId: "site-b");
+Assert(!checkCompleted.IsCheckingPrices, "price check completed must clear busy state");
+Assert(checkCompleted.StatusText == "检查完成。", "price check completed must set status text to '检查完成。'");
+Assert(checkCompleted.RecommendedProvider == "site-b", "recommendation must be reflected in RecommendedProvider");
+Assert(checkCompleted.SelectedProvider?.ProviderId == "site-b", "recommendation must update pending SelectedProvider");
+Assert(checkCompleted.CurrentProvider == "site-b", "price check completion must NEVER change active CurrentProvider");
+Assert(checkCompleted.Rows.Any(r => r.ProviderId == "site-b" && r.HasWarning && r.Status == "成功（警告）"), "warnings in refresh result must map to warning status and flag");
+var checkCanceled = HomepageStateProjector.ProjectPriceCheckCanceled(checkStarted);
+Assert(!checkCanceled.IsCheckingPrices && checkCanceled.StatusText == "已取消检查。", "price check canceled must reset busy and set status");
+var failedRefreshSiteA = new ProviderPriceSwitcher.Application.PricingRefreshSiteResult
+{
+    ProviderId = "site-a",
+    Status = ProviderPriceSwitcher.Application.PricingRefreshSiteStatus.Failed,
+    PricingResult = null,
+    PreviousSnapshot = snapA,
+    FailureKind = ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication
+};
+var failedRefreshResult = new ProviderPriceSwitcher.Application.PricingRefreshResult
+{
+    StartedAt = now,
+    CompletedAt = refreshCompletedAt,
+    Sites = [failedRefreshSiteA],
+    SuccessfulResults = new Dictionary<string, ProviderPriceSwitcher.Application.SitePricingResult>(),
+    LatestSnapshots = snapshotsDict,
+    Recommendation = new ProviderPriceSwitcher.Core.RecommendationDecision
+    {
+        Selected = null,
+        EligibleCandidates = [],
+        ManualSelectionCandidates = [],
+        ExcludedReasons = new Dictionary<string, string>()
+    }
+};
+var failedCheckProjected = HomepageStateProjector.ProjectPriceCheckCompleted(
+    checkStarted,
+    hpSettings,
+    failedRefreshResult,
+    activeProviderId: "site-b");
+var failedRow = failedCheckProjected.Rows.First(r => r.ProviderId == "site-a");
+Assert(failedRow.IsStale && failedRow.Status == "需认证" && failedRow.Issue == UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication), "failed refresh with previous snapshot must retain prices, mark stale, and map authentication failure");
+Assert(failedCheckProjected.RecommendedProvider == "无可自动推荐项", "failed check with no recommendation must show '无可自动推荐项'");
+var applyStarted = HomepageStateProjector.ProjectApplyingRouteStarted(initStateWithSnaps);
+Assert(applyStarted.IsApplyingRoute && applyStarted.ApplyRouteButtonText == "应用中…", "applying route started must set busy and button text");
+Assert(!applyStarted.IsStartingOmp && !applyStarted.IsReplacingOmpGptProvider && !applyStarted.IsCheckingPrices, "applying route must not affect other busy states");
+var applyOutcome = new ProviderPriceSwitcher.Application.ApplyActiveRouteOutcome(
+    ProviderPriceSwitcher.Application.ApplyActiveRouteStatus.Applied,
+    hpSettings);
+var applyCompleted = HomepageStateProjector.ProjectApplyingRouteCompleted(
+    applyStarted,
+    applyOutcome,
+    activeProviderId: "site-b",
+    gatewayStatus: new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready));
+Assert(!applyCompleted.IsApplyingRoute && applyCompleted.ApplyRouteButtonText == "应用供应商" && applyCompleted.CurrentProvider == "site-b", "applying route completed must update active provider and clear busy");
+var ompStartStarted = HomepageStateProjector.ProjectStartingOmpStarted(initStateWithSnaps);
+Assert(ompStartStarted.IsStartingOmp && ompStartStarted.StartOmpButtonText == "启动中…", "starting OMP must set busy and button text");
+var ompOutcome = new ProviderPriceSwitcher.Application.OmpLaunchOutcome(
+    ProviderPriceSwitcher.Application.OmpLaunchStatus.Started,
+    hpSettings);
+var ompStartCompleted = HomepageStateProjector.ProjectStartingOmpCompleted(
+    ompStartStarted,
+    ompOutcome,
+    hpSettings);
+Assert(!ompStartCompleted.IsStartingOmp && ompStartCompleted.StartOmpButtonText == "启动 OMP" && ompStartCompleted.StatusText.Contains("当前供应商未改变", StringComparison.Ordinal), "starting OMP completed must restore button text and message");
+var ompReplaceStarted = HomepageStateProjector.ProjectReplacingOmpStarted(initStateWithSnaps);
+Assert(ompReplaceStarted.IsReplacingOmpGptProvider && ompReplaceStarted.ReplaceOmpGptProviderButtonText == "替换中…", "replacing OMP must set busy and button text");
+var replaceResult = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementResult(
+    Succeeded: true,
+    Preview: new ProviderPriceSwitcher.Application.OmpConfigurationReplacementPreview(
+        Succeeded: true,
+        Request: new ProviderPriceSwitcher.Application.OmpConfigurationReplacementRequest("C:\\root", "provider-price-switcher", 15722),
+        Changes: [new ProviderPriceSwitcher.Application.OmpConfigurationReplacementChange("role", "orig", "target", "gpt-5.6-sol", "r1", "r2")]),
+    BackupRetentionSucceeded: true);
+var ompReplaceCompleted = HomepageStateProjector.ProjectReplacingOmpCompleted(ompReplaceStarted, replaceResult);
+Assert(!ompReplaceCompleted.IsReplacingOmpGptProvider && ompReplaceCompleted.OmpConfigurationStatus == "配置已替换" && ompReplaceCompleted.StatusText.Contains("已运行的 OMP 需要手动重启", StringComparison.Ordinal), "replacing OMP completed must update status and text");
+var statuses = new (ProviderPriceSwitcher.Application.SidecarConnectionStatus Status, string? Provider, string ExpectedGatewayText, string ExpectedRouteText)[]
+{
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, "p1", "网关运行中", "活动路由已应用"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, null, "网关运行中", "无活动路由"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Starting, "p1", "网关启动中", "网关恢复中"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "p1", "网关连接断开", "网关不可用"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Faulted, "p1", "网关故障", "网关不可用"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Stopped, "p1", "网关已停止", "网关已停止"),
+};
+foreach (var (gwStatus, actProvider, expGw, expRoute) in statuses)
+{
+    var projectedGw = HomepageStateProjector.ProjectGatewayStatus(
+        initStateWithSnaps,
+        new ProviderPriceSwitcher.Application.SidecarStatus(gwStatus),
+        actProvider,
+        15722,
+        15722);
+    Assert(projectedGw.GatewayStatusText == expGw && projectedGw.ActiveRouteStatusText == expRoute, $"gateway status {gwStatus} with provider '{actProvider}' mismatch: expected gw='{expGw}', route='{expRoute}'; got gw='{projectedGw.GatewayStatusText}', route='{projectedGw.ActiveRouteStatusText}'");
+}
+var updatedSettings = hpSettings with
+{
+    GatewayPort = 15722,
+    CurrentGatewayPort = 15722,
+    LastOmpWorkingDirectory = "C:\\test\\dir1"
+};
+var settingsUpdated = HomepageStateProjector.ProjectSettingsUpdated(
+    initStateWithSnaps,
+    updatedSettings,
+    activeProviderId: "site-a",
+    persistedSnapshots: snapshotsDict,
+    snapshotReadSuccess: true,
+    preferredProvider: "site-b");
+Assert(settingsUpdated.GatewayPortStatus == "网关端口：127.0.0.1:15722", "same port must format without next startup note");
+Assert(settingsUpdated.SelectedOmpWorkingDirectory == "C:\\test\\dir1", "updated last working directory must be reflected");
+Assert(settingsUpdated.SelectedProvider?.ProviderId == "site-b", "preferred provider must be preserved on settings update");
 Exception? windowFailure = null;
 var windowThread = new Thread(() =>
 {
