@@ -5,7 +5,6 @@ using ProviderPriceSwitcher.Core;
 namespace ProviderPriceSwitcher.Infrastructure;
 
 public sealed class OmpCurrentProviderQuery(
-    OmpConfigurationSwitcher switcher,
     IAppPathDefaults pathDefaults) : IOmpCurrentProviderQuery
 {
     public async Task<OmpCurrentProviderResult> ReadAsync(string ompRootDirectory, CancellationToken cancellationToken = default)
@@ -18,8 +17,8 @@ public sealed class OmpCurrentProviderQuery(
         try
         {
             var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-            var preview = switcher.Preview(text, "temporary");
-            return preview.CurrentProvider is { Length: > 0 } provider
+            var analysis = new OmpConfigurationAnalyzer().Analyze(text);
+            return analysis.CurrentProvider is { Length: > 0 } provider
                 ? new(OmpCurrentProviderStatus.Identified, provider)
                 : new(OmpCurrentProviderStatus.Unrecognized);
         }

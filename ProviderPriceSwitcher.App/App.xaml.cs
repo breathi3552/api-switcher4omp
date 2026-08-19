@@ -60,7 +60,7 @@ public partial class App : System.Windows.Application
             inferenceBindingStore.Recover();
             settings = startupSettings = settingsRepository.Load();
             var startupCancellation = _applicationCancellation?.Token ?? CancellationToken.None;
-            var ompConfiguration = new OmpConfigurationService(new OmpConfigurationSwitcher(), new AppPathDefaults());
+            var ompConfiguration = new OmpConfigurationService(new AppPathDefaults());
             var ompStartup = new OmpStartupUseCase(
                 settingsRepository,
                 _loggerFactory.CreateLogger<OmpStartupUseCase>());

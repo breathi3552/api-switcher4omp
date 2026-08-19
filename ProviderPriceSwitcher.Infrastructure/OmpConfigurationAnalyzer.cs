@@ -4,7 +4,7 @@ using System.Text;
 namespace ProviderPriceSwitcher.Infrastructure;
 
 /// <summary>One direct provider/model scalar found in an OMP configuration.</summary>
-public sealed record OmpModelReference(
+internal sealed record OmpModelReference(
     string ConfigurationPath,
     string Key,
     string Value,
@@ -13,15 +13,10 @@ public sealed record OmpModelReference(
     bool IsDefault,
     bool IsAgentModelOverride,
     int ValueStart,
-    int ValueEnd)
-{
-    public string Path => ConfigurationPath;
-    public string ModelSuffix => Model;
-    public string Reference => Value;
-}
+    int ValueEnd);
 
 /// <summary>Line-preserving inspection result for an OMP config.yml.</summary>
-public sealed class OmpConfigurationAnalysis
+internal sealed class OmpConfigurationAnalysis
 {
     public OmpConfigurationAnalysis(
         string text,
@@ -39,18 +34,16 @@ public sealed class OmpConfigurationAnalysis
     public OmpModelReference? DefaultReference { get; }
     public string? CurrentProvider => DefaultReference?.Provider;
     public IReadOnlyList<OmpModelReference> ModelReferences { get; }
-    public IReadOnlyList<OmpModelReference> References => ModelReferences;
     public bool HasValidYamlSyntax { get; }
     public bool HasValidDefault => DefaultReference is not null;
     public bool HasValidReferences => ModelReferences.Count != 0;
-    public bool IsValid => HasValidYamlSyntax && HasValidDefault && HasValidReferences;
 }
 
 /// <summary>
 /// Inspects the small, stable part of OMP config.yml that controls model selection.
 /// It deliberately edits scalar spans in the source rather than round-tripping YAML.
 /// </summary>
-public sealed class OmpConfigurationAnalyzer
+internal sealed class OmpConfigurationAnalyzer
 {
     private readonly object _instanceState = new();
     public OmpConfigurationAnalysis Analyze(string yamlText)
@@ -124,14 +117,6 @@ public sealed class OmpConfigurationAnalyzer
             defaultReference,
             new ReadOnlyCollection<OmpModelReference>(refs),
             hasValidYamlSyntax);
-    }
-
-    public OmpConfigurationAnalysis AnalyzeText(string yamlText) => Analyze(yamlText);
-
-    public OmpConfigurationAnalysis AnalyzeFile(string path)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        return Analyze(File.ReadAllText(path, Encoding.UTF8));
     }
 
     private static bool TrySplitReference(string value, out string provider, out string model)

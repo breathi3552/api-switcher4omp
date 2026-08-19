@@ -5,7 +5,6 @@ using ProviderPriceSwitcher.Application;
 namespace ProviderPriceSwitcher.Infrastructure;
 
 public sealed class OmpConfigurationService(
-    OmpConfigurationSwitcher switcher,
     IAppPathDefaults pathDefaults,
     Func<string, CancellationToken, Task<string>>? readTextAsync = null,
     Action<string>? onFileWrittenForTesting = null) : IOmpConfigurationReplacementPort
@@ -103,7 +102,7 @@ public sealed class OmpConfigurationService(
                 "OMP config.yml 在确认前发生变化，请重新预览。");
         }
 
-        var routePlan = switcher.CreatePlan(config.Text, request.TargetProvider);
+        var routePlan = OmpConfigurationRoutePlan.Create(config.Text, request.TargetProvider);
         if (!routePlan.IsValid)
             return PlanBuildResult.Failed(OmpConfigurationReplacementFailureKind.ConfigurationInvalid, "OMP 主 config.yml 缺少有效的 modelRoles.default 或模型角色结构。");
 
@@ -186,7 +185,7 @@ public sealed class OmpConfigurationService(
         }
 
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        var encoding = OmpConfigurationSwitcher.DetectEncoding(bytes, out var preambleLength);
+        var encoding = DetectEncoding(bytes, out var preambleLength);
         var decodedText = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
         return new ConfigFile(decodedText, Hash(bytes));
     }
@@ -196,7 +195,7 @@ public sealed class OmpConfigurationService(
         if (!File.Exists(path))
             return new ModelsFile(path, false, null, null, string.Empty);
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-        var encoding = OmpConfigurationSwitcher.DetectEncoding(bytes, out var preambleLength);
+        var encoding = DetectEncoding(bytes, out var preambleLength);
         var text = encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
         return new ModelsFile(path, true, Hash(bytes), bytes, text);
     }
@@ -335,7 +334,7 @@ public sealed class OmpConfigurationService(
             var directory = Path.GetDirectoryName(Path.GetFullPath(plan.Path))!;
             Directory.CreateDirectory(directory);
             var encoding = plan.OriginalBytes is { Length: > 0 }
-                ? OmpConfigurationSwitcher.DetectEncoding(plan.OriginalBytes, out _)
+                ? DetectEncoding(plan.OriginalBytes, out _)
                 : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
             var preamble = plan.OriginalBytes is { Length: > 0 } && plan.OriginalBytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF })
                 ? encoding.GetPreamble()
@@ -386,7 +385,7 @@ public sealed class OmpConfigurationService(
             if (!string.Equals(Hash(currentBytes), expectedVersion, StringComparison.Ordinal))
                 return new(false, null, true, IsStale: true);
 
-            var encoding = OmpConfigurationSwitcher.DetectEncoding(currentBytes, out var preambleLength);
+            var encoding = DetectEncoding(currentBytes, out var preambleLength);
             var directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
             var fileName = Path.GetFileName(path);
             Directory.CreateDirectory(directory);
@@ -413,7 +412,7 @@ public sealed class OmpConfigurationService(
                     return new(false, null, true, IsStale: true);
 
                 cancellationToken.ThrowIfCancellationRequested();
-                backupCandidatePath = OmpConfigurationSwitcher.CreateBackupPath(path);
+                backupCandidatePath = CreateBackupPath(path);
                 File.Copy(path, backupCandidatePath, overwrite: false);
                 backupPath = backupCandidatePath;
 
@@ -442,7 +441,7 @@ public sealed class OmpConfigurationService(
                 {
                     try
                     {
-                        OmpConfigurationSwitcher.PruneBackups(directory, fileName);
+                        PruneBackups(directory, fileName);
                     }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                     {
@@ -694,6 +693,148 @@ public sealed class OmpConfigurationService(
                         : line[Math.Min(-delta, leading)..];
                 }))
                 .TrimEnd('\r', '\n');
+        }
+    }
+
+    internal static string CreateBackupPath(string path)
+    {
+        var stamp = DateTime.UtcNow;
+        for (var attempt = 0; attempt < 1000; attempt++)
+        {
+            var candidate = path + ".bak-" + stamp.AddMilliseconds(attempt).ToString("yyyyMMddHHmmssfff", System.Globalization.CultureInfo.InvariantCulture) + ".yml";
+            if (!File.Exists(candidate))
+                return candidate;
+        }
+        throw new IOException("Unable to allocate a unique OMP configuration backup path.");
+    }
+
+    internal static void PruneBackups(string directory, string fileName)
+    {
+        var prefix = fileName + ".bak-";
+        var backups = Directory.EnumerateFiles(directory, prefix + "*.yml")
+            .Where(path => Path.GetFileName(path).StartsWith(prefix, StringComparison.Ordinal)
+                && System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path), "^" + System.Text.RegularExpressions.Regex.Escape(fileName) + @"\.bak-\d{17}\.yml$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+            .OrderByDescending(Path.GetFileName, StringComparer.Ordinal)
+            .ToArray();
+        foreach (var old in backups.Skip(5))
+            File.Delete(old);
+    }
+
+    internal static UTF8Encoding DetectEncoding(byte[] bytes, out int preambleLength)
+    {
+        if (bytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
+        {
+            preambleLength = 3;
+            return new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        }
+        preambleLength = 0;
+        return new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    }
+
+    internal sealed record OmpConfigurationRouteEdit(
+        string ConfigurationPath,
+        string Key,
+        string OriginalProvider,
+        string ModelId,
+        string OriginalReference,
+        string NewReference,
+        bool IsDefault,
+        bool IsAgentModelOverride,
+        int ValueStart,
+        int ValueEnd);
+
+    internal sealed class OmpConfigurationRoutePlan
+    {
+        private static readonly System.Text.RegularExpressions.Regex SafeProviderId = new(
+            "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private OmpConfigurationRoutePlan(
+            string sourceText,
+            string targetProvider,
+            OmpConfigurationAnalysis analysis,
+            IReadOnlyList<OmpConfigurationRouteEdit> routeEdits,
+            string updatedText,
+            string? error)
+        {
+            SourceText = sourceText;
+            TargetProvider = targetProvider;
+            Analysis = analysis;
+            RouteEdits = routeEdits;
+            UpdatedText = updatedText;
+            Error = error;
+        }
+
+        public string SourceText { get; }
+        public string TargetProvider { get; }
+        public OmpConfigurationAnalysis Analysis { get; }
+        public IReadOnlyList<OmpConfigurationRouteEdit> RouteEdits { get; }
+        public string UpdatedText { get; }
+        public string? Error { get; }
+        public bool IsValid => Error is null;
+        public bool CanApply => IsValid && RouteEdits.Count != 0;
+
+        public static OmpConfigurationRoutePlan Create(
+            string sourceText,
+            string targetProvider)
+        {
+            ArgumentNullException.ThrowIfNull(sourceText);
+            targetProvider ??= string.Empty;
+
+            var analyzer = new OmpConfigurationAnalyzer();
+            var analysis = analyzer.Analyze(sourceText);
+            string? error = null;
+            if (!SafeProviderId.IsMatch(targetProvider))
+                error = "Target provider must be a non-empty safe provider ID.";
+            else if (!analysis.HasValidYamlSyntax)
+                error = "OMP config.yml contains invalid YAML syntax.";
+            else if (!analysis.HasValidDefault)
+                error = "modelRoles.default must contain a direct provider/model reference.";
+            else if (!analysis.HasValidReferences)
+                error = "No direct model references were found.";
+
+            var routeEdits = error is null
+                ? analysis.ModelReferences
+                    .Where(reference =>
+                        reference.Model.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(reference.Provider, targetProvider, StringComparison.Ordinal))
+                    .Select(reference => new OmpConfigurationRouteEdit(
+                        reference.ConfigurationPath,
+                        reference.Key,
+                        reference.Provider,
+                        reference.Model,
+                        reference.Value,
+                        targetProvider + "/" + reference.Model,
+                        reference.IsDefault,
+                        reference.IsAgentModelOverride,
+                        reference.ValueStart,
+                        reference.ValueEnd))
+                    .ToArray()
+                : [];
+            var updatedText = error is null
+                ? ApplyChanges(sourceText, routeEdits)
+                : sourceText;
+            return new OmpConfigurationRoutePlan(
+                sourceText,
+                targetProvider,
+                analysis,
+                routeEdits,
+                updatedText,
+                error);
+        }
+
+        private static string ApplyChanges(
+            string source,
+            IReadOnlyList<OmpConfigurationRouteEdit> routeEdits)
+        {
+            var replacements = routeEdits
+                .OrderByDescending(edit => edit.ValueStart)
+                .ToArray();
+            var builder = new StringBuilder(source);
+            foreach (var replacement in replacements)
+                builder.Remove(replacement.ValueStart, replacement.ValueEnd - replacement.ValueStart)
+                    .Insert(replacement.ValueStart, replacement.NewReference);
+            return builder.ToString();
         }
     }
 }

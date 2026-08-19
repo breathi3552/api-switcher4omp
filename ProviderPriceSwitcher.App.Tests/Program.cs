@@ -173,7 +173,6 @@ var windowThread = new Thread(() =>
         var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, notifications));
         var ompReplacement = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementUseCase(
             new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(
-                new ProviderPriceSwitcher.Infrastructure.OmpConfigurationSwitcher(),
                 new ProviderPriceSwitcher.Infrastructure.AppPathDefaults()));
         var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance, sidecarStatus: sidecarStatus, ompReplacement: ompReplacement);
         var window = new MainWindow(viewModel);

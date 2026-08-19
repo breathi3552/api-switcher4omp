@@ -46,10 +46,7 @@ public sealed record OmpConfigurationReplacementChange(
     string TargetProvider,
     string ModelId,
     string OriginalReference,
-    string NewReference)
-{
-    public string Path => RolePath;
-}
+    string NewReference);
 
 public sealed record OmpConfigurationReplacementPreview(
     bool Succeeded,
@@ -61,7 +58,6 @@ public sealed record OmpConfigurationReplacementPreview(
     OmpConfigurationReplacementFailureKind FailureKind = OmpConfigurationReplacementFailureKind.None,
     string? ErrorMessage = null)
 {
-    public bool IsValid => Succeeded;
     public bool HasRouteChanges => Changes.Count != 0;
     public bool HasChanges => HasRouteChanges || ModelsChangeKind != OmpModelsProviderChangeKind.None;
     public bool IsNoOp => Succeeded && !HasChanges;
@@ -76,10 +72,7 @@ public sealed record OmpConfigurationReplacementResult(
     string? ModelsBackupPath = null,
     bool BackupRetentionSucceeded = true,
     OmpConfigurationReplacementFailureKind FailureKind = OmpConfigurationReplacementFailureKind.None,
-    string? ErrorMessage = null)
-{
-    public bool Success => Succeeded;
-}
+    string? ErrorMessage = null);
 
 public interface IOmpConfigurationReplacementPort
 {

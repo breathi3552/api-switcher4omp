@@ -256,6 +256,16 @@
 - **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
 - **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #18 收缩 OMP 配置替换 interface 并完成发布验收
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-19` 完成。
+- **scope:** OMP 配置替换 module 完成 clean cutover；删除 superseded public alias、重复 preview/plan/result 形状（`OmpConfigurationChange`、`OmpConfigurationPreview`、`OmpConfigurationSwitchResult`、`OmpConfigurationStaleException`、`OmpConfigurationSwitcher`）和 pass-through 入口；内部分析和事务类型内聚为 Infrastructure 细节；所有生产调用方、组合根、App STA runner、OMP configuration runner 和 Application runner 全部收敛到唯一的 `IOmpConfigurationReplacementPort` / `OmpConfigurationReplacementUseCase` Application 级 seam。
+- **Application runner:** 真实 `OmpConfigurationReplacementUseCase` 与 fake port 覆盖输入校验（不支持的目标、无效网关端口、缺失 OMP 根目录）、预览与执行取消传播、tampered target/directory/port 的 `StalePreview` 拒绝、失败 preview 透传，以及有效 request/preview 委托。
+- **OMP configuration runner:** 覆盖全部既有 GPT-only 路由筛选、local/official 语义计划、stale 拒绝、models.yml 回滚与 `RollbackFailed` 独立分类、取消无取消回滚与 backup retention 失败共存契约。
+- **App runner:** STA 场景验证目标选择、实际变更预览展示、取消零写入、no-op、确认写入、backup retention 提示、手动重启提示，并证明配置替换不改变当前供应商、RouteSnapshot 或 Start OMP 调用状态。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106216899` bytes）产物及 sidecar manifest hash。
+- **Isolation:** 全部配置场景使用临时 OMP root 与合成 YAML；App runner 使用隔离临时 data/OMP root；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

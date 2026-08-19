@@ -311,6 +311,84 @@ Assert(protocolRecovery.Status == GatewayRecoveryStatus.Failed
     && protocolRecovery.FailureKind == GatewayRecoveryFailureKind.Protocol,
     "route restore must preserve protocol failures instead of relabeling them as gateway-unavailable");
 
+var fakeReplacementPort = new FakeOmpConfigurationReplacementPort();
+var replacementUseCase = new OmpConfigurationReplacementUseCase(fakeReplacementPort);
+
+var invalidTargetPreview = await replacementUseCase.PreviewAsync(new LocalAppSettings { OmpRootDirectory = "root", CurrentGatewayPort = 15722 }, "unsupported-target");
+Assert(!invalidTargetPreview.Succeeded && invalidTargetPreview.FailureKind == OmpConfigurationReplacementFailureKind.InvalidTarget && fakeReplacementPort.PreviewCalls == 0, "preview must reject unsupported target without invoking port");
+
+var invalidPortPreview = await replacementUseCase.PreviewAsync(new LocalAppSettings { OmpRootDirectory = "root", CurrentGatewayPort = 0 }, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+Assert(!invalidPortPreview.Succeeded && invalidPortPreview.FailureKind == OmpConfigurationReplacementFailureKind.InvalidGatewayPort && fakeReplacementPort.PreviewCalls == 0, "preview must reject invalid gateway port without invoking port");
+
+var missingDirPreview = await replacementUseCase.PreviewAsync(new LocalAppSettings { OmpRootDirectory = "  ", CurrentGatewayPort = 15722 }, OmpConfigurationReplacementTargets.OfficialOAuthProviderId);
+Assert(!missingDirPreview.Succeeded && missingDirPreview.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationMissing && fakeReplacementPort.PreviewCalls == 0, "preview must reject missing OMP root without invoking port");
+
+var validSettings = new LocalAppSettings { OmpRootDirectory = "C:\\OmpRoot", CurrentGatewayPort = 15722 };
+var previewChanges = new[] { new OmpConfigurationReplacementChange("modelRoles.default", "old", "openai-codex", "gpt-5", "old/gpt-5", "openai-codex/gpt-5") };
+var expectedPreviewOutcome = new OmpConfigurationReplacementPreview(true, new OmpConfigurationReplacementRequest("C:\\OmpRoot", "openai-codex", 15722), previewChanges);
+fakeReplacementPort.PreviewResult = expectedPreviewOutcome;
+using var previewCts = new CancellationTokenSource();
+var validPreview = await replacementUseCase.PreviewAsync(validSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId, previewCts.Token);
+Assert(validPreview.Succeeded
+    && fakeReplacementPort.PreviewCalls == 1
+    && fakeReplacementPort.LastPreviewRequest == new OmpConfigurationReplacementRequest("C:\\OmpRoot", "openai-codex", 15722)
+    && fakeReplacementPort.LastCancellationToken == previewCts.Token,
+    "valid preview must delegate to replacement port with exact request");
+
+using var canceledPreviewCts = new CancellationTokenSource();
+canceledPreviewCts.Cancel();
+var previewCanceled = false;
+try
+{
+    await replacementUseCase.PreviewAsync(validSettings, OmpConfigurationReplacementTargets.OfficialOAuthProviderId, canceledPreviewCts.Token);
+}
+catch (OperationCanceledException)
+{
+    previewCanceled = true;
+}
+Assert(previewCanceled, "preview must propagate cancellation token");
+
+fakeReplacementPort.ExecuteCalls = 0;
+var tamperedTargetPreview = validPreview with { Request = validPreview.Request with { TargetProvider = "tampered" } };
+var tamperedTargetResult = await replacementUseCase.ExecuteAsync(validSettings, tamperedTargetPreview);
+Assert(!tamperedTargetResult.Succeeded && tamperedTargetResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview && fakeReplacementPort.ExecuteCalls == 0, "execute must reject unsupported target preview as stale without invoking port");
+
+var mismatchedSettings = validSettings with { OmpRootDirectory = "C:\\DifferentRoot" };
+var mismatchedDirResult = await replacementUseCase.ExecuteAsync(mismatchedSettings, validPreview);
+Assert(!mismatchedDirResult.Succeeded && mismatchedDirResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview && fakeReplacementPort.ExecuteCalls == 0, "execute must reject directory mismatch between settings and preview as stale");
+
+var mismatchedPortSettings = validSettings with { CurrentGatewayPort = 15999 };
+var mismatchedPortResult = await replacementUseCase.ExecuteAsync(mismatchedPortSettings, validPreview);
+Assert(!mismatchedPortResult.Succeeded && mismatchedPortResult.FailureKind == OmpConfigurationReplacementFailureKind.StalePreview && fakeReplacementPort.ExecuteCalls == 0, "execute must reject gateway port mismatch between settings and preview as stale");
+
+var failedPreviewInput = new OmpConfigurationReplacementPreview(false, new OmpConfigurationReplacementRequest("C:\\OmpRoot", "openai-codex", 15722), [], FailureKind: OmpConfigurationReplacementFailureKind.ConfigurationInvalid, ErrorMessage: "bad config");
+var failedPreviewExecuteResult = await replacementUseCase.ExecuteAsync(validSettings, failedPreviewInput);
+Assert(!failedPreviewExecuteResult.Succeeded && failedPreviewExecuteResult.FailureKind == OmpConfigurationReplacementFailureKind.ConfigurationInvalid && fakeReplacementPort.ExecuteCalls == 0, "execute must return failed preview result directly without invoking port");
+
+var expectedExecuteOutcome = new OmpConfigurationReplacementResult(true, validPreview, ConfigurationChanged: true, ConfigurationBackupPath: "C:\\backup.yml");
+fakeReplacementPort.ExecuteResult = expectedExecuteOutcome;
+using var executeCts = new CancellationTokenSource();
+var executeOutcome = await replacementUseCase.ExecuteAsync(validSettings, validPreview, executeCts.Token);
+Assert(executeOutcome.Succeeded
+    && fakeReplacementPort.ExecuteCalls == 1
+    && fakeReplacementPort.LastExecuteRequest == new OmpConfigurationReplacementRequest("C:\\OmpRoot", "openai-codex", 15722)
+    && fakeReplacementPort.LastExecutePreview == validPreview
+    && fakeReplacementPort.LastCancellationToken == executeCts.Token,
+    "valid execute must delegate to replacement port with exact request and preview");
+
+using var canceledExecuteCts = new CancellationTokenSource();
+canceledExecuteCts.Cancel();
+var executeCanceled = false;
+try
+{
+    await replacementUseCase.ExecuteAsync(validSettings, validPreview, canceledExecuteCts.Token);
+}
+catch (OperationCanceledException)
+{
+    executeCanceled = true;
+}
+Assert(executeCanceled, "execute must propagate cancellation token");
+
 sealed class FakeAdapter(PricingAdapterDescriptor descriptor, Func<SiteConfiguration, CancellationToken, Task<SitePricingResult>> fetch) : IPricingAdapter
 {
     public PricingAdapterDescriptor Descriptor { get; } = descriptor;
@@ -520,5 +598,36 @@ sealed class FakeActiveRoute : IActiveRouteController
     {
         public static NoopLease Instance { get; } = new();
         public void Dispose() { }
+    }
+}
+
+sealed class FakeOmpConfigurationReplacementPort : IOmpConfigurationReplacementPort
+{
+    public OmpConfigurationReplacementRequest? LastPreviewRequest { get; private set; }
+    public OmpConfigurationReplacementRequest? LastExecuteRequest { get; private set; }
+    public OmpConfigurationReplacementPreview? LastExecutePreview { get; private set; }
+    public CancellationToken LastCancellationToken { get; private set; }
+    public int PreviewCalls { get; set; }
+    public int ExecuteCalls { get; set; }
+    public OmpConfigurationReplacementPreview PreviewResult { get; set; } = new(true, new OmpConfigurationReplacementRequest("root", "openai-codex", 15722), []);
+    public OmpConfigurationReplacementResult ExecuteResult { get; set; } = new(true, new OmpConfigurationReplacementPreview(true, new OmpConfigurationReplacementRequest("root", "openai-codex", 15722), []));
+
+    public Task<OmpConfigurationReplacementPreview> PreviewAsync(OmpConfigurationReplacementRequest request, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        PreviewCalls++;
+        LastPreviewRequest = request;
+        LastCancellationToken = cancellationToken;
+        return Task.FromResult(PreviewResult);
+    }
+
+    public Task<OmpConfigurationReplacementResult> ExecuteAsync(OmpConfigurationReplacementRequest request, OmpConfigurationReplacementPreview preview, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ExecuteCalls++;
+        LastExecuteRequest = request;
+        LastExecutePreview = preview;
+        LastCancellationToken = cancellationToken;
+        return Task.FromResult(ExecuteResult);
     }
 }

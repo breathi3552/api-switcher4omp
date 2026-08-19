@@ -25,7 +25,7 @@ try
     await File.WriteAllTextAsync(configPath, config);
     await File.WriteAllTextAsync(modelsPath, models);
 
-    var service = new OmpConfigurationService(new OmpConfigurationSwitcher(), paths);
+    var service = new OmpConfigurationService(paths);
     var useCase = new OmpConfigurationReplacementUseCase(service);
     var settings = new LocalAppSettings
     {
@@ -331,7 +331,6 @@ try
     await File.WriteAllTextAsync(modelsPath, models);
     FileStream? modelsLockDuringRollback = null;
     var serviceWithRollbackBlock = new OmpConfigurationService(
-        new OmpConfigurationSwitcher(),
         paths,
         onFileWrittenForTesting: path =>
         {
@@ -362,7 +361,6 @@ try
     await File.WriteAllTextAsync(modelsPath, models);
     using var cancelAfterModelsWriteCts = new CancellationTokenSource();
     var serviceWithCancelHook = new OmpConfigurationService(
-        new OmpConfigurationSwitcher(),
         paths,
         onFileWrittenForTesting: path =>
         {
@@ -389,7 +387,6 @@ try
     using var cancelAndLockCts = new CancellationTokenSource();
     FileStream? modelsLockOnCancel = null;
     var serviceWithCancelAndLock = new OmpConfigurationService(
-        new OmpConfigurationSwitcher(),
         paths,
         onFileWrittenForTesting: path =>
         {
