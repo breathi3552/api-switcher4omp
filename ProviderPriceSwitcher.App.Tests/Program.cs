@@ -401,6 +401,253 @@ var settingsUpdated = HomepageStateProjector.ProjectSettingsUpdated(
 Assert(settingsUpdated.GatewayPortStatus == "网关端口：127.0.0.1:15722", "same port must format without next startup note");
 Assert(settingsUpdated.SelectedOmpWorkingDirectory == "C:\\test\\dir1", "updated last working directory must be reflected");
 Assert(settingsUpdated.SelectedProvider?.ProviderId == "site-b", "preferred provider must be preserved on settings update");
+
+var wfRoot = Path.Combine(Path.GetTempPath(), $"ProviderPriceSwitcher-WorkflowTests-{Guid.NewGuid():N}");
+try
+{
+    var wfSettingsRepo = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(wfRoot);
+    var wfSnapshotsRepo = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(wfRoot);
+    var wfSnapshotQuery = new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(wfSnapshotsRepo);
+    var wfKeyStore = new InMemoryInferenceApiKeyStore();
+    wfKeyStore.Save(new ProviderPriceSwitcher.Core.InferenceApiKeyRecord
+    {
+        ProviderId = "wf-site-a",
+        KeyHandle = "wf-handle-a",
+        ApiKey = "wf-secret-a",
+        BoundGroup = "default-group"
+    });
+    wfKeyStore.Save(new ProviderPriceSwitcher.Core.InferenceApiKeyRecord
+    {
+        ProviderId = "wf-site-b",
+        KeyHandle = "wf-handle-b",
+        ApiKey = "wf-secret-b",
+        BoundGroup = "vip-group"
+    });
+    var wfRouteController = new FakeRouteController();
+    var wfActiveRoute = new ProviderPriceSwitcher.Application.ActiveRouteState();
+    var wfOmpLauncher = new FakeOmpLauncher();
+    var wfNotifications = new FakeNotifications();
+    var wfSidecarStatus = new FakeSidecarStatus();
+
+    var wfSiteA = new ProviderPriceSwitcher.Core.SiteConfiguration
+    {
+        ProviderId = "wf-site-a",
+        ConfigurationKey = "wf-key-a",
+        BaseUrl = new Uri("https://a.workflow.test"),
+        SiteType = "wf-adapter-a",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "default-group",
+        CurrentGroupRatio = 1m
+    };
+    var wfSiteB = new ProviderPriceSwitcher.Core.SiteConfiguration
+    {
+        ProviderId = "wf-site-b",
+        ConfigurationKey = "wf-key-b",
+        BaseUrl = new Uri("https://b.workflow.test"),
+        SiteType = "wf-adapter-b",
+        Model = "gpt-5.6-sol",
+        CurrentGroup = "vip-group",
+        CurrentGroupRatio = 0.8m
+    };
+
+    var wfSettings = new ProviderPriceSwitcher.Application.LocalAppSettings
+    {
+        Model = "gpt-5.6-sol",
+        GatewayPort = 15722,
+        CurrentGatewayPort = 15722,
+        OmpRootDirectory = wfRoot,
+        OmpWorkingDirectories = [wfRoot, Path.Combine(wfRoot, "sub-work")],
+        LastOmpWorkingDirectory = Path.Combine(wfRoot, "sub-work"),
+        Sites = [wfSiteA, wfSiteB]
+    };
+    wfSettingsRepo.Save(wfSettings);
+
+    Directory.CreateDirectory(Path.Combine(wfRoot, "agent"));
+    File.WriteAllText(Path.Combine(wfRoot, "agent", "config.yml"), "modelRoles:\r\n  default: other-provider/gpt-5\r\n");
+    File.WriteAllText(Path.Combine(wfRoot, "agent", "models.yml"), "providers:\r\n  existing:\r\n    baseUrl: https://existing.test/v1\r\n");
+    var adapterA = new FakeAdapter(new("wf-adapter-a", "Adapter A", false, ["无"]))
+    {
+        ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["default-group"] = 1m },
+        ReturnedPrices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 10m, CachedInputPerMillion = 2m, OutputPerMillion = 30m }
+    };
+    var adapterB = new FakeAdapter(new("wf-adapter-b", "Adapter B", false, ["无"]))
+    {
+        ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["vip-group"] = 0.5m, ["svip-group"] = 0.2m },
+        ReturnedPrices = new ProviderPriceSwitcher.Core.TokenPrices { InputPerMillion = 5m, CachedInputPerMillion = 1m, OutputPerMillion = 15m }
+    };
+    var wfRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([adapterA, adapterB]);
+    var wfRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(wfRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+    var wfPricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(wfRefresh, wfSettingsRepo, wfSnapshotsRepo);
+    var wfSettingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(wfSettingsRepo);
+    var wfApplyActiveRoute = new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(wfSettingsRepo, wfRouteController, wfKeyStore, wfActiveRoute);
+    var wfOmpLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(wfSettingsRepo, wfOmpLauncher, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.OmpLaunchUseCase>.Instance);
+    var wfOmpReplacement = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementUseCase(
+        new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(
+            new ProviderPriceSwitcher.Infrastructure.AppPathDefaults()));
+
+    using var workflow = new HomepageWorkflow(
+        wfPricingCheck,
+        wfSettingsUseCase,
+        wfApplyActiveRoute,
+        wfOmpLaunch,
+        wfActiveRoute,
+        wfSnapshotQuery,
+        wfSettings,
+        Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+        wfSidecarStatus,
+        wfOmpReplacement,
+        wfNotifications);
+
+    Assert(workflow.State.CurrentProvider == "未应用", "initial state before restore must be '未应用'");
+    Assert(workflow.CanCheckPrices && workflow.CanStartOmp && !workflow.CanCancelPriceCheck, "initial command availability mismatch");
+    var stateTransitions = new List<HomepageState>();
+    workflow.StateChanged += s => stateTransitions.Add(s);
+
+    await workflow.InitializeAsync();
+    Assert(workflow.State.CurrentProvider == "未应用", "restore with no active provider must remain '未应用'");
+    Assert(workflow.State.Rows.Count == 2, "initial rows must match enabled sites");
+
+    adapterA.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var checkTask = workflow.CheckPricesAsync();
+    Assert(workflow.State.IsCheckingPrices && !workflow.CanCheckPrices && workflow.CanCancelPriceCheck, "in-flight price check must set busy and swap canExecute");
+    adapterA.Gate.SetResult();
+    await checkTask;
+    Assert(!workflow.State.IsCheckingPrices && workflow.CanCheckPrices && !workflow.CanCancelPriceCheck, "completed price check must clear busy and swap canExecute");
+    adapterA.Gate = null;
+    Assert(workflow.State.RecommendedProvider == "wf-site-b", "site-b must be recommended as cheapest");
+    Assert(workflow.State.SelectedProvider?.ProviderId == "wf-site-b", "recommendation must be selected as pending provider");
+    Assert(workflow.State.CurrentProvider == "未应用", "successful price check must NEVER change current active provider");
+    Assert(wfActiveRoute.Current is null, "successful price check must not touch ActiveRouteState");
+    Assert(workflow.State.StatusText == "检查完成。", "price check status text mismatch");
+    Assert(workflow.State.Rows.Count == 3, "site-b should expand to current and minimum group rows");
+
+    adapterA.Block = true;
+    var canceledCheckTask = workflow.CheckPricesAsync();
+    Assert(workflow.State.IsCheckingPrices, "blocked price check must be busy");
+    workflow.CancelPriceCheck();
+    await canceledCheckTask;
+    Assert(!workflow.State.IsCheckingPrices && workflow.CanCheckPrices, "canceled check must restore busy state");
+    Assert(workflow.State.StatusText == "已取消检查。", "canceled check must update status text");
+    Assert(workflow.State.Rows.Count == 3, "canceled check must retain previous price rows");
+    adapterA.Block = false;
+
+    adapterA.ReturnedFailure = ProviderPriceSwitcher.Application.PricingAdapterFailure.Authentication;
+    adapterB.ReturnedFailure = ProviderPriceSwitcher.Application.PricingAdapterFailure.Timeout;
+    await workflow.CheckPricesAsync();
+    Assert(!workflow.State.IsCheckingPrices, "failed price check must restore busy state");
+    Assert(workflow.State.RecommendedProvider == "无可自动推荐项", "all-failing price check must project '无可自动推荐项'");
+    Assert(workflow.State.CurrentProvider == "未应用", "failed check must not change current provider");
+    Assert(workflow.State.Rows.All(r => r.IsStale), "failed check with previous snapshots must mark all rows as stale");
+    Assert(workflow.State.Rows.Any(r => r.ProviderId == "wf-site-a" && r.Status == "需认证" && r.Issue == UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Authentication)), "auth failure must project '需认证'");
+    Assert(workflow.State.Rows.Any(r => r.ProviderId == "wf-site-b" && r.Status == "失败" && r.Issue == UserErrorMessages.ForPricingFailure(ProviderPriceSwitcher.Application.PricingRefreshFailureKind.Timeout)), "timeout failure must project '失败' with timeout issue");
+    adapterA.ReturnedFailure = null;
+    adapterB.ReturnedFailure = null;
+
+    adapterA.Block = true;
+    var firstCheck = workflow.CheckPricesAsync();
+    var secondCheck = workflow.CheckPricesAsync();
+    Assert(ReferenceEquals(firstCheck, secondCheck) || secondCheck.IsCompleted, "reentrant CheckPricesAsync must return immediately");
+    Assert(adapterA.FetchCalls >= 1, "adapter should have been called for first check");
+    workflow.CancelPriceCheck();
+    await firstCheck;
+    adapterA.Block = false;
+
+    workflow.SelectProviderId("wf-site-a");
+    Assert(workflow.State.SelectedProvider?.ProviderId == "wf-site-a", "selected provider must be wf-site-a");
+    wfRouteController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var applyTask = workflow.ApplyActiveRouteAsync();
+    Assert(workflow.State.IsApplyingRoute && !workflow.CanApplyRoute, "applying route must set busy state");
+    wfRouteController.ApplyGate.SetResult();
+    await applyTask;
+    wfRouteController.ApplyGate = null;
+    Assert(!workflow.State.IsApplyingRoute && workflow.CanApplyRoute, "completed route apply must clear busy");
+    Assert(workflow.State.CurrentProvider == "wf-site-a", "state CurrentProvider must update to applied provider");
+    Assert(wfActiveRoute.CurrentProviderId == "wf-site-a", "active route state must update to applied provider");
+    Assert(wfRouteController.LastSnapshot?.ProviderId == "wf-site-a", "route snapshot must be submitted to sidecar controller");
+    Assert(workflow.State.StatusText == "供应商已应用；只影响后续新请求。", "apply route status text mismatch");
+    var invalidApply = await workflow.ApplyActiveRouteAsync("non-existent-site");
+    Assert(!invalidApply.IsApplyingRoute, "failed apply must clear busy");
+    Assert(invalidApply.CurrentProvider == "wf-site-a", "failed apply must preserve previous active provider");
+    Assert(invalidApply.StatusText == "目标供应商不存在。", "failed apply must project structured user message");
+
+    // Reentrancy for ApplyActiveRouteAsync
+    wfRouteController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var firstApply = workflow.ApplyActiveRouteAsync("wf-site-a");
+    var secondApply = workflow.ApplyActiveRouteAsync("wf-site-a");
+    Assert(ReferenceEquals(firstApply, secondApply) || secondApply.IsCompleted, "reentrant ApplyActiveRouteAsync must return immediately");
+    wfRouteController.ApplyGate.SetResult();
+    await firstApply;
+    wfRouteController.ApplyGate = null;
+    workflow.SelectOmpWorkingDirectory(Path.Combine(wfRoot, "sub-work"));
+    var startOmpTask = workflow.StartOmpAsync();
+    await startOmpTask;
+    Assert(!workflow.State.IsStartingOmp && workflow.CanStartOmp, "completed OMP start must clear busy");
+    Assert(wfOmpLauncher.Calls == 1 && wfOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(wfRoot, "sub-work"), "OMP must be launched with selected working directory");
+    Assert(workflow.State.CurrentProvider == "wf-site-a", "starting OMP must NEVER alter active provider");
+    Assert(workflow.State.StatusText.Contains("当前供应商未改变", StringComparison.Ordinal), "starting OMP status message mismatch");
+
+    workflow.SelectOmpConfigurationTargetId("openai-codex");
+    File.WriteAllText(Path.Combine(wfRoot, "agent", "config.yml"), "modelRoles:\r\n  default: openai-codex/gpt-5\r\n");
+    await workflow.ReplaceOmpGptProviderAsync("openai-codex");
+    Assert(workflow.State.OmpConfigurationStatus == "无可变更 GPT", "no-op preview must project '无可变更 GPT'");
+    Assert(workflow.State.StatusText == "没有需要替换的 GPT 路由，未写入文件。", "no-op preview status text mismatch");
+
+    File.WriteAllText(Path.Combine(wfRoot, "agent", "config.yml"), "modelRoles:\r\n  default: another-provider/gpt-5\r\n");
+    workflow.SelectOmpConfigurationTargetId("provider-price-switcher");
+    wfNotifications.ConfirmResult = false;
+    var cancelReplace = await workflow.ReplaceOmpGptProviderAsync("provider-price-switcher");
+    Assert(!cancelReplace.IsReplacingOmpGptProvider, "cancelled replace must clear busy");
+    Assert(cancelReplace.StatusText == "已取消 OMP 配置替换，未写入文件。", "cancelled replace status text mismatch");
+    Assert(File.ReadAllText(Path.Combine(wfRoot, "agent", "config.yml")).Contains("another-provider/gpt-5", StringComparison.Ordinal), "cancelled replace must not write file");
+
+    wfNotifications.ConfirmResult = true;
+    var confirmReplace = await workflow.ReplaceOmpGptProviderAsync("provider-price-switcher");
+    Assert(!confirmReplace.IsReplacingOmpGptProvider, "confirmed replace must clear busy");
+    Assert(confirmReplace.OmpConfigurationStatus == "配置已替换", "confirmed replace must update OmpConfigurationStatus");
+    Assert(confirmReplace.StatusText.Contains("手动重启", StringComparison.Ordinal), "confirmed replace must remind manual restart");
+    Assert(File.ReadAllText(Path.Combine(wfRoot, "agent", "config.yml")).Contains("provider-price-switcher/gpt-5", StringComparison.Ordinal), "confirmed replace must update config.yml");
+    Assert(confirmReplace.CurrentProvider == "wf-site-a", "replace OMP must NEVER alter active provider");
+
+    // SaveSettings in workflow
+    workflow.SaveSettings(wfSettings with { GatewayPort = 15730 });
+    Assert(wfSettingsRepo.Load().GatewayPort == 15730 && workflow.Settings.GatewayPort == 15730, "SaveSettings must update repo and workflow settings");
+    // Scenario 10: Mutual independence & concurrency across all operations
+    // 10a: Apply route vs Start OMP independence
+    wfRouteController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var bgApply = workflow.ApplyActiveRouteAsync("wf-site-b");
+    Assert(workflow.State.IsApplyingRoute, "bgApply must be busy");
+    Assert(workflow.CanStartOmp && !workflow.State.IsStartingOmp, "starting OMP must be available while applying route");
+    var bgStartOmp = workflow.StartOmpAsync();
+    await bgStartOmp;
+    Assert(!workflow.State.IsStartingOmp && workflow.State.IsApplyingRoute, "start OMP completes while route apply remains busy");
+    wfRouteController.ApplyGate.SetResult();
+    await bgApply;
+    Assert(!workflow.State.IsApplyingRoute && workflow.State.CurrentProvider == "wf-site-b", "route apply completes independently and updates provider");
+
+    // 10b: Replace OMP config vs Start OMP independence
+    File.WriteAllText(Path.Combine(wfRoot, "agent", "config.yml"), "modelRoles:\r\n  default: another-provider/gpt-5\r\n");
+    wfNotifications.ConfirmResult = true;
+    var replaceTask = workflow.ReplaceOmpGptProviderAsync("provider-price-switcher");
+    var ompDuringReplace = workflow.StartOmpAsync();
+    await Task.WhenAll(replaceTask, ompDuringReplace);
+    Assert(!workflow.State.IsReplacingOmpGptProvider && !workflow.State.IsStartingOmp, "both operations must finish with cleared busy states");
+    Assert(workflow.State.OmpConfigurationStatus == "配置已替换", "replacement status must succeed");
+    Assert(workflow.State.CurrentProvider == "wf-site-b", "active provider must remain untouched");
+
+    // 10c: Explicit cancellation token propagation
+    using var explicitCts = new CancellationTokenSource();
+    explicitCts.Cancel();
+    var canceledApply = await workflow.ApplyActiveRouteAsync("wf-site-a", explicitCts.Token);
+    Assert(!canceledApply.IsApplyingRoute && canceledApply.StatusText.Contains("已取消", StringComparison.Ordinal), "explicitly canceled route apply must project cancel text");
+    var canceledOmp = await workflow.StartOmpAsync(null, explicitCts.Token);
+    Assert(!canceledOmp.IsStartingOmp && canceledOmp.StatusText.Contains("已取消", StringComparison.Ordinal), "explicitly canceled OMP start must project cancel text");
+    var canceledReplaceToken = await workflow.ReplaceOmpGptProviderAsync("openai-codex", explicitCts.Token);
+    Assert(!canceledReplaceToken.IsReplacingOmpGptProvider && canceledReplaceToken.StatusText.Contains("已取消", StringComparison.Ordinal), "explicitly canceled replace must project cancel text");
+}
+finally
+{
+    if (Directory.Exists(wfRoot)) Directory.Delete(wfRoot, true);
+}
 Exception? windowFailure = null;
 var windowThread = new Thread(() =>
 {
@@ -457,7 +704,12 @@ var windowThread = new Thread(() =>
         var ompReplacement = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementUseCase(
             new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(
                 new ProviderPriceSwitcher.Infrastructure.AppPathDefaults()));
-        var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance, sidecarStatus: sidecarStatus, ompReplacement: ompReplacement);
+        var (workflow, viewModel) = CreateAppWiring(
+            new HomepageWorkflow(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, sidecarStatus, ompReplacement, notifications),
+            sitesFactory,
+            notifications,
+            sidecarStatus,
+            activeRoute);
         var window = new MainWindow(viewModel);
         window.Show();
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
@@ -535,7 +787,6 @@ var windowThread = new Thread(() =>
         WaitFor(() => !viewModel.IsApplyingRoute);
         Assert(activeRoute.CurrentProviderId == "healthy", "application command must commit the selected target after its independent busy period");
         activeRoute.Apply(activeBeforeLaunch!);
-
         var site = new ProviderPriceSwitcher.Core.SiteConfiguration
         {
             ProviderId = "synthetic-provider",
@@ -557,17 +808,20 @@ var windowThread = new Thread(() =>
             new ProviderPriceSwitcher.Adapters.AiHubPricingAdapter(pricingClient, new PricingCredentialStore())
         ]);
         var pricingRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(pricingRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var currentRatioViewModel = new MainViewModel(
-            new ProviderPriceSwitcher.Application.PricingCheckUseCase(pricingRefresh, settingsRepository, snapshots),
-            settingsUseCase,
-            applyActiveRoute,
-            ompLaunch,
-            activeRoute,
-            snapshotQuery,
-            pricingSettings,
+        var (currentRatioWorkflow, currentRatioViewModel) = CreateAppWiring(
+            new HomepageWorkflow(
+                new ProviderPriceSwitcher.Application.PricingCheckUseCase(pricingRefresh, settingsRepository, snapshots),
+                settingsUseCase,
+                applyActiveRoute,
+                ompLaunch,
+                activeRoute,
+                snapshotQuery,
+                pricingSettings,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                notifications: notifications),
             sitesFactory,
             notifications,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+            activeRoute: activeRoute);
         currentRatioViewModel.CheckCommand.Execute(null);
         WaitFor(() => currentRatioViewModel.Rows.Count > 0);
         Assert(currentRatioViewModel.RecommendedProvider == "synthetic-provider"
@@ -615,17 +869,20 @@ var windowThread = new Thread(() =>
         };
         var projectionRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([projectionAdapter]);
         var projectionRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(projectionRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var projectionViewModel = new MainViewModel(
-            new ProviderPriceSwitcher.Application.PricingCheckUseCase(projectionRefresh, projectionSettingsRepository, projectionSnapshots),
-            new ProviderPriceSwitcher.Application.SettingsUseCase(projectionSettingsRepository),
-            new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(projectionSettingsRepository, routeController, keyStore, activeRoute),
-            ompLaunch,
-            activeRoute,
-            new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(projectionSnapshots),
-            projectionSettings,
+        var (projectionWorkflow, projectionViewModel) = CreateAppWiring(
+            new HomepageWorkflow(
+                new ProviderPriceSwitcher.Application.PricingCheckUseCase(projectionRefresh, projectionSettingsRepository, projectionSnapshots),
+                new ProviderPriceSwitcher.Application.SettingsUseCase(projectionSettingsRepository),
+                new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(projectionSettingsRepository, routeController, keyStore, activeRoute),
+                ompLaunch,
+                activeRoute,
+                new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(projectionSnapshots),
+                projectionSettings,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                notifications: notifications),
             sitesFactory,
             notifications,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+            activeRoute: activeRoute);
         projectionViewModel.CheckCommand.Execute(null);
         WaitFor(() => projectionViewModel.Rows.Count > 0 && projectionViewModel.CheckCommand.CanExecute(null));
         var projectionRows = projectionViewModel.Rows.ToArray();
@@ -636,7 +893,6 @@ var windowThread = new Thread(() =>
             && projectionCurrent.IsSiteFirstRow && projectionCurrent.KeysUri is not null
             && !projectionMinimum.IsSiteFirstRow && projectionMinimum.KeysUri is null,
             "price table must project only current and minimum rows, leaving the minimum row read-only and hiding other groups");
-
 
         var launcher = new FakeUriLauncher();
         var navigationWindow = new MainWindow(viewModel, launcher);
@@ -802,7 +1058,11 @@ var windowThread = new Thread(() =>
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
-        var statusViewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, notifications, Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
+        var (statusWorkflow, statusViewModel) = CreateAppWiring(
+            new HomepageWorkflow(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, notifications: notifications),
+            sitesFactory,
+            notifications,
+            activeRoute: activeRoute);
         statusViewModel.InitializeAsync().GetAwaiter().GetResult();
         var statusWindow = new MainWindow(statusViewModel);
         statusWindow.Show();
@@ -882,21 +1142,42 @@ static void WaitFor(Func<bool> condition)
     Assert(condition(), "timed out waiting for UI operation");
 }
 
+static (HomepageWorkflow Workflow, MainViewModel ViewModel) CreateAppWiring(
+    HomepageWorkflow workflow,
+    SitesDialogFactory sitesFactory,
+    IUserNotificationService notifications,
+    ProviderPriceSwitcher.Application.ISidecarStatus? sidecarStatus = null,
+    ProviderPriceSwitcher.Application.IActiveRouteController? activeRoute = null)
+{
+    var viewModel = new MainViewModel(
+        workflow,
+        sitesFactory,
+        notifications,
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance,
+        sidecarStatus,
+        activeRoute);
+    return (workflow, viewModel);
+}
+
 sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescriptor descriptor) : ProviderPriceSwitcher.Application.IPricingAdapter
 {
     public ProviderPriceSwitcher.Application.PricingAdapterDescriptor Descriptor { get; } = descriptor;
     public bool Block { get; set; }
+    public TaskCompletionSource? Gate { get; set; }
     public IReadOnlyDictionary<string, decimal>? ReturnedGroupRatios { get; set; }
+    public ProviderPriceSwitcher.Core.TokenPrices? ReturnedPrices { get; set; }
     public ProviderPriceSwitcher.Application.PricingAdapterFailure? ReturnedFailure { get; set; }
     public int FetchCalls { get; private set; }
     public async Task<ProviderPriceSwitcher.Application.SitePricingResult> FetchAsync(ProviderPriceSwitcher.Core.SiteConfiguration site, CancellationToken cancellationToken = default)
     {
         FetchCalls++;
+        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
         if (Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         if (ReturnedFailure is { } failure) throw new ProviderPriceSwitcher.Application.PricingAdapterException(failure, "synthetic failure");
         var groupRatios = ReturnedGroupRatios ?? new Dictionary<string, decimal>(StringComparer.Ordinal) { [site.CurrentGroup] = 1m };
         var currentRatio = groupRatios.GetValueOrDefault(site.CurrentGroup, 1m);
         var minimum = groupRatios.OrderBy(pair => pair.Value).First();
+        var prices = ReturnedPrices ?? new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 };
         return new()
         {
             Snapshot = new()
@@ -905,11 +1186,11 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
                 ConfigurationKey = site.ConfigurationKey,
                 Model = site.Model,
                 CurrentGroup = site.CurrentGroup,
-                Prices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 },
+                Prices = prices,
                 CurrentGroupRatio = currentRatio,
                 MinimumGroup = minimum.Key,
                 MinimumGroupRatio = minimum.Value,
-                MinimumGroupPrices = new() { InputPerMillion = 1, CachedInputPerMillion = 1, OutputPerMillion = 1 },
+                MinimumGroupPrices = prices,
                 RefreshedAt = DateTimeOffset.UtcNow
             },
             GroupRatios = groupRatios,
@@ -979,6 +1260,16 @@ sealed class StartupKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
 }
 
+sealed class InMemoryInferenceApiKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore
+{
+    private readonly Dictionary<string, ProviderPriceSwitcher.Core.InferenceApiKeyRecord> _keys = new(StringComparer.Ordinal);
+    public int ClearCalls { get; private set; }
+    public ProviderPriceSwitcher.Core.InferenceApiKeyRecord? Load(string providerId) => _keys.GetValueOrDefault(providerId);
+    public void Save(ProviderPriceSwitcher.Core.InferenceApiKeyRecord record) => _keys[record.ProviderId] = record;
+    public void Clear(string providerId) { _keys.Remove(providerId); ClearCalls++; }
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
+}
+
 sealed class FakeInferenceApiKeyUseCase : ProviderPriceSwitcher.Application.IInferenceApiKeyUseCase
 {
     public int SaveCalls { get; private set; }
@@ -1005,13 +1296,14 @@ sealed class FakeInferenceApiKeyUseCase : ProviderPriceSwitcher.Application.IInf
         return Task.CompletedTask;
     }
 }
-
 sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteController
 {
     public TaskCompletionSource? ApplyGate { get; set; }
     public int ClearCount { get; private set; }
+    public ProviderPriceSwitcher.Core.RouteSnapshot? LastSnapshot { get; private set; }
     public async Task ApplyAsync(ProviderPriceSwitcher.Core.RouteSnapshot snapshot, CancellationToken cancellationToken = default)
     {
+        LastSnapshot = snapshot;
         if (ApplyGate is not null)
             await ApplyGate.Task.WaitAsync(cancellationToken);
     }
@@ -1033,7 +1325,6 @@ sealed class FakeSidecarStatus : ProviderPriceSwitcher.Application.ISidecarStatu
         Changed?.Invoke(status);
     }
 }
-
 sealed class FakeOmpLauncher : ProviderPriceSwitcher.Application.IOmpProcessLauncher
 {
     public int Calls { get; private set; }

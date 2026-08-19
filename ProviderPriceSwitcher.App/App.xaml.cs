@@ -19,6 +19,8 @@ public partial class App : System.Windows.Application
     private ActiveRouteState? _activeRoute;
     private SettingsUseCase? _settingsUseCase;
     private GatewayRecoveryUseCase? _gatewayRecovery;
+    private HomepageWorkflow? _workflow;
+    private MainViewModel? _viewModel;
     private TrayApplicationController? _trayController;
     private CancellationTokenSource? _applicationCancellation;
     private readonly object _gatewayRecoveryGate = new();
@@ -115,10 +117,29 @@ public partial class App : System.Windows.Application
             var ompReplacement = new OmpConfigurationReplacementUseCase(ompConfiguration);
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
-            var viewModel = new MainViewModel(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, sitesFactory, _notifications, _loggerFactory.CreateLogger<MainViewModel>(), _sidecar, ompReplacement, startupCancellation);
-            var mainWindow = new MainWindow(viewModel);
+            _workflow = new HomepageWorkflow(
+                pricingCheck,
+                settingsUseCase,
+                applyActiveRoute,
+                ompLaunch,
+                activeRoute,
+                snapshotQuery,
+                settings,
+                _loggerFactory.CreateLogger<HomepageWorkflow>(),
+                _sidecar,
+                ompReplacement,
+                _notifications,
+                startupCancellation);
+            _viewModel = new MainViewModel(
+                _workflow,
+                sitesFactory,
+                _notifications,
+                _loggerFactory.CreateLogger<MainViewModel>(),
+                _sidecar,
+                activeRoute);
+            var mainWindow = new MainWindow(_viewModel);
             MainWindow = mainWindow;
-            _trayController = new TrayApplicationController(mainWindow, viewModel, new WindowsTrayHost(), _notifications, RequestShutdown);
+            _trayController = new TrayApplicationController(mainWindow, _viewModel, new WindowsTrayHost(), _notifications, RequestShutdown);
             mainWindow.Show();
         }
         catch (OperationCanceledException) when (_applicationCancellation?.IsCancellationRequested == true)
@@ -169,7 +190,8 @@ public partial class App : System.Windows.Application
             var logger = _loggerFactory?.CreateLogger<App>();
             if (logger is not null) LogApplicationFailure(logger, "ShutdownRecovery", exception);
         }
-
+        _viewModel?.Dispose();
+        _workflow?.Dispose();
         if (_sidecar is not null)
         {
             _sidecar.Changed -= HandleSidecarStatusChanged;
