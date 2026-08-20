@@ -53,14 +53,4 @@ public partial class MainWindow : Window
         row = hitRow?.DataContext as PriceRow;
         return row is not null;
     }
-
-    public static Uri? BuildKeysUri(Uri? baseUrl, string? configurationApiAddress)
-    {
-        if (baseUrl is null || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps)) return null;
-        var address = string.IsNullOrWhiteSpace(configurationApiAddress) ? "/keys" : configurationApiAddress;
-        if (!address.StartsWith('/') || address.StartsWith("//", StringComparison.Ordinal) || address.Contains('?') || address.Contains('#')) return null;
-        var builder = new UriBuilder(baseUrl) { Query = string.Empty, Fragment = string.Empty };
-        builder.Path = builder.Path.TrimEnd('/') + address;
-        return builder.Uri;
-    }
 }

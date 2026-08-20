@@ -8,6 +8,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private readonly HomepageWorkflow _workflow;
     private readonly ISitesDialogFactory _sitesDialogFactory;
+    private readonly ISettingsDialogFactory _settingsDialogFactory;
     private readonly IUserNotificationService _notifications;
     private readonly ILogger<MainViewModel> _logger;
     private static readonly Action<ILogger, string, Exception?> LogUiFailure =
@@ -20,10 +21,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         HomepageWorkflow workflow,
         ISitesDialogFactory sitesDialogFactory,
         IUserNotificationService notifications,
-        ILogger<MainViewModel> logger)
+        ILogger<MainViewModel> logger,
+        ISettingsDialogFactory? settingsDialogFactory = null)
     {
         _workflow = workflow ?? throw new ArgumentNullException(nameof(workflow));
         _sitesDialogFactory = sitesDialogFactory ?? throw new ArgumentNullException(nameof(sitesDialogFactory));
+        _settingsDialogFactory = settingsDialogFactory ?? new SettingsDialogFactory();
         _notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -169,7 +172,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
     private async Task EditSettingsAsync()
     {
-        var dialog = new SettingsDialog(_workflow.Settings);
+        var dialog = _settingsDialogFactory.Create(_workflow.Settings);
         if (dialog.ShowDialog() == true)
         {
             _workflow.SaveSettings(dialog.Settings);

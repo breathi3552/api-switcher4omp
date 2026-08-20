@@ -2,9 +2,17 @@
 using System.Windows.Input;
 
 static void Assert(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
-Assert(MainWindow.BuildKeysUri(new Uri("https://example.test/root///?old=query#old"), "/console/keys")?.AbsoluteUri == "https://example.test/root/console/keys", "config API URI must append configured path and clear query/fragment");
-Assert(MainWindow.BuildKeysUri(new Uri("https://example.test/root?old=query#old"), null)?.AbsoluteUri == "https://example.test/root/keys", "missing config API URI must default to /keys");
-Assert(MainWindow.BuildKeysUri(new Uri("ftp://example.test/root"), "/keys") is null, "non-http config API URI must not be launchable");
+Assert(SiteKeysUriBuilder.Build(new Uri("https://example.test/root///?old=query#old"), "/console/keys")?.AbsoluteUri == "https://example.test/root/console/keys", "config API URI must append configured path and clear query/fragment");
+Assert(SiteKeysUriBuilder.Build(new Uri("https://example.test/root?old=query#old"), null)?.AbsoluteUri == "https://example.test/root/keys", "missing config API URI must default to /keys");
+Assert(SiteKeysUriBuilder.Build(new Uri("ftp://example.test/root"), "/keys") is null, "non-http config API URI must not be launchable");
+Assert(HomepageStateProjector.FormatOmpConfigurationTone(true) == StatusTone.Success, "succeeded replacement must project Success tone");
+Assert(HomepageStateProjector.FormatOmpConfigurationTone(false) == StatusTone.Danger, "failed replacement must project Danger tone");
+Assert(HomepageStateProjector.FormatOmpConfigurationTone(null) == StatusTone.Warning, "unreplaced state must project Warning tone");
+var dummySettings = new ProviderPriceSwitcher.Application.LocalAppSettings();
+ProviderPriceSwitcher.Application.LocalAppSettings? capturedSettings = null;
+var testSettingsFactory = new SettingsDialogFactory(s => { capturedSettings = s; return null!; });
+testSettingsFactory.Create(dummySettings);
+Assert(capturedSettings == dummySettings, "settings dialog factory must pass settings to creator");
 var errors = new List<Exception>();
 var command = new AsyncCommand(() => throw new InvalidOperationException("boom"), errors.Add);
 command.Execute(null);
@@ -704,6 +712,7 @@ var windowThread = new Thread(() =>
             fakeOmpLauncher,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.OmpLaunchUseCase>.Instance);
         var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, notifications));
+        var settingsFactory = new SettingsDialogFactory(localSettings => new SettingsDialog(localSettings));
         var ompReplacement = new ProviderPriceSwitcher.Application.OmpConfigurationReplacementUseCase(
             new ProviderPriceSwitcher.Infrastructure.OmpConfigurationService(
                 new ProviderPriceSwitcher.Infrastructure.AppPathDefaults()));
@@ -713,6 +722,8 @@ var windowThread = new Thread(() =>
             notifications);
         var window = new MainWindow(viewModel);
         window.Show();
+        var realDialog = settingsFactory.Create(settings);
+        Assert(realDialog is not null && realDialog.Settings == settings && realDialog.Owner == window, "real settings dialog factory must construct dialog with MainWindow owner in STA");
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
         var activeBeforeLaunch = activeRoute.Current;
         viewModel.StartOmpCommand.Execute(null);

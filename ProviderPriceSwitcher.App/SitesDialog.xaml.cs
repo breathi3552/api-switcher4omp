@@ -32,7 +32,8 @@ public sealed partial class SitesDialog : Window
     public SitesDialog(LocalAppSettings settings, SiteManagementUseCase siteManagement, IPricingSnapshotQuery snapshotQuery, ISiteEditorDialogFactory editorFactory, string? currentProvider, IUserNotificationService notifications)
     {
         InitializeComponent(); Settings = settings; _siteManagement = siteManagement; _snapshotQuery = snapshotQuery; _editorFactory = editorFactory; _currentProvider = currentProvider; _notifications = notifications;
-        Title = "管理站点"; Width = 1120; Height = 560; WindowStartupLocation = WindowStartupLocation.CenterOwner; Owner = System.Windows.Application.Current.MainWindow;
+        Title = "管理站点"; Width = 1120; Height = 560; WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        if (System.Windows.Application.Current?.MainWindow is { } mainWindow && mainWindow != this) Owner = mainWindow;
         foreach (var column in new[] { ("站点名称", "DisplayName"), ("ProviderId", "ProviderId"), ("类型", "SiteType"), ("Base URL", "BaseUrl") }) _grid.Columns.Add(new DataGridTextColumn { Header = column.Item1, Binding = new System.Windows.Data.Binding(column.Item2) });
         _grid.SelectionChanged += (_, _) => UpdateButtons(); _grid.MouseDoubleClick += async (_, _) => await EditSelectedAsync();
         var add = new Button { Content = "新增" }; add.Click += async (_, _) => await AddSiteAsync(); _edit.Click += async (_, _) => await EditSelectedAsync(); _toggle.Click += (_, _) => ToggleSelected(); _delete.Click += async (_, _) => await DeleteSelectedAsync();

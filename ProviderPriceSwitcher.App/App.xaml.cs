@@ -117,6 +117,7 @@ public partial class App : System.Windows.Application
             var ompReplacement = new OmpConfigurationReplacementUseCase(ompConfiguration);
             var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications, localSettings, original, inferenceKeyUseCase));
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
+            var settingsFactory = new SettingsDialogFactory(localSettings => new SettingsDialog(localSettings));
             _workflow = new HomepageWorkflow(
                 pricingCheck,
                 settingsUseCase,
@@ -134,7 +135,8 @@ public partial class App : System.Windows.Application
                 _workflow,
                 sitesFactory,
                 _notifications,
-                _loggerFactory.CreateLogger<MainViewModel>());
+                _loggerFactory.CreateLogger<MainViewModel>(),
+                settingsFactory);
             var mainWindow = new MainWindow(_viewModel);
             MainWindow = mainWindow;
             _trayController = new TrayApplicationController(mainWindow, _viewModel, new WindowsTrayHost(), _notifications, RequestShutdown);

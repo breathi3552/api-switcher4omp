@@ -16,6 +16,19 @@ public sealed record ProviderChoice(string ProviderId)
     public string Display => ProviderId;
 }
 
+public static class SiteKeysUriBuilder
+{
+    public static Uri? Build(Uri? baseUrl, string? configurationApiAddress)
+    {
+        if (baseUrl is null || (baseUrl.Scheme != Uri.UriSchemeHttp && baseUrl.Scheme != Uri.UriSchemeHttps)) return null;
+        var address = string.IsNullOrWhiteSpace(configurationApiAddress) ? "/keys" : configurationApiAddress;
+        if (!address.StartsWith('/') || address.StartsWith("//", StringComparison.Ordinal) || address.Contains('?') || address.Contains('#')) return null;
+        var builder = new UriBuilder(baseUrl) { Query = string.Empty, Fragment = string.Empty };
+        builder.Path = builder.Path.TrimEnd('/') + address;
+        return builder.Uri;
+    }
+}
+
 public sealed class PriceRow
 {
     public PriceRow(
@@ -51,7 +64,7 @@ public sealed class PriceRow
         IsStale = isStale;
         HasWarning = hasWarning;
         IsSiteFirstRow = isSiteFirstRow;
-        KeysUri = isSiteFirstRow ? MainWindow.BuildKeysUri(baseUrl, configurationApiAddress) : null;
+        KeysUri = isSiteFirstRow ? SiteKeysUriBuilder.Build(baseUrl, configurationApiAddress) : null;
     }
 
     public string ProviderId { get; }
@@ -144,7 +157,7 @@ public static class HomepageStateProjector
         var activeRouteText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId);
         var gatewayTone = FormatGatewayTone(gatewayStatus, settings.CurrentGatewayPort);
         var activeRouteTone = FormatActiveRouteTone(gatewayStatus, activeProviderId);
-        var ompTone = FormatOmpConfigurationTone("可手动替换");
+        var ompTone = FormatOmpConfigurationTone(null);
         IReadOnlyList<PriceRow> rows;
         string lastCheckedText;
         string statusText;
@@ -445,7 +458,7 @@ public static class HomepageStateProjector
             {
                 IsReplacingOmpGptProvider = false,
                 OmpConfigurationStatus = "配置替换失败",
-                OmpConfigurationTone = StatusTone.Danger,
+                OmpConfigurationTone = FormatOmpConfigurationTone(false),
                 StatusText = result.ErrorMessage ?? "OMP 配置替换失败，未报告成功。"
             };
         }
@@ -460,7 +473,7 @@ public static class HomepageStateProjector
         {
             IsReplacingOmpGptProvider = false,
             OmpConfigurationStatus = "配置已替换",
-            OmpConfigurationTone = StatusTone.Success,
+            OmpConfigurationTone = FormatOmpConfigurationTone(true),
             StatusText = statusText
         };
     }
@@ -775,13 +788,13 @@ public static class HomepageStateProjector
         };
     }
 
-    public static StatusTone FormatOmpConfigurationTone(string ompConfigurationStatus)
+    public static StatusTone FormatOmpConfigurationTone(bool? succeeded)
     {
-        return ompConfigurationStatus switch
+        return succeeded switch
         {
-            "配置已替换" => StatusTone.Success,
-            "配置替换失败" => StatusTone.Danger,
-            _ => StatusTone.Warning
+            true => StatusTone.Success,
+            false => StatusTone.Danger,
+            null => StatusTone.Warning
         };
     }
 }

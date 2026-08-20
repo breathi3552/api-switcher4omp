@@ -8,6 +8,17 @@ using ProviderPriceSwitcher.Application;
 using ProviderPriceSwitcher.Infrastructure;
 
 namespace ProviderPriceSwitcher.App;
+public interface ISettingsDialogFactory
+{
+    SettingsDialog Create(LocalAppSettings settings);
+}
+
+public sealed class SettingsDialogFactory(Func<LocalAppSettings, SettingsDialog>? create = null) : ISettingsDialogFactory
+{
+    private readonly Func<LocalAppSettings, SettingsDialog> _create = create ?? (s => new SettingsDialog(s));
+    public SettingsDialog Create(LocalAppSettings settings) => _create(settings);
+}
+
 public sealed partial class SettingsDialog : Window
 {
     private readonly LocalAppSettings _source;
@@ -35,7 +46,8 @@ public sealed partial class SettingsDialog : Window
         MinWidth = 620;
         MinHeight = 420;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Owner = System.Windows.Application.Current.MainWindow;
+        if (System.Windows.Application.Current?.MainWindow is { } mainWindow && mainWindow != this)
+            Owner = mainWindow;
 
         var root = new Grid { Margin = new Thickness(20) };
         root.RowDefinitions.Add(new RowDefinition());
