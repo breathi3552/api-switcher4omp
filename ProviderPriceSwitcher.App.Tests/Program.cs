@@ -661,23 +661,25 @@ var windowThread = new Thread(() =>
         var settingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(root);
         var snapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(root);
         var refresh = new ProviderPriceSwitcher.Application.PricingRefreshService(registry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
+        var site = new ProviderPriceSwitcher.Core.SiteConfiguration
+        {
+            ProviderId = "synthetic-provider",
+            ConfigurationKey = "synthetic-key",
+            BaseUrl = new Uri("https://example.test/root///?old=query#old"),
+            ConfigurationApiAddress = "/console/keys",
+            SiteType = "two",
+            Model = "model",
+            CurrentGroup = "group",
+            CurrentGroupRatio = 1m,
+            AuthenticationMode = "令牌"
+        };
         var settings = settingsRepository.Load();
         settings = settings with { GatewayPort = 16222, CurrentGatewayPort = 15722, OmpRootDirectory = root };
         settings = settings with
         {
             OmpWorkingDirectories = [root, Path.Combine(root, "other-working")],
             LastOmpWorkingDirectory = Path.Combine(root, "other-working"),
-            Sites =
-            [
-                new ProviderPriceSwitcher.Core.SiteConfiguration
-                {
-                    ProviderId = "healthy",
-                    ConfigurationKey = "healthy-key",
-                    BaseUrl = new Uri("https://healthy.example"),
-                    Model = "model",
-                    CurrentGroup = "group"
-                }
-            ]
+            Sites = [site]
         };
         settingsRepository.Save(settings);
         Directory.CreateDirectory(Path.Combine(root, "agent"));
@@ -717,7 +719,7 @@ var windowThread = new Thread(() =>
         WaitFor(() => viewModel.StatusText.Contains("当前供应商未改变", StringComparison.Ordinal));
         Assert(fakeOmpLauncher.Calls == 1
             && fakeOmpLauncher.LastRequest?.WorkingDirectory == Path.Combine(root, "other-working")
-            && !viewModel.IsStartingOmp
+            && viewModel.StartOmpButtonText == "启动 OMP"
             && activeRoute.Current == activeBeforeLaunch,
             "Start OMP must remain independent from configuration replacement and preserve the active supplier.");
 
@@ -760,7 +762,7 @@ var windowThread = new Thread(() =>
         viewModel.SelectedOmpConfigurationTarget = viewModel.OmpConfigurationTargetChoices.First(choice => choice.ProviderId == "openai-codex");
         viewModel.ReplaceOmpGptProviderCommand.Execute(null);
         WaitFor(() =>
-            !viewModel.IsReplacingOmpGptProvider
+            viewModel.ReplaceOmpGptProviderButtonText == "替换 OMP GPT"
             && File.ReadAllText(Path.Combine(root, "agent", "config.yml")).Contains(
                 "default: openai-codex/gpt-5",
                 StringComparison.Ordinal));
@@ -774,123 +776,18 @@ var windowThread = new Thread(() =>
         sidecarStatus.Set(new ProviderPriceSwitcher.Application.SidecarStatus(ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "synthetic-disconnect"));
         WaitFor(() => Equals(viewModel.GatewayStatusBrush, System.Windows.Media.Brushes.IndianRed));
         Assert(Equals(((System.Windows.Shapes.Ellipse)window.FindName("GatewayStatusDot")).Fill, System.Windows.Media.Brushes.IndianRed), "gateway status dot must follow the sidecar lifecycle status");
-        viewModel.SelectedProvider = new ProviderChoice("healthy");
+        viewModel.SelectedProvider = new ProviderChoice("synthetic-provider");
         routeController.ApplyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         viewModel.ApplyRouteCommand.Execute(null);
-        WaitFor(() => viewModel.IsApplyingRoute);
+        WaitFor(() => viewModel.ApplyRouteButtonText == "应用中…");
         var launchesBeforeIndependentStart = fakeOmpLauncher.Calls;
         viewModel.StartOmpCommand.Execute(null);
-        WaitFor(() => fakeOmpLauncher.Calls == launchesBeforeIndependentStart + 1 && !viewModel.IsStartingOmp);
-        Assert(viewModel.IsApplyingRoute && !viewModel.IsStartingOmp, "application and OMP start commands must keep independent busy states");
+        WaitFor(() => fakeOmpLauncher.Calls == launchesBeforeIndependentStart + 1 && viewModel.StartOmpButtonText == "启动 OMP");
+        Assert(viewModel.ApplyRouteButtonText == "应用中…" && viewModel.StartOmpButtonText == "启动 OMP", "application and OMP start commands must keep independent busy states");
         routeController.ApplyGate.SetResult();
-        WaitFor(() => !viewModel.IsApplyingRoute);
-        Assert(activeRoute.CurrentProviderId == "healthy", "application command must commit the selected target after its independent busy period");
+        WaitFor(() => viewModel.ApplyRouteButtonText == "应用供应商");
+        Assert(activeRoute.CurrentProviderId == "synthetic-provider", "application command must commit the selected target after its independent busy period");
         activeRoute.Apply(activeBeforeLaunch!);
-        var site = new ProviderPriceSwitcher.Core.SiteConfiguration
-        {
-            ProviderId = "synthetic-provider",
-            ConfigurationKey = "synthetic-key",
-            BaseUrl = new Uri("https://example.test/root///?old=query#old"),
-            ConfigurationApiAddress = "/console/keys",
-            SiteType = "two",
-            Model = "model",
-            CurrentGroup = "group",
-            CurrentGroupRatio = 1m,
-            AuthenticationMode = "令牌"
-        };
-        settings = settings with { Sites = [site] };
-        var pricingSettings = settings with { Sites = [site with { SiteType = "aihub", BaseUrl = new Uri("https://example.test/") }] };
-        settingsRepository.Save(pricingSettings);
-        var pricingHandler = new CurrentRatioHandler();
-        using var pricingClient = new HttpClient(pricingHandler);
-        var pricingRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([
-            new ProviderPriceSwitcher.Adapters.AiHubPricingAdapter(pricingClient, new PricingCredentialStore())
-        ]);
-        var pricingRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(pricingRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var (currentRatioWorkflow, currentRatioViewModel) = CreateAppWiring(
-            new HomepageWorkflow(
-                new ProviderPriceSwitcher.Application.PricingCheckUseCase(pricingRefresh, settingsRepository, snapshots),
-                settingsUseCase,
-                applyActiveRoute,
-                ompLaunch,
-                activeRoute,
-                snapshotQuery,
-                pricingSettings,
-                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
-                notifications: notifications),
-            sitesFactory,
-            notifications);
-        currentRatioViewModel.CheckCommand.Execute(null);
-        WaitFor(() => currentRatioViewModel.Rows.Count > 0);
-        Assert(currentRatioViewModel.RecommendedProvider == "synthetic-provider"
-            && currentRatioViewModel.SelectedProvider?.ProviderId == "synthetic-provider"
-            && activeRoute.CurrentProviderId == "active",
-            "a completed price check must select the recommendation as pending target while leaving the active provider unchanged");
-        var currentRatioRow = currentRatioViewModel.Rows.Single();
-        var persistedSite = settingsRepository.Load().Sites.Single();
-        Assert(currentRatioRow.Ratio == "0.1", $"home price check must render the latest successful current-group ratio; actual ratio/status/issue: {currentRatioRow.Ratio}/{currentRatioRow.Status}/{currentRatioRow.Issue}");
-        Assert(currentRatioRow.InputPrice == "0.5", $"home price check must price with the latest successful current-group ratio; actual input price: {currentRatioRow.InputPrice}");
-        Assert(currentRatioRow.Group == "group [当前][最低]", $"home price check must keep one row when the current group is also minimum; actual group: {currentRatioRow.Group}");
-        Assert(persistedSite.CurrentGroupRatio == 0.1m && persistedSite.GroupRatioSource == "自动", "home price check must persist the latest successful current-group ratio");
-        pricingHandler.Fail = true;
-        currentRatioViewModel.CheckCommand.Execute(null);
-        WaitFor(() => pricingHandler.RequestCount >= 4 && currentRatioViewModel.CheckCommand.CanExecute(null));
-        Assert(currentRatioViewModel.Rows.Single().Ratio == "0.1" && settingsRepository.Load().Sites.Single().CurrentGroupRatio == 0.1m, "failed home price check must preserve the last successful current-group ratio");
-        pricingHandler.Fail = false;
-        pricingHandler.OmitCurrentGroup = true;
-        currentRatioViewModel.CheckCommand.Execute(null);
-        WaitFor(() => pricingHandler.RequestCount >= 6 && currentRatioViewModel.CheckCommand.CanExecute(null));
-        Assert(currentRatioViewModel.Rows.Single().Ratio == "0.1" && settingsRepository.Load().Sites.Single().CurrentGroupRatio == 0.1m, "home price check missing the current group must preserve the last successful ratio");
-        var projectionRoot = Path.Combine(root, "projection");
-        var projectionSettingsRepository = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(projectionRoot);
-        var projectionSnapshots = new ProviderPriceSwitcher.Infrastructure.JsonPricingSnapshotRepository(projectionRoot);
-        var projectionSite = new ProviderPriceSwitcher.Core.SiteConfiguration
-        {
-            ProviderId = "projection-provider",
-            ConfigurationKey = "projection-key",
-            BaseUrl = new Uri("https://projection.example"),
-            SiteType = "projection",
-            Model = "model",
-            CurrentGroup = "group",
-            CurrentGroupRatio = 1m
-        };
-        var projectionSettings = new ProviderPriceSwitcher.Application.LocalAppSettings { Sites = [projectionSite] };
-        projectionSettingsRepository.Save(projectionSettings);
-        var projectionAdapter = new FakeAdapter(new("projection", "Projection", false, ["无"]))
-        {
-            ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
-            {
-                ["group"] = 0.2m,
-                ["minimum"] = 0.05m,
-                ["third"] = 0.1m
-            }
-        };
-        var projectionRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([projectionAdapter]);
-        var projectionRefresh = new ProviderPriceSwitcher.Application.PricingRefreshService(projectionRegistry, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProviderPriceSwitcher.Application.PricingRefreshService>.Instance);
-        var (projectionWorkflow, projectionViewModel) = CreateAppWiring(
-            new HomepageWorkflow(
-                new ProviderPriceSwitcher.Application.PricingCheckUseCase(projectionRefresh, projectionSettingsRepository, projectionSnapshots),
-                new ProviderPriceSwitcher.Application.SettingsUseCase(projectionSettingsRepository),
-                new ProviderPriceSwitcher.Application.ApplyActiveRouteUseCase(projectionSettingsRepository, routeController, keyStore, activeRoute),
-                ompLaunch,
-                activeRoute,
-                new ProviderPriceSwitcher.Infrastructure.PricingSnapshotQuery(projectionSnapshots),
-                projectionSettings,
-                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
-                notifications: notifications),
-            sitesFactory,
-            notifications);
-        projectionViewModel.CheckCommand.Execute(null);
-        WaitFor(() => projectionViewModel.Rows.Count > 0 && projectionViewModel.CheckCommand.CanExecute(null));
-        var projectionRows = projectionViewModel.Rows.ToArray();
-        var projectionCurrent = projectionRows.Single(row => row.Group == "group [当前]");
-        var projectionMinimum = projectionRows.Single(row => row.Group == "minimum [最低]");
-        Assert(projectionRows.Length == 2
-            && projectionRows.All(row => !row.Group.Contains("third", StringComparison.Ordinal))
-            && projectionCurrent.IsSiteFirstRow && projectionCurrent.KeysUri is not null
-            && !projectionMinimum.IsSiteFirstRow && projectionMinimum.KeysUri is null,
-            "price table must project only current and minimum rows, leaving the minimum row read-only and hiding other groups");
-
         var launcher = new FakeUriLauncher();
         var navigationWindow = new MainWindow(viewModel, launcher);
         navigationWindow.Show();
@@ -1055,17 +952,6 @@ var windowThread = new Thread(() =>
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
-        var (statusWorkflow, statusViewModel) = CreateAppWiring(
-            new HomepageWorkflow(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, notifications: notifications),
-            sitesFactory,
-            notifications);
-        statusViewModel.InitializeAsync().GetAwaiter().GetResult();
-        var statusWindow = new MainWindow(statusViewModel);
-        statusWindow.Show();
-        statusWindow.UpdateLayout();
-        var statusDot2 = (System.Windows.Shapes.Ellipse)statusWindow.FindName("OmpConfigurationStatusDot");
-        Assert(statusViewModel.OmpConfigurationStatus == "可手动替换" && Equals(statusDot2.Fill, System.Windows.Media.Brushes.DarkOrange), "homepage must expose an independent OMP configuration status");
-        statusWindow.Close();
         var trayHost = new FakeTrayHost();
         var trayExitRequested = false;
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
@@ -1191,44 +1077,6 @@ sealed class FakeAdapter(ProviderPriceSwitcher.Application.PricingAdapterDescrip
             Warnings = []
         };
     }
-}
-
-sealed class CurrentRatioHandler : HttpMessageHandler
-{
-    private int _requestCount;
-    public bool Fail { get; set; }
-    public bool OmitCurrentGroup { get; set; }
-    public int RequestCount => Volatile.Read(ref _requestCount);
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        Interlocked.Increment(ref _requestCount);
-        if (Fail)
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
-        var body = request.RequestUri?.AbsolutePath switch
-        {
-            "/api/v1/groups/available" => OmitCurrentGroup
-                ? "{\"data\":[{\"id\":1,\"name\":\"other-group\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.1}]}"
-                : "{\"data\":[{\"id\":1,\"name\":\"group\",\"platform\":\"openai\",\"status\":\"active\",\"rate_multiplier\":0.1}]}",
-            "/api/v1/groups/rates" => "{\"data\":{\"1\":0.1}}",
-            _ => "{}"
-        };
-        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) });
-    }
-}
-
-sealed class PricingCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredentialStore
-{
-    public ProviderPriceSwitcher.Core.SiteCredentialRecord? LoadCredential(string providerId) => new()
-    {
-        ProviderId = providerId,
-        SiteType = "aihub",
-        AuthorizationScheme = "Bearer",
-        AccessToken = "synthetic-token",
-        CookieHeader = "session=synthetic"
-    };
-    public void SaveCredential(ProviderPriceSwitcher.Core.SiteCredentialRecord credential) => throw new NotSupportedException();
-    public void ClearCredential(string providerId) => throw new NotSupportedException();
-    public ProviderPriceSwitcher.Core.SiteCredentialSummary GetSummary(string providerId) => new() { ProviderId = providerId, Status = ProviderPriceSwitcher.Core.SiteCredentialStatus.Available };
 }
 
 sealed class CascadeInferenceKeyStore : ProviderPriceSwitcher.Core.IInferenceApiKeyStore

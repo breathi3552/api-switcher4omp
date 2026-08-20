@@ -29,20 +29,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _workflow.StateChanged += OnWorkflowStateChanged;
 
-        InitializeCommand = new AsyncCommand(InitializeAsync, HandleCommandError);
-        CheckCommand = new AsyncCommand(CheckAsync, HandleCommandError, () => _workflow.CanCheckPrices);
+        InitializeCommand = new AsyncCommand(() => _workflow.InitializeAsync(), HandleCommandError);
+        CheckCommand = new AsyncCommand(() => _workflow.CheckPricesAsync(), HandleCommandError, () => _workflow.CanCheckPrices);
         CancelCommand = new RelayCommand(() => _workflow.CancelPriceCheck(), () => _workflow.CanCancelPriceCheck);
-        ApplyRouteCommand = new AsyncCommand(ApplyRouteAsync, HandleCommandError, () => _workflow.CanApplyRoute);
-        ReplaceOmpGptProviderCommand = new AsyncCommand(ReplaceOmpGptProviderAsync, HandleCommandError, () => _workflow.CanReplaceOmpGptProvider);
-        StartOmpCommand = new AsyncCommand(StartOmpAsync, HandleCommandError, () => _workflow.CanStartOmp);
+        ApplyRouteCommand = new AsyncCommand(() => _workflow.ApplyActiveRouteAsync(), HandleCommandError, () => _workflow.CanApplyRoute);
+        ReplaceOmpGptProviderCommand = new AsyncCommand(() => _workflow.ReplaceOmpGptProviderAsync(), HandleCommandError, () => _workflow.CanReplaceOmpGptProvider);
+        StartOmpCommand = new AsyncCommand(() => _workflow.StartOmpAsync(), HandleCommandError, () => _workflow.CanStartOmp);
         ManageSitesCommand = new RelayCommand(ManageSites);
         SettingsCommand = new AsyncCommand(EditSettingsAsync, HandleCommandError);
 
         _state = _workflow.State;
         ApplyState(_state);
     }
-
-    public HomepageState State => _state;
     public ObservableCollection<PriceRow> Rows { get; } = [];
     public ObservableCollection<ProviderChoice> ProviderChoices { get; } = [];
     public ObservableCollection<OmpConfigurationTargetChoice> OmpConfigurationTargetChoices { get; } = [];
@@ -71,10 +69,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public Brush GatewayStatusBrush => ToBrush(_state.GatewayTone);
     public Brush ActiveRouteStatusBrush => ToBrush(_state.ActiveRouteTone);
 
-    public bool IsCheckingPrices => _state.IsCheckingPrices;
-    public bool IsApplyingRoute => _state.IsApplyingRoute;
-    public bool IsStartingOmp => _state.IsStartingOmp;
-    public bool IsReplacingOmpGptProvider => _state.IsReplacingOmpGptProvider;
 
     public string ApplyRouteButtonText => _state.ApplyRouteButtonText;
     public string ReplaceOmpGptProviderButtonText => _state.ReplaceOmpGptProviderButtonText;
@@ -173,32 +167,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _isApplyingState = false;
         }
     }
-
-    public async Task InitializeAsync()
-    {
-        await _workflow.InitializeAsync();
-    }
-
-    private async Task StartOmpAsync()
-    {
-        await _workflow.StartOmpAsync();
-    }
-
-    private async Task ReplaceOmpGptProviderAsync()
-    {
-        await _workflow.ReplaceOmpGptProviderAsync();
-    }
-
-    private async Task CheckAsync()
-    {
-        await _workflow.CheckPricesAsync();
-    }
-
-    private async Task ApplyRouteAsync()
-    {
-        await _workflow.ApplyActiveRouteAsync();
-    }
-
     private async Task EditSettingsAsync()
     {
         var dialog = new SettingsDialog(_workflow.Settings);

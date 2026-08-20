@@ -275,6 +275,32 @@
 - **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #20 编排首页核心动作与状态流转证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-20` 完成。
+- **scope:** 在 App 层建立单一 `HomepageWorkflow` 编排 module，统一驱动价格检查/取消/防重入、应用供应商、启动 OMP、OMP GPT 配置替换预览与执行、设置保存与工作目录/供应商选择；通过单一 `StateChanged` 事件发布更新；新增无 WPF 依赖的 headless workflow 契约测试。
+- **App runner:** 无 STA Window 依赖的 headless workflow 契约测试覆盖 10 大核心流程（初始化恢复、查价中 Busy/CanExecute 切换、查价完成更新待应用选择且当前供应商不变、取消查价恢复、查价失败保留快照标记 stale、查价防重入、应用供应商及失败恢复、启动 OMP 独立性、OMP GPT 配置替换无变更/取消/确认、各操作并发与独立性、显式取消传播）；既有 STA 场景保持全部通过。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106225621` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
+## Issue #21 将 MainWindow 与 MainViewModel 瘦身为轻量 WPF 适配器证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-20` 完成。
+- **scope:** 将 `MainWindow` 与 `MainViewModel` 全面重构为轻量级 WPF 适配器；`MainViewModel` 仅负责订阅 Workflow 输出的单一状态投影、调度回 WPF Dispatcher 线程触发属性变更，并将所有 UI 命令与交互转发给 Workflow；`MainWindow.xaml` 绑定与 `Tray.cs` 托盘集成对接状态投影，保留所有真实的 WPF 交互。
+- **App runner:** STA App runner 验证 `MainViewModel` 与 `MainWindow.xaml` 数据绑定、网关/路由/OMP 配置状态指示灯画刷映射与 Dispatcher 调度、价格行双击导航、弹窗属主与托盘双向同步；跨层全量 runner 全部通过。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106225621` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** 首轮 Standards 与 Spec 审查均无剩余发现（0 发现）。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
+## Issue #22 收缩首页 interface、精简 STA 冒烟测试并完成发布验收证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-20` 完成。
+- **scope:** 彻底清理 `MainViewModel` 中的废弃属性（`State`、`IsCheckingPrices`、`IsApplyingRoute`、`IsStartingOmp`、`IsReplacingOmpGptProvider`）、重复转发代码与旧命令路径，完成 clean cutover；重构并精简 `App.Tests`，移除 STA 线程内冗余的 HTTP 与 workflow 重复构建，将 STA 冒烟聚焦于真实 WPF 绑定、状态指示灯外观、弹窗属主、价格行双击交互与 Dispatcher 调度。
+- **App runner:** 精简后的 STA 冒烟测试验证 `MainWindow` 控件与状态指示灯画刷外观、Dispatcher 异步调度更新、独立命令按钮文案与状态、DataGrid 行双击启动 URI、`SitesDialog` 与 `SiteEditorDialog`（三段分组、PasswordBox 遮罩与凭据摘要、可编辑 ComboBox）属主与模态关闭、`TrayApplicationController` 关闭隐藏/还原/退出确认；配合无 STA 依赖的 `HomepageStateProjector` 与 `HomepageWorkflow` 契约测试，全量 runner 0 警告、0 错误通过。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106224751` bytes）产物及 sidecar manifest hash。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。
