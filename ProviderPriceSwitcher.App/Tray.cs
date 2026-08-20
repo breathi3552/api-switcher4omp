@@ -74,9 +74,9 @@ public sealed class TrayApplicationController : IDisposable
 
     private void HandleViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(MainViewModel.GatewayStatusText)
-            or nameof(MainViewModel.ActiveRouteStatusText)
-            or null)
+        if (string.IsNullOrEmpty(e.PropertyName)
+            || e.PropertyName is nameof(MainViewModel.GatewayStatusText)
+            or nameof(MainViewModel.ActiveRouteStatusText))
             SyncStatus();
     }
 

@@ -134,9 +134,7 @@ public partial class App : System.Windows.Application
                 _workflow,
                 sitesFactory,
                 _notifications,
-                _loggerFactory.CreateLogger<MainViewModel>(),
-                _sidecar,
-                activeRoute);
+                _loggerFactory.CreateLogger<MainViewModel>());
             var mainWindow = new MainWindow(_viewModel);
             MainWindow = mainWindow;
             _trayController = new TrayApplicationController(mainWindow, _viewModel, new WindowsTrayHost(), _notifications, RequestShutdown);

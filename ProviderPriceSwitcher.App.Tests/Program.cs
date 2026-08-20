@@ -365,17 +365,17 @@ var replaceResult = new ProviderPriceSwitcher.Application.OmpConfigurationReplac
         Changes: [new ProviderPriceSwitcher.Application.OmpConfigurationReplacementChange("role", "orig", "target", "gpt-5.6-sol", "r1", "r2")]),
     BackupRetentionSucceeded: true);
 var ompReplaceCompleted = HomepageStateProjector.ProjectReplacingOmpCompleted(ompReplaceStarted, replaceResult);
-Assert(!ompReplaceCompleted.IsReplacingOmpGptProvider && ompReplaceCompleted.OmpConfigurationStatus == "配置已替换" && ompReplaceCompleted.StatusText.Contains("已运行的 OMP 需要手动重启", StringComparison.Ordinal), "replacing OMP completed must update status and text");
-var statuses = new (ProviderPriceSwitcher.Application.SidecarConnectionStatus Status, string? Provider, string ExpectedGatewayText, string ExpectedRouteText)[]
+Assert(!ompReplaceCompleted.IsReplacingOmpGptProvider && ompReplaceCompleted.OmpConfigurationStatus == "配置已替换" && ompReplaceCompleted.OmpConfigurationTone == StatusTone.Success && ompReplaceCompleted.StatusText.Contains("已运行的 OMP 需要手动重启", StringComparison.Ordinal), "replacing OMP completed must update status and text");
+var statuses = new (ProviderPriceSwitcher.Application.SidecarConnectionStatus Status, string? Provider, string ExpectedGatewayText, string ExpectedRouteText, StatusTone ExpectedGatewayTone, StatusTone ExpectedRouteTone)[]
 {
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, "p1", "网关运行中", "活动路由已应用"),
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, null, "网关运行中", "无活动路由"),
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Starting, "p1", "网关启动中", "网关恢复中"),
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "p1", "网关连接断开", "网关不可用"),
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Faulted, "p1", "网关故障", "网关不可用"),
-    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Stopped, "p1", "网关已停止", "网关已停止"),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, "p1", "网关运行中", "活动路由已应用", StatusTone.Success, StatusTone.Success),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Ready, null, "网关运行中", "无活动路由", StatusTone.Success, StatusTone.Warning),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Starting, "p1", "网关启动中", "网关恢复中", StatusTone.Starting, StatusTone.Starting),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Disconnected, "p1", "网关连接断开", "网关不可用", StatusTone.Danger, StatusTone.Danger),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Faulted, "p1", "网关故障", "网关不可用", StatusTone.Danger, StatusTone.Danger),
+    (ProviderPriceSwitcher.Application.SidecarConnectionStatus.Stopped, "p1", "网关已停止", "网关已停止", StatusTone.Neutral, StatusTone.Neutral),
 };
-foreach (var (gwStatus, actProvider, expGw, expRoute) in statuses)
+foreach (var (gwStatus, actProvider, expGw, expRoute, expGwTone, expRouteTone) in statuses)
 {
     var projectedGw = HomepageStateProjector.ProjectGatewayStatus(
         initStateWithSnaps,
@@ -384,6 +384,7 @@ foreach (var (gwStatus, actProvider, expGw, expRoute) in statuses)
         15722,
         15722);
     Assert(projectedGw.GatewayStatusText == expGw && projectedGw.ActiveRouteStatusText == expRoute, $"gateway status {gwStatus} with provider '{actProvider}' mismatch: expected gw='{expGw}', route='{expRoute}'; got gw='{projectedGw.GatewayStatusText}', route='{projectedGw.ActiveRouteStatusText}'");
+    Assert(projectedGw.GatewayTone == expGwTone && projectedGw.ActiveRouteTone == expRouteTone, $"gateway tone mismatch for {gwStatus}");
 }
 var updatedSettings = hpSettings with
 {
@@ -707,9 +708,7 @@ var windowThread = new Thread(() =>
         var (workflow, viewModel) = CreateAppWiring(
             new HomepageWorkflow(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, sidecarStatus, ompReplacement, notifications),
             sitesFactory,
-            notifications,
-            sidecarStatus,
-            activeRoute);
+            notifications);
         var window = new MainWindow(viewModel);
         window.Show();
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
@@ -820,8 +819,7 @@ var windowThread = new Thread(() =>
                 Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 notifications: notifications),
             sitesFactory,
-            notifications,
-            activeRoute: activeRoute);
+            notifications);
         currentRatioViewModel.CheckCommand.Execute(null);
         WaitFor(() => currentRatioViewModel.Rows.Count > 0);
         Assert(currentRatioViewModel.RecommendedProvider == "synthetic-provider"
@@ -881,8 +879,7 @@ var windowThread = new Thread(() =>
                 Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 notifications: notifications),
             sitesFactory,
-            notifications,
-            activeRoute: activeRoute);
+            notifications);
         projectionViewModel.CheckCommand.Execute(null);
         WaitFor(() => projectionViewModel.Rows.Count > 0 && projectionViewModel.CheckCommand.CanExecute(null));
         var projectionRows = projectionViewModel.Rows.ToArray();
@@ -1061,8 +1058,7 @@ var windowThread = new Thread(() =>
         var (statusWorkflow, statusViewModel) = CreateAppWiring(
             new HomepageWorkflow(pricingCheck, settingsUseCase, applyActiveRoute, ompLaunch, activeRoute, snapshotQuery, settings, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, notifications: notifications),
             sitesFactory,
-            notifications,
-            activeRoute: activeRoute);
+            notifications);
         statusViewModel.InitializeAsync().GetAwaiter().GetResult();
         var statusWindow = new MainWindow(statusViewModel);
         statusWindow.Show();
@@ -1145,17 +1141,13 @@ static void WaitFor(Func<bool> condition)
 static (HomepageWorkflow Workflow, MainViewModel ViewModel) CreateAppWiring(
     HomepageWorkflow workflow,
     SitesDialogFactory sitesFactory,
-    IUserNotificationService notifications,
-    ProviderPriceSwitcher.Application.ISidecarStatus? sidecarStatus = null,
-    ProviderPriceSwitcher.Application.IActiveRouteController? activeRoute = null)
+    IUserNotificationService notifications)
 {
     var viewModel = new MainViewModel(
         workflow,
         sitesFactory,
         notifications,
-        Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance,
-        sidecarStatus,
-        activeRoute);
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<MainViewModel>.Instance);
     return (workflow, viewModel);
 }
 

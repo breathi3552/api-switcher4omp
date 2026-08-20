@@ -72,6 +72,15 @@ public sealed class PriceRow
     public Uri? KeysUri { get; }
 }
 
+public enum StatusTone
+{
+    Neutral,
+    Success,
+    Warning,
+    Starting,
+    Danger
+}
+
 public sealed record HomepageState(
     IReadOnlyList<PriceRow> Rows,
     string CurrentProvider,
@@ -92,7 +101,10 @@ public sealed record HomepageState(
     bool IsCheckingPrices,
     bool IsApplyingRoute,
     bool IsStartingOmp,
-    bool IsReplacingOmpGptProvider)
+    bool IsReplacingOmpGptProvider,
+    StatusTone GatewayTone = StatusTone.Success,
+    StatusTone ActiveRouteTone = StatusTone.Neutral,
+    StatusTone OmpConfigurationTone = StatusTone.Warning)
 {
     public const string DefaultSelectionHint = "仅当前分组可应用；最低价分组只读比较。";
 
@@ -130,7 +142,9 @@ public static class HomepageStateProjector
         var portStatus = FormatGatewayPortStatus(settings.CurrentGatewayPort, settings.GatewayPort);
         var gatewayText = FormatGatewayStatusText(gatewayStatus);
         var activeRouteText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId);
-
+        var gatewayTone = FormatGatewayTone(gatewayStatus, settings.CurrentGatewayPort);
+        var activeRouteTone = FormatActiveRouteTone(gatewayStatus, activeProviderId);
+        var ompTone = FormatOmpConfigurationTone("可手动替换");
         IReadOnlyList<PriceRow> rows;
         string lastCheckedText;
         string statusText;
@@ -174,7 +188,10 @@ public static class HomepageStateProjector
             IsCheckingPrices: false,
             IsApplyingRoute: false,
             IsStartingOmp: false,
-            IsReplacingOmpGptProvider: false);
+            IsReplacingOmpGptProvider: false,
+            GatewayTone: gatewayTone,
+            ActiveRouteTone: activeRouteTone,
+            OmpConfigurationTone: ompTone);
     }
 
     public static HomepageState ProjectPersistedSnapshots(
@@ -293,7 +310,9 @@ public static class HomepageStateProjector
         {
             GatewayPortStatus = FormatGatewayPortStatus(currentGatewayPort, targetGatewayPort),
             GatewayStatusText = FormatGatewayStatusText(gatewayStatus),
-            ActiveRouteStatusText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId)
+            ActiveRouteStatusText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId),
+            GatewayTone = FormatGatewayTone(gatewayStatus, currentGatewayPort),
+            ActiveRouteTone = FormatActiveRouteTone(gatewayStatus, activeProviderId)
         };
     }
 
@@ -308,7 +327,8 @@ public static class HomepageStateProjector
         return current with
         {
             CurrentProvider = currentProviderText,
-            ActiveRouteStatusText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId)
+            ActiveRouteStatusText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId),
+            ActiveRouteTone = FormatActiveRouteTone(gatewayStatus, activeProviderId)
         };
     }
 
@@ -333,6 +353,7 @@ public static class HomepageStateProjector
             IsApplyingRoute = false,
             CurrentProvider = currentProviderText,
             ActiveRouteStatusText = FormatActiveRouteStatusText(gatewayStatus, activeProviderId),
+            ActiveRouteTone = FormatActiveRouteTone(gatewayStatus, activeProviderId),
             StatusText = UserErrorMessages.ForApplyRouteStatus(outcome.Status)
         };
     }
@@ -357,6 +378,7 @@ public static class HomepageStateProjector
         {
             IsStartingOmp = false,
             GatewayPortStatus = portStatus,
+            GatewayTone = FormatGatewayTone(null, outcomeSettings.CurrentGatewayPort),
             StatusText = UserErrorMessages.ForOmpLaunchStatus(outcome)
         };
     }
@@ -382,6 +404,7 @@ public static class HomepageStateProjector
             {
                 IsReplacingOmpGptProvider = false,
                 OmpConfigurationStatus = "配置替换失败",
+                OmpConfigurationTone = StatusTone.Danger,
                 StatusText = preview.ErrorMessage ?? "无法预览 OMP 配置替换。"
             };
         }
@@ -392,6 +415,7 @@ public static class HomepageStateProjector
             {
                 IsReplacingOmpGptProvider = false,
                 OmpConfigurationStatus = "无可变更 GPT",
+                OmpConfigurationTone = StatusTone.Warning,
                 StatusText = "没有需要替换的 GPT 路由，未写入文件。"
             };
         }
@@ -421,6 +445,7 @@ public static class HomepageStateProjector
             {
                 IsReplacingOmpGptProvider = false,
                 OmpConfigurationStatus = "配置替换失败",
+                OmpConfigurationTone = StatusTone.Danger,
                 StatusText = result.ErrorMessage ?? "OMP 配置替换失败，未报告成功。"
             };
         }
@@ -435,6 +460,7 @@ public static class HomepageStateProjector
         {
             IsReplacingOmpGptProvider = false,
             OmpConfigurationStatus = "配置已替换",
+            OmpConfigurationTone = StatusTone.Success,
             StatusText = statusText
         };
     }
@@ -466,12 +492,12 @@ public static class HomepageStateProjector
         var intermediate = current with
         {
             GatewayPortStatus = portStatus,
+            GatewayTone = FormatGatewayTone(null, newSettings.CurrentGatewayPort),
             OmpWorkingDirectoryChoices = workingDirectories,
             SelectedOmpWorkingDirectory = selectedWorkingDirectory,
             ProviderChoices = providerChoices,
             SelectedProvider = selectedProvider
         };
-
         return ProjectPersistedSnapshots(
             intermediate,
             newSettings,
@@ -723,5 +749,39 @@ public static class HomepageStateProjector
             if (latest is null || s.RefreshedAt > latest) latest = s.RefreshedAt;
         }
         return latest?.LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? "尚未检查";
+    }
+
+    public static StatusTone FormatGatewayTone(SidecarStatus? gatewayStatus, int currentPort)
+    {
+        return gatewayStatus?.Status switch
+        {
+            SidecarConnectionStatus.Ready => StatusTone.Success,
+            SidecarConnectionStatus.Starting => StatusTone.Starting,
+            SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => StatusTone.Danger,
+            SidecarConnectionStatus.Stopped => StatusTone.Neutral,
+            _ => currentPort is >= 1 and <= 65535 ? StatusTone.Success : StatusTone.Danger
+        };
+    }
+
+    public static StatusTone FormatActiveRouteTone(SidecarStatus? gatewayStatus, string? activeProviderId)
+    {
+        return gatewayStatus?.Status switch
+        {
+            SidecarConnectionStatus.Ready when activeProviderId is not null => StatusTone.Success,
+            SidecarConnectionStatus.Ready => StatusTone.Warning,
+            SidecarConnectionStatus.Starting => StatusTone.Starting,
+            SidecarConnectionStatus.Disconnected or SidecarConnectionStatus.Faulted => StatusTone.Danger,
+            _ => StatusTone.Neutral
+        };
+    }
+
+    public static StatusTone FormatOmpConfigurationTone(string ompConfigurationStatus)
+    {
+        return ompConfigurationStatus switch
+        {
+            "配置已替换" => StatusTone.Success,
+            "配置替换失败" => StatusTone.Danger,
+            _ => StatusTone.Warning
+        };
     }
 }
