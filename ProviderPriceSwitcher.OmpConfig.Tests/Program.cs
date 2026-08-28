@@ -294,7 +294,7 @@ try
     await File.WriteAllTextAsync(modelsPath, models);
     var dualRollbackPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
     Assert(dualRollbackPreview.Succeeded && dualRollbackPreview.HasRouteChanges && dualRollbackPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Updated, "dual rollback setup must preview both route and models changes");
-    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.Read))
     {
         var rollbackResult = await useCase.ExecuteAsync(portSettings, dualRollbackPreview);
         Assert(
@@ -313,7 +313,7 @@ try
         File.Delete(modelsPath);
     var nonExistentModelsPreview = await useCase.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
     Assert(nonExistentModelsPreview.Succeeded && nonExistentModelsPreview.ModelsChangeKind == OmpModelsProviderChangeKind.Added, "setup must create a plan adding models.yml");
-    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+    using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.Read))
     {
         var rollbackNonExistentResult = await useCase.ExecuteAsync(portSettings, nonExistentModelsPreview);
         Assert(
@@ -341,7 +341,7 @@ try
     var rollbackBlockPreview = await useCaseWithRollbackBlock.PreviewAsync(portSettings, OmpConfigurationReplacementTargets.LocalProviderId);
     try
     {
-        using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        using (var configLock = new FileStream(configPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             var rollbackFailedResult = await useCaseWithRollbackBlock.ExecuteAsync(portSettings, rollbackBlockPreview);
             Assert(

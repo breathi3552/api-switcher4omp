@@ -19,9 +19,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Adapt
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Infrastructure.Tests", "ProviderPriceSwitcher.Infrastructure.Tests\ProviderPriceSwitcher.Infrastructure.Tests.csproj", "{C5D6E7F8-2345-4BCD-9EFA-1234567890AB}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Refresh.Tests", "ProviderPriceSwitcher.Refresh.Tests\ProviderPriceSwitcher.Refresh.Tests.csproj", "E6A1B2C3-4567-4890-ABCD-1234567890EF"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.Refresh.Tests", "ProviderPriceSwitcher.Refresh.Tests\ProviderPriceSwitcher.Refresh.Tests.csproj", "{E6A1B2C3-4567-4890-ABCD-1234567890EF}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpConfig.Tests", "ProviderPriceSwitcher.OmpConfig.Tests\ProviderPriceSwitcher.OmpConfig.Tests.csproj", "D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpConfig.Tests", "ProviderPriceSwitcher.OmpConfig.Tests\ProviderPriceSwitcher.OmpConfig.Tests.csproj", "{D7B4C3A2-1F0E-4D9C-8B7A-6E5F4C3D2B1A}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProviderPriceSwitcher.OmpProcess.Tests", "ProviderPriceSwitcher.OmpProcess.Tests\ProviderPriceSwitcher.OmpProcess.Tests.csproj", "{E1A2B3C4-5D6E-47F8-9012-3456789ABCDE}"
 EndProject
