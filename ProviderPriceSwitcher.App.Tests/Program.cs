@@ -125,6 +125,104 @@ Assert(editor.Descriptors.Count == 3 && editor.AuthenticationMode == "无" && !e
 editor.Descriptor = editor.Descriptors[1];
 Assert(editor.AuthenticationMode == "令牌" && editor.CredentialVisible, "descriptor switch must reset auth and credential visibility");
 Assert(editor.CanSave == false, "invalid draft must not save");
+var newSession = new SupplierEditorSession(registry, testSettings, null);
+Assert(newSession.Descriptors.Count == 3, "session must expose all registered descriptors");
+Assert(newSession.Descriptor?.SiteType == "one", "new session must default to first descriptor");
+Assert(newSession.AuthenticationMode == "无" && !newSession.CredentialVisible, "new session must default to descriptor's first auth mode and credential visibility");
+Assert(newSession.Model == testSettings.Model, "new session must default model from settings");
+Assert(string.IsNullOrEmpty(newSession.ProviderId) && string.IsNullOrEmpty(newSession.DisplayName) && string.IsNullOrEmpty(newSession.BaseUrl) && string.IsNullOrEmpty(newSession.CurrentGroup) && string.IsNullOrEmpty(newSession.CurrentGroupRatio), "new session draft fields must be empty");
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "empty new session must not be savable");
+
+var sessionChanges = new List<string>();
+newSession.PropertyChanged += (_, e) => { if (e.PropertyName is not null) sessionChanges.Add(e.PropertyName); };
+
+newSession.Descriptor = newSession.Descriptors[1];
+Assert(newSession.AuthenticationMode == "令牌" && newSession.CredentialVisible, "switching descriptor must reset auth mode to default and update credential visibility");
+Assert(sessionChanges.Contains(nameof(SupplierEditorSession.Descriptor))
+    && sessionChanges.Contains(nameof(SupplierEditorSession.AuthenticationModes))
+    && sessionChanges.Contains(nameof(SupplierEditorSession.CredentialVisible))
+    && sessionChanges.Contains(nameof(SupplierEditorSession.CanSave)),
+    "descriptor switch must notify descriptor, auth modes, credential visibility and CanSave");
+sessionChanges.Clear();
+
+newSession.Descriptor = newSession.Descriptors[2];
+Assert(newSession.AuthenticationMode == "匿名" && !newSession.CredentialVisible, "switching to non-credential descriptor must reset auth and hide credential");
+sessionChanges.Clear();
+
+newSession.Descriptor = newSession.Descriptors[0];
+newSession.ProviderId = "test-provider";
+newSession.DisplayName = "Test Display";
+newSession.Model = "test-model";
+newSession.CurrentGroup = "default";
+newSession.CurrentGroupRatio = "1.0";
+
+newSession.BaseUrl = "https://example.com/api";
+Assert(newSession.CanSave && newSession.TryBuild(out var builtSiteWithNormalizedUrl) && builtSiteWithNormalizedUrl.BaseUrl.AbsoluteUri == "https://example.com/api/", "valid URL without trailing slash must be normalized with trailing slash");
+
+newSession.BaseUrl = "   https://example.com/api/   ";
+Assert(newSession.CanSave && newSession.TryBuild(out var builtSiteWithTrimmedUrl) && builtSiteWithTrimmedUrl.BaseUrl.AbsoluteUri == "https://example.com/api/", "URL with surrounding whitespace must be trimmed and normalized");
+
+newSession.BaseUrl = "ftp://example.com/api";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "non-http(s) scheme must be rejected");
+
+newSession.BaseUrl = "not-a-valid-url";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "malformed URL must be rejected");
+newSession.BaseUrl = "https://example.com/api/";
+
+newSession.CurrentGroupRatio = "0";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "ratio of zero must be rejected");
+
+newSession.CurrentGroupRatio = "-1.5";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "negative ratio must be rejected");
+
+newSession.CurrentGroupRatio = "invalid-number";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "non-numeric ratio must be rejected");
+
+newSession.CurrentGroupRatio = "";
+Assert(!newSession.CanSave && !newSession.TryBuild(out _), "empty ratio must be rejected");
+
+newSession.CurrentGroupRatio = "2.25";
+Assert(newSession.CanSave && newSession.TryBuild(out var builtRatioSite) && builtRatioSite.CurrentGroupRatio == 2.25m, "valid positive decimal ratio must be accepted");
+
+var existingSite = new ProviderPriceSwitcher.Core.SiteConfiguration
+{
+    ProviderId = "existing-provider",
+    DisplayName = "Existing Site",
+    ConfigurationKey = "k",
+    BaseUrl = new Uri("https://existing.example/root/"),
+    ConfigurationApiAddress = "/custom/keys",
+    SiteType = "two",
+    Model = "custom-model",
+    CurrentGroup = "vip-group",
+    CurrentGroupRatio = 0.85m,
+    GroupRatioSource = "自动",
+    AuthenticationMode = "账户",
+    Currency = "USD",
+    CnyConversionRate = 7.2m,
+    Enabled = false
+};
+var editSession = new SupplierEditorSession(registry, testSettings, existingSite);
+Assert(editSession.Original == existingSite, "edit session must retain reference to original configuration");
+Assert(editSession.Descriptor?.SiteType == "two", "edit session must select matching descriptor by site type");
+Assert(editSession.AuthenticationMode == "账户", "edit session must preserve existing authentication mode");
+Assert(editSession.CredentialVisible == true, "edit session must reflect descriptor credential visibility");
+Assert(editSession.ProviderId == "existing-provider" && editSession.DisplayName == "Existing Site", "edit session must load providerId and displayName");
+Assert(editSession.BaseUrl == "https://existing.example/root/", "edit session must load BaseUrl string");
+Assert(editSession.ConfigurationApiAddress == "/custom/keys", "edit session must load custom ConfigurationApiAddress");
+Assert(editSession.Model == "custom-model" && editSession.CurrentGroup == "vip-group" && editSession.CurrentGroupRatio == "0.85", "edit session must load model, group and ratio");
+Assert(editSession.Currency == "USD" && editSession.CnyConversionRate == "7.2", "edit session must load currency and conversion rate");
+var editBuilt = editSession.TryBuild(out var updatedSite);
+Assert(editSession.CanSave && editBuilt && updatedSite is not null, "edit session with valid existing data must be immediately savable");
+Assert(updatedSite!.Enabled == false, "edit session must preserve original site Enabled status");
+Assert(updatedSite.GroupRatioSource == "手动", "edited site must mark GroupRatioSource as manual");
+
+var sessionViewModel = new SiteEditorViewModel(editSession, testProbe, testCredentials, testNotifications, testSettings);
+Assert(ReferenceEquals(sessionViewModel.Session, editSession), "view model must expose underlying session");
+Assert(sessionViewModel.ProviderId == "existing-provider" && sessionViewModel.CanSave, "view model must project session properties");
+editSession.ProviderId = "changed-provider";
+Assert(sessionViewModel.ProviderId == "changed-provider", "changes in session must reflect in view model");
+var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testProbe, testCredentials, testNotifications, sSettings), registry);
+Assert(sessionFactory is not null, "session factory must instantiate successfully");
 
 var hpSites = new ProviderPriceSwitcher.Core.SiteConfiguration[]
 {
@@ -705,7 +803,7 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
-        var editorFactory = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original, fakeInferenceKeys));
+        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, localSettings, fakeInferenceKeys), registry);
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
             settingsRepository,
@@ -825,7 +923,7 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var editorFactoryForDialog = new SiteEditorDialogFactory((original, localSettings) => new SiteEditorViewModel(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, localSettings, original, fakeInferenceKeys));
+        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, localSettings, fakeInferenceKeys), registry);
         var cascadeKeys = new CascadeInferenceKeyStore();
         var cascadeSettings = settings with { ActiveProviderId = site.ProviderId };
         settingsRepository.Save(cascadeSettings);
@@ -963,6 +1061,12 @@ var windowThread = new Thread(() =>
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
+        var directSession = new SupplierEditorSession(registry, settings, site);
+        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, sSettings), registry);
+        var createdFromSession = sessionFactoryInSta.Create(directSession, settings, window);
+        Assert(ReferenceEquals(createdFromSession.Session, directSession) && ReferenceEquals(createdFromSession.ViewModel.Session, directSession), "factory must support direct session injection into dialog in STA");
+        Assert(createdFromSession.Session.ProviderId == site.ProviderId, "session in created dialog must match injected session data");
+
         var trayHost = new FakeTrayHost();
         var trayExitRequested = false;
         activeRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("active", "https://active.example", "active-handle"));
