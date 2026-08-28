@@ -18,9 +18,9 @@ var currentIdentity = System.Security.Principal.WindowsIdentity.GetCurrent();
 var currentUserSid = currentIdentity.User ?? throw new InvalidOperationException("current user SID unavailable");
 var privatePipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)");
 var broadPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;WD)");
-var foreignSid = new System.Security.Principal.SecurityIdentifier("S-1-5-18");
-var foreignPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)(A;;FA;;;{foreignSid.Value})");
-var foreignOwnerDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{foreignSid.Value}D:P(A;;FA;;;OW)");
+var foreignUserSid = new System.Security.Principal.SecurityIdentifier("S-1-5-21-999999999-999999999-999999999-9999");
+var foreignPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)(A;;FA;;;{foreignUserSid.Value})");
+var foreignOwnerDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{foreignUserSid.Value}D:P(A;;FA;;;OW)");
 var emptyDaclDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P");
 
 Assert(WindowsNamedPipeSecurity.IsCurrentUserOnly(privatePipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(broadPipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignPipeDescriptor, currentUserSid), "pipe ACL contract must accept owner-only access and reject world or foreign-SID access");

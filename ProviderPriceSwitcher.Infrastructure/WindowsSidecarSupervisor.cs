@@ -329,6 +329,7 @@ internal static class WindowsNamedPipeSecurity
     private const uint OwnerAndDacl = 0x00000001 | 0x00000004;
     private static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
     private static readonly SecurityIdentifier BuiltinAdministrators = new("S-1-5-32-544");
+    private static readonly SecurityIdentifier LocalSystem = new("S-1-5-18");
 
     internal static void EnsureCurrentUserOnly(SafePipeHandle pipeHandle)
     {
@@ -373,11 +374,7 @@ internal static class WindowsNamedPipeSecurity
         var owner = descriptor.Owner;
         if (owner is null) return false;
 
-        var isOwnerAllowed = owner.Equals(currentUser)
-            || (identity?.Owner is not null && owner.Equals(identity.Owner))
-            || (identity?.Groups is not null && identity.Groups.Contains(owner) && IsPrivilegedGroup(owner));
-
-        if (!isOwnerAllowed) return false;
+        if (!IsOwnerAllowed(owner, currentUser, identity)) return false;
 
         var accessRules = descriptor.DiscretionaryAcl?.OfType<CommonAce>().Where(ace => ace.AceQualifier == AceQualifier.AccessAllowed).ToArray() ?? [];
         if (accessRules.Length == 0) return false;
@@ -388,6 +385,20 @@ internal static class WindowsNamedPipeSecurity
         return currentUserHasAccess && allowedSubjectsOnly;
     }
 
+    private static bool IsOwnerAllowed(SecurityIdentifier owner, SecurityIdentifier currentUser, WindowsIdentity? identity)
+    {
+        if (owner.Equals(currentUser))
+            return true;
+
+        if (identity?.Owner is not null && owner.Equals(identity.Owner))
+            return true;
+
+        if (identity?.Groups is not null && identity.Groups.Contains(BuiltinAdministrators) && (owner.Equals(BuiltinAdministrators) || owner.Equals(LocalSystem)))
+            return true;
+
+        return false;
+    }
+
     private static bool IsSubjectAllowed(SecurityIdentifier subject, SecurityIdentifier currentUser, WindowsIdentity? identity)
     {
         if (subject.Equals(currentUser) || subject.Equals(OwnerRights))
@@ -396,13 +407,11 @@ internal static class WindowsNamedPipeSecurity
         if (identity?.Owner is not null && subject.Equals(identity.Owner))
             return true;
 
-        if (identity?.Groups is not null && identity.Groups.Contains(subject) && IsPrivilegedGroup(subject))
+        if (identity?.Groups is not null && identity.Groups.Contains(BuiltinAdministrators) && (subject.Equals(BuiltinAdministrators) || subject.Equals(LocalSystem)))
             return true;
 
         return false;
     }
-
-    private static bool IsPrivilegedGroup(SecurityIdentifier sid) => sid.Equals(BuiltinAdministrators);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern uint GetSecurityInfo(SafePipeHandle handle, int objectType, uint securityInformation, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
