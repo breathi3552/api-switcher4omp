@@ -4,39 +4,6 @@ using ProviderPriceSwitcher.Core;
 
 namespace ProviderPriceSwitcher.Infrastructure;
 
-public sealed class OmpCurrentProviderQuery(
-    IAppPathDefaults pathDefaults) : IOmpCurrentProviderQuery
-{
-    public async Task<OmpCurrentProviderResult> ReadAsync(string ompRootDirectory, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(ompRootDirectory);
-        cancellationToken.ThrowIfCancellationRequested();
-        var path = pathDefaults.OmpConfigPath(ompRootDirectory);
-        if (!File.Exists(path))
-            return new(OmpCurrentProviderStatus.ConfigurationFileMissing);
-        try
-        {
-            var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-            var analysis = new OmpConfigurationAnalyzer().Analyze(text);
-            return analysis.CurrentProvider is { Length: > 0 } provider
-                ? new(OmpCurrentProviderStatus.Identified, provider)
-                : new(OmpCurrentProviderStatus.Unrecognized);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (IOException)
-        {
-            return new(OmpCurrentProviderStatus.ReadFailed);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return new(OmpCurrentProviderStatus.ReadFailed);
-        }
-    }
-}
-
 public sealed class PricingSnapshotQuery(IPricingSnapshotRepository repository) : IPricingSnapshotQuery
 {
     public PricingSnapshotQueryResult Load()

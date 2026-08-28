@@ -301,6 +301,14 @@
 - **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106224751` bytes）产物及 sidecar manifest hash。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #12 删除孤立的 OMP current-provider query module 证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-28` 完成。
+- **scope:** 删除孤立的 OMP current-provider query 契约、结果类型、状态枚举和唯一 adapter（`IOmpCurrentProviderQuery`、`OmpCurrentProviderResult`、`OmpCurrentProviderStatus`、`OmpCurrentProviderQuery`、`OmpConfigurationAnalysis.CurrentProvider`）；全仓既有 OMP GPT 配置替换、主页状态、Start OMP、当前供应商和 sidecar 路由保持不变；保留 `PricingSnapshotQuery`。
+- **Final verification and release:** `powershell.exe -NoProfile -ExecutionPolicy Bypass -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh.exe -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106224030` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** Standards 与 Spec 审查均无剩余发现（0 发现）。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

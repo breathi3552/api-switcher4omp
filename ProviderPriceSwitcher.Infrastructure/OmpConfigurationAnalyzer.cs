@@ -32,7 +32,6 @@ internal sealed class OmpConfigurationAnalysis
 
     public string Text { get; }
     public OmpModelReference? DefaultReference { get; }
-    public string? CurrentProvider => DefaultReference?.Provider;
     public IReadOnlyList<OmpModelReference> ModelReferences { get; }
     public bool HasValidYamlSyntax { get; }
     public bool HasValidDefault => DefaultReference is not null;

@@ -32,24 +32,6 @@ public interface IPricingSnapshotRepository
     void Delete(string providerId);
 }
 
-public enum OmpCurrentProviderStatus
-{
-    Identified,
-    ConfigurationFileMissing,
-    Unrecognized,
-    ReadFailed
-}
-
-public sealed record OmpCurrentProviderResult(OmpCurrentProviderStatus Status, string? ProviderId = null)
-{
-    public bool IsIdentified => Status == OmpCurrentProviderStatus.Identified && !string.IsNullOrWhiteSpace(ProviderId);
-}
-
-public interface IOmpCurrentProviderQuery
-{
-    Task<OmpCurrentProviderResult> ReadAsync(string ompRootDirectory, CancellationToken cancellationToken = default);
-}
-
 public enum PricingSnapshotQueryStatus
 {
     Succeeded,
