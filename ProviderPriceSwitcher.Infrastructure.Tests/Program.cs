@@ -10,6 +10,11 @@ if (args.Contains("--control-pipe", StringComparer.Ordinal))
     await RunFakeSidecarAsync(args);
     return;
 }
+if (args.Contains("--fake-omp", StringComparer.Ordinal))
+{
+    await RunFakeOmpAsync(args);
+    return;
+}
 
 var runOnlySidecarChannelCloseContract = args.Contains("--sidecar-channel-close-contract", StringComparer.Ordinal);
 
@@ -64,6 +69,31 @@ static async Task RunFakeSidecarAsync(string[] arguments)
         await pipe.WriteAsync(malformedJson);
         await pipe.FlushAsync();
     }
+}
+static async Task RunFakeOmpAsync(string[] arguments)
+{
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    var promptIndex = Array.IndexOf(arguments, "-p");
+    var prompt = promptIndex >= 0 && promptIndex < arguments.Length - 1 ? arguments[promptIndex + 1] : "loopback-ok";
+    var payload = JsonSerializer.Serialize(new
+    {
+        model = "gpt-5.6-sol",
+        input = new[]
+        {
+            new
+            {
+                type = "message",
+                role = "user",
+                content = new object[]
+                {
+                    new { type = "input_text", text = prompt }
+                }
+            }
+        }
+    });
+    var response = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+    var body = await response.Content.ReadAsStringAsync();
+    Console.WriteLine(body);
 }
 
 static async Task ReadExactAsync(Stream stream, byte[] buffer)
@@ -555,8 +585,8 @@ try
         var secondOmpWorkingDirectory = Path.Combine(root, "omp-working-b");
         Directory.CreateDirectory(firstOmpWorkingDirectory);
         Directory.CreateDirectory(secondOmpWorkingDirectory);
-        var ompExecutable = ResolveOmpExecutable();
-        static string ResolveOmpExecutable()
+        var (ompExecutable, isFakeOmp) = ResolveOmpExecutable();
+        static (string Executable, bool IsFake) ResolveOmpExecutable()
         {
             var configured = Environment.GetEnvironmentVariable("PPS_OMP_EXECUTABLE");
             if (!string.IsNullOrWhiteSpace(configured))
@@ -564,22 +594,29 @@ try
                 var configuredPath = Path.GetFullPath(configured);
                 if (!File.Exists(configuredPath))
                     throw new InvalidOperationException($"Configured OMP executable was not found: {configuredPath}");
-                return configuredPath;
+                return (configuredPath, false);
             }
 
             for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
             {
                 var adjacentPath = Path.Combine(directory.FullName, "omp.exe");
                 if (File.Exists(adjacentPath))
-                    return adjacentPath;
+                    return (adjacentPath, false);
             }
 
             foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
                 var pathEntry = Path.Combine(directory, "omp.exe");
                 if (File.Exists(pathEntry))
-                    return pathEntry;
+                    return (pathEntry, false);
             }
+
+            var fallbackExecutable = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(fallbackExecutable) || string.Equals(Path.GetFileNameWithoutExtension(fallbackExecutable), "dotnet", StringComparison.OrdinalIgnoreCase))
+                fallbackExecutable = Path.ChangeExtension(System.Reflection.Assembly.GetExecutingAssembly().Location, ".exe");
+
+            if (File.Exists(fallbackExecutable))
+                return (fallbackExecutable, true);
 
             throw new InvalidOperationException("OMP executable was not found; set PPS_OMP_EXECUTABLE to an isolated OMP binary.");
         }
@@ -594,6 +631,10 @@ try
                 CreateNoWindow = true,
                 WorkingDirectory = workingDirectory
             };
+            if (isFakeOmp)
+            {
+                startInfo.ArgumentList.Add("--fake-omp");
+            }
             if (rpc)
             {
                 startInfo.ArgumentList.Add("--mode");
