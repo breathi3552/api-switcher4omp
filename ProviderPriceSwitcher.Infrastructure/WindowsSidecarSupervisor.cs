@@ -328,6 +328,7 @@ internal static class WindowsNamedPipeSecurity
     private const int SeKernelObject = 6;
     private const uint OwnerAndDacl = 0x00000001 | 0x00000004;
     private static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
+    private static readonly SecurityIdentifier BuiltinAdministrators = new("S-1-5-32-544");
 
     internal static void EnsureCurrentUserOnly(SafePipeHandle pipeHandle)
     {
@@ -340,8 +341,8 @@ internal static class WindowsNamedPipeSecurity
             try
             {
                 var descriptor = new RawSecurityDescriptor(Marshal.PtrToStringUni(stringDescriptor) ?? throw new InvalidOperationException("sidecar_pipe_acl_invalid"));
-                var currentUser = WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("sidecar_pipe_identity_unavailable");
-                if (!IsCurrentUserOnly(descriptor, currentUser))
+                var identity = WindowsIdentity.GetCurrent();
+                if (!IsCurrentUserOnly(descriptor, identity))
                     throw new UnauthorizedAccessException("sidecar_pipe_not_current_user_only");
             }
             finally
@@ -355,14 +356,53 @@ internal static class WindowsNamedPipeSecurity
         }
     }
 
-    internal static bool IsCurrentUserOnly(RawSecurityDescriptor descriptor, SecurityIdentifier currentUser)
+    internal static bool IsCurrentUserOnly(RawSecurityDescriptor descriptor, WindowsIdentity identity)
     {
-        var ownerMatches = descriptor.Owner?.Equals(currentUser) == true;
-        var accessRules = descriptor.DiscretionaryAcl?.OfType<CommonAce>().Where(ace => ace.AceQualifier == AceQualifier.AccessAllowed).ToArray() ?? [];
-        var currentUserHasAccess = accessRules.Any(ace => ace.SecurityIdentifier.Equals(currentUser) || ace.SecurityIdentifier.Equals(OwnerRights));
-        var allowedSubjectsOnly = accessRules.All(ace => ace.SecurityIdentifier.Equals(currentUser) || ace.SecurityIdentifier.Equals(OwnerRights));
-        return ownerMatches && currentUserHasAccess && allowedSubjectsOnly;
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(identity);
+        var currentUser = identity.User;
+        if (currentUser is null) return false;
+        return IsCurrentUserOnly(descriptor, currentUser, identity);
     }
+
+    internal static bool IsCurrentUserOnly(RawSecurityDescriptor descriptor, SecurityIdentifier currentUser, WindowsIdentity? identity = null)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(currentUser);
+
+        var owner = descriptor.Owner;
+        if (owner is null) return false;
+
+        var isOwnerAllowed = owner.Equals(currentUser)
+            || (identity?.Owner is not null && owner.Equals(identity.Owner))
+            || (identity?.Groups is not null && identity.Groups.Contains(owner) && IsPrivilegedGroup(owner));
+
+        if (!isOwnerAllowed) return false;
+
+        var accessRules = descriptor.DiscretionaryAcl?.OfType<CommonAce>().Where(ace => ace.AceQualifier == AceQualifier.AccessAllowed).ToArray() ?? [];
+        if (accessRules.Length == 0) return false;
+
+        var currentUserHasAccess = accessRules.Any(ace => IsSubjectAllowed(ace.SecurityIdentifier, currentUser, identity));
+        var allowedSubjectsOnly = accessRules.All(ace => IsSubjectAllowed(ace.SecurityIdentifier, currentUser, identity));
+
+        return currentUserHasAccess && allowedSubjectsOnly;
+    }
+
+    private static bool IsSubjectAllowed(SecurityIdentifier subject, SecurityIdentifier currentUser, WindowsIdentity? identity)
+    {
+        if (subject.Equals(currentUser) || subject.Equals(OwnerRights))
+            return true;
+
+        if (identity?.Owner is not null && subject.Equals(identity.Owner))
+            return true;
+
+        if (identity?.Groups is not null && identity.Groups.Contains(subject) && IsPrivilegedGroup(subject))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsPrivilegedGroup(SecurityIdentifier sid) => sid.Equals(BuiltinAdministrators);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern uint GetSecurityInfo(SafePipeHandle handle, int objectType, uint securityInformation, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);

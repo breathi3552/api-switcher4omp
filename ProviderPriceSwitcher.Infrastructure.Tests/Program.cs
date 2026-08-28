@@ -14,13 +14,18 @@ if (args.Contains("--control-pipe", StringComparer.Ordinal))
 var runOnlySidecarChannelCloseContract = args.Contains("--sidecar-channel-close-contract", StringComparer.Ordinal);
 
 
-var currentUserSid = System.Security.Principal.WindowsIdentity.GetCurrent().User ?? throw new InvalidOperationException("current user SID unavailable");
+var currentIdentity = System.Security.Principal.WindowsIdentity.GetCurrent();
+var currentUserSid = currentIdentity.User ?? throw new InvalidOperationException("current user SID unavailable");
 var privatePipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)");
 var broadPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;WD)");
 var foreignSid = new System.Security.Principal.SecurityIdentifier("S-1-5-18");
 var foreignPipeDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P(A;;FA;;;OW)(A;;FA;;;{foreignSid.Value})");
-Assert(WindowsNamedPipeSecurity.IsCurrentUserOnly(privatePipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(broadPipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignPipeDescriptor, currentUserSid), "pipe ACL contract must accept owner-only access and reject world or foreign-SID access");
+var foreignOwnerDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{foreignSid.Value}D:P(A;;FA;;;OW)");
+var emptyDaclDescriptor = new System.Security.AccessControl.RawSecurityDescriptor($"O:{currentUserSid.Value}D:P");
 
+Assert(WindowsNamedPipeSecurity.IsCurrentUserOnly(privatePipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(broadPipeDescriptor, currentUserSid) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignPipeDescriptor, currentUserSid), "pipe ACL contract must accept owner-only access and reject world or foreign-SID access");
+Assert(WindowsNamedPipeSecurity.IsCurrentUserOnly(privatePipeDescriptor, currentIdentity) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(broadPipeDescriptor, currentIdentity) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignPipeDescriptor, currentIdentity), "pipe ACL contract with identity must accept owner-only access and reject broad or foreign-SID access");
+Assert(!WindowsNamedPipeSecurity.IsCurrentUserOnly(foreignOwnerDescriptor, currentIdentity) && !WindowsNamedPipeSecurity.IsCurrentUserOnly(emptyDaclDescriptor, currentIdentity), "pipe ACL contract must reject foreign owner and empty DACL");
 static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
