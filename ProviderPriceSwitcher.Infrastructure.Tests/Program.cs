@@ -72,28 +72,65 @@ static async Task RunFakeSidecarAsync(string[] arguments)
 }
 static async Task RunFakeOmpAsync(string[] arguments)
 {
+    var rpc = arguments.Contains("rpc", StringComparer.Ordinal);
     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-    var promptIndex = Array.IndexOf(arguments, "-p");
-    var prompt = promptIndex >= 0 && promptIndex < arguments.Length - 1 ? arguments[promptIndex + 1] : "loopback-ok";
-    var payload = JsonSerializer.Serialize(new
+
+    if (!rpc)
     {
-        model = "gpt-5.6-sol",
-        input = new[]
+        var promptIndex = Array.IndexOf(arguments, "-p");
+        var prompt = promptIndex >= 0 && promptIndex < arguments.Length - 1 ? arguments[promptIndex + 1] : "loopback-ok";
+        var payload = JsonSerializer.Serialize(new
         {
-            new
+            model = "gpt-5.6-sol",
+            input = new[]
             {
-                type = "message",
-                role = "user",
-                content = new object[]
+                new
                 {
-                    new { type = "input_text", text = prompt }
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new { type = "input_text", text = prompt }
+                    }
                 }
             }
+        });
+        var response = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+        Console.WriteLine(body);
+        return;
+    }
+
+    while (await Console.In.ReadLineAsync() is { } line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        var payload = JsonSerializer.Serialize(new
+        {
+            model = "gpt-5.6-sol",
+            input = new[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new { type = "input_text", text = line }
+                    }
+                }
+            }
+        });
+        try
+        {
+            var response = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+            var body = await response.Content.ReadAsStringAsync();
+            Console.WriteLine(body);
         }
-    });
-    var response = await client.PostAsync("http://127.0.0.1:15722/v1/responses", new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
-    var body = await response.Content.ReadAsStringAsync();
-    Console.WriteLine(body);
+        catch
+        {
+        }
+        Console.WriteLine("{\"type\":\"agent_end\"}");
+    }
 }
 
 static async Task ReadExactAsync(Stream stream, byte[] buffer)
