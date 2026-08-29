@@ -88,20 +88,26 @@ public sealed partial class SiteEditorDialog : Window
 public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
 {
     private readonly Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> _create;
+    private readonly PricingProbeUseCase _probe;
     private readonly IPricingAdapterRegistry _registry;
+    private readonly IUserNotificationService _notifications;
 
     public SiteEditorDialogFactory(
         Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> create,
-        IPricingAdapterRegistry registry)
+        PricingProbeUseCase probe,
+        IPricingAdapterRegistry registry,
+        IUserNotificationService notifications)
     {
         _create = create ?? throw new ArgumentNullException(nameof(create));
+        _probe = probe ?? throw new ArgumentNullException(nameof(probe));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
     }
 
     public SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        var session = new SupplierEditorSession(_registry, settings, original);
+        var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, settings.RequestTimeoutSeconds, original, _notifications);
         return Create(session, settings, owner);
     }
 

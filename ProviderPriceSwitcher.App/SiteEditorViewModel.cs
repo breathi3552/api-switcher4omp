@@ -7,33 +7,22 @@ using ProviderPriceSwitcher.Core;
 
 namespace ProviderPriceSwitcher.App;
 
-public enum SiteEditorProbeState { Idle, Probing, Succeeded, Canceled, Failed }
-
 public sealed class SiteEditorViewModel : ObservableObject
 {
-    private readonly PricingProbeUseCase _probe;
     private readonly ISiteAccessCredentialStore _credentials;
     private readonly IInferenceApiKeyUseCase _inferenceKeyUseCase;
     private readonly IUserNotificationService _notifications;
     private readonly LocalAppSettings _settings;
-    private CancellationTokenSource? _cancel;
-    private Task? _probeTask;
-    private bool _isProbing;
-    private SiteEditorProbeState _probeState;
-    private string _probeMessage = string.Empty;
-    private IReadOnlyDictionary<string, decimal>? _probedGroupRatios;
     private string? _lastKeyActionMessage;
 
     public SiteEditorViewModel(
         SupplierEditorSession session,
-        PricingProbeUseCase probe,
         ISiteAccessCredentialStore credentials,
         IUserNotificationService notifications,
         LocalAppSettings settings,
         IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
     {
         Session = session ?? throw new ArgumentNullException(nameof(session));
-        _probe = probe;
         _credentials = credentials;
         _inferenceKeyUseCase = inferenceKeyUseCase ?? new NullInferenceApiKeyUseCase();
         _notifications = notifications;
@@ -41,14 +30,9 @@ public sealed class SiteEditorViewModel : ObservableObject
 
         Session.PropertyChanged += OnSessionPropertyChanged;
 
-        if (!string.IsNullOrWhiteSpace(Session.CurrentGroup))
-            GroupOptions.Add(Session.CurrentGroup);
-
         UpdateCredentialStatus();
         UpdateInferenceKeyStatus();
 
-        ProbeCommand = new AsyncCommand(ProbeAsync, HandleError, () => CanProbe);
-        CancelProbeCommand = new RelayCommand(() => _cancel?.Cancel(), () => IsProbing);
         SaveCommand = new RelayCommand(Save, () => CanSave);
     }
 
@@ -60,10 +44,9 @@ public sealed class SiteEditorViewModel : ObservableObject
         LocalAppSettings settings,
         SiteConfiguration? original = null,
         IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
-        : this(new SupplierEditorSession(registry, settings, original), probe, credentials, notifications, settings, inferenceKeyUseCase)
+        : this(new SupplierEditorSession(probe, registry, settings, original, notifications), credentials, notifications, settings, inferenceKeyUseCase)
     {
     }
-
     public SupplierEditorSession Session { get; }
 
     public IReadOnlyList<PricingAdapterDescriptor> Descriptors => Session.Descriptors;
@@ -142,45 +125,21 @@ public sealed class SiteEditorViewModel : ObservableObject
 
     public bool CredentialVisible => Session.CredentialVisible;
 
-    public bool IsProbing
-    {
-        get => _isProbing;
-        private set
-        {
-            if (SetProperty(ref _isProbing, value))
-            {
-                OnPropertyChanged(nameof(CanSave));
-                OnPropertyChanged(nameof(CanProbe));
-                RaiseCommands();
-            }
-        }
-    }
-
-    public bool CanSave => !IsProbing && Session.CanSave;
-    public bool CanProbe => !IsProbing && Session.CanSave;
-
-    public SiteEditorProbeState ProbeState
-    {
-        get => _probeState;
-        private set => SetProperty(ref _probeState, value);
-    }
-
-    public string ProbeMessage
-    {
-        get => _probeMessage;
-        private set => SetProperty(ref _probeMessage, value);
-    }
+    public bool IsProbing => Session.IsProbing;
+    public bool CanSave => Session.CanSave;
+    public bool CanProbe => Session.CanProbe;
+    public SupplierEditorProbeState ProbeState => Session.ProbeState;
+    public string ProbeMessage => Session.ProbeMessage;
+    public ObservableCollection<string> GroupOptions => Session.GroupOptions;
+    public AsyncCommand ProbeCommand => Session.ProbeCommand;
+    public RelayCommand CancelProbeCommand => Session.CancelProbeCommand;
 
     public SiteConfiguration? SavedSite { get; private set; }
-    public AsyncCommand ProbeCommand { get; }
-    public RelayCommand CancelProbeCommand { get; }
     public RelayCommand SaveCommand { get; }
     public event EventHandler? Saved;
-
     public SiteCredentialSummary CredentialSummary { get; private set; } = new() { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured };
     public InferenceApiKeySummary? InferenceKeySummary { get; private set; }
     public string InferenceKeyDisplayText => InferenceKeySummary?.MaskedKey ?? "未配置";
-    public ObservableCollection<string> GroupOptions { get; } = [];
     public string KeyActionMessage { get => _lastKeyActionMessage ?? string.Empty; private set => SetProperty(ref _lastKeyActionMessage, value); }
 
     public bool SaveInferenceKey(string apiKey)
@@ -251,50 +210,7 @@ public sealed class SiteEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(CredentialSummary));
     }
 
-    public async Task CloseAsync()
-    {
-        _cancel?.Cancel();
-        if (_probeTask is not null) await _probeTask.ConfigureAwait(true);
-    }
-
-    private async Task ProbeAsync()
-    {
-        _probeTask = ProbeCoreAsync();
-        await _probeTask;
-        _probeTask = null;
-    }
-
-    private async Task ProbeCoreAsync()
-    {
-        if (!TryBuild(out var site)) return;
-        IsProbing = true;
-        ProbeState = SiteEditorProbeState.Probing;
-        ProbeMessage = "正在查询…";
-        _cancel = new CancellationTokenSource();
-        try
-        {
-            var result = await _probe.ExecuteAsync(site, _settings.RequestTimeoutSeconds, _cancel.Token);
-            var boundGroup = CurrentGroup;
-            _probedGroupRatios = result.GroupRatios;
-            var desiredGroups = result.GroupRatios.Keys
-                .Append(boundGroup)
-                .Where(group => !string.IsNullOrWhiteSpace(group))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(group => group, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            foreach (var group in desiredGroups)
-                if (!GroupOptions.Contains(group, StringComparer.OrdinalIgnoreCase)) GroupOptions.Add(group);
-            for (var index = GroupOptions.Count - 1; index >= 0; index--)
-                if (!desiredGroups.Contains(GroupOptions[index], StringComparer.OrdinalIgnoreCase)) GroupOptions.RemoveAt(index);
-            ApplyProbedGroupRatio(boundGroup);
-            ProbeState = SiteEditorProbeState.Succeeded;
-            ProbeMessage = $"成功：当前组倍率 {result.Snapshot.CurrentGroupRatio:0.####}；最低组 {result.MinimumValidGroup}（{result.MinimumGroupRatio:0.####}）。";
-        }
-        catch (OperationCanceledException) { ProbeState = SiteEditorProbeState.Canceled; ProbeMessage = "已取消价格查询。"; }
-        catch (PricingAdapterException ex) { ProbeState = SiteEditorProbeState.Failed; ProbeMessage = UserErrorMessages.ForProbeFailure(ex.Failure); }
-        catch { ProbeState = SiteEditorProbeState.Failed; ProbeMessage = UserErrorMessages.Unexpected; _notifications.ShowError(UserErrorMessages.Unexpected, "价格查询"); }
-        finally { _cancel?.Dispose(); _cancel = null; IsProbing = false; }
-    }
+    public Task CloseAsync() => Session.CloseAsync();
 
     private void Save()
     {
@@ -305,19 +221,6 @@ public sealed class SiteEditorViewModel : ObservableObject
         }
     }
     public bool TryBuild(out SiteConfiguration site) => Session.TryBuild(out site);
-
-    private void ApplyProbedGroupRatio(string group)
-    {
-        if (_probedGroupRatios?.TryGetValue(group, out var ratio) == true && ratio > 0)
-            CurrentGroupRatio = ratio.ToString(CultureInfo.InvariantCulture);
-    }
-
-    private void HandleError(Exception ex)
-    {
-        if (ex is not OperationCanceledException)
-            _notifications.ShowError(UserErrorMessages.Unexpected, "站点编辑");
-    }
-
     private void OnSessionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         switch (e.PropertyName)
@@ -340,16 +243,31 @@ public sealed class SiteEditorViewModel : ObservableObject
                 RaiseCommands();
                 break;
             case nameof(SupplierEditorSession.CurrentGroup):
-                ApplyProbedGroupRatio(Session.CurrentGroup);
-                if (!string.IsNullOrWhiteSpace(Session.CurrentGroup) && !GroupOptions.Contains(Session.CurrentGroup, StringComparer.OrdinalIgnoreCase))
-                    GroupOptions.Add(Session.CurrentGroup);
                 OnPropertyChanged(nameof(CurrentGroup));
                 RaiseCommands();
                 break;
-            case nameof(SupplierEditorSession.CanSave):
+            case nameof(SupplierEditorSession.CurrentGroupRatio):
+                OnPropertyChanged(nameof(CurrentGroupRatio));
+                RaiseCommands();
+                break;
+            case nameof(SupplierEditorSession.IsProbing):
+                OnPropertyChanged(nameof(IsProbing));
                 OnPropertyChanged(nameof(CanSave));
                 OnPropertyChanged(nameof(CanProbe));
                 RaiseCommands();
+                break;
+            case nameof(SupplierEditorSession.ProbeState):
+                OnPropertyChanged(nameof(ProbeState));
+                break;
+            case nameof(SupplierEditorSession.ProbeMessage):
+                OnPropertyChanged(nameof(ProbeMessage));
+                break;
+            case nameof(SupplierEditorSession.CanSave):
+                OnPropertyChanged(nameof(CanSave));
+                RaiseCommands();
+                break;
+            case nameof(SupplierEditorSession.CanProbe):
+                OnPropertyChanged(nameof(CanProbe));
                 break;
             default:
                 if (!string.IsNullOrEmpty(e.PropertyName))
@@ -360,9 +278,7 @@ public sealed class SiteEditorViewModel : ObservableObject
 
     private void RaiseCommands()
     {
-        ProbeCommand?.RaiseCanExecuteChanged();
         SaveCommand?.RaiseCanExecuteChanged();
-        CancelProbeCommand?.RaiseCanExecuteChanged();
     }
 }
 

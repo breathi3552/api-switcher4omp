@@ -309,6 +309,14 @@
 - **Final fixed-base dual-axis review:** Standards 与 Spec 审查均无剩余发现（0 发现）。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #24 价格探测、取消等待与分组/倍率保全过渡证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-29` 完成。
+- **scope:** 在 `SupplierEditorSession` 中集中实现价格探测状态机（`Idle`/`Probing`/`Succeeded`/`Canceled`/`Failed`）、超时与取消生命周期管理、窗口关闭时的探测取消与异步等待（`CloseAsync`）、`GroupOptions` 候选列表与当前分组/倍率对齐及保全规则、候选选择自动应用倍率；`SiteEditorViewModel` 与 WPF dialog 全面转为轻量适配层，委托 Session 驱动探测与候选管理。
+- **App runner:** Session 契约测试覆盖初始 Idle 状态、探测成功更新倍率与排序候选、候选分组选择自动应用探测倍率、探测响应缺失当前分组时不抹除现有分组与倍率、手动取消探测并恢复 CanSave/CanProbe、探测超时与认证异常结构化映射为用户文案、并发 `CloseAsync` 自动取消并异步等待探测完成；STA 冒烟测试覆盖真实 ComboBox 焦点切换下保留当前分组、选择候选更新倍率、正在探测时关闭窗口触发 `CloseAsync` 并正常退出。
+- **Final verification and release:** `pwsh -Command "./eng/Verify.ps1 -Impact CrossLayer -AllRunners"` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh -Command "./eng/Publish.ps1"` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106225994` bytes）产物及 sidecar manifest hash。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 ## Status update protocol
 
  - 既有治理工作的六项债务与八个 runner 均依据已记录证据关闭；2026-08-03 CrossLayer runner 额外通过 Application `ApplyActiveRouteUseCase` 与真实 sidecar 的原子 Route Snapshot 应用/持久化路径。

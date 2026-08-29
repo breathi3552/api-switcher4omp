@@ -125,7 +125,7 @@ Assert(editor.Descriptors.Count == 3 && editor.AuthenticationMode == "无" && !e
 editor.Descriptor = editor.Descriptors[1];
 Assert(editor.AuthenticationMode == "令牌" && editor.CredentialVisible, "descriptor switch must reset auth and credential visibility");
 Assert(editor.CanSave == false, "invalid draft must not save");
-var newSession = new SupplierEditorSession(registry, testSettings, null);
+var newSession = new SupplierEditorSession(testProbe, registry, testSettings, null, testNotifications);
 Assert(newSession.Descriptors.Count == 3, "session must expose all registered descriptors");
 Assert(newSession.Descriptor?.SiteType == "one", "new session must default to first descriptor");
 Assert(newSession.AuthenticationMode == "无" && !newSession.CredentialVisible, "new session must default to descriptor's first auth mode and credential visibility");
@@ -201,7 +201,7 @@ var existingSite = new ProviderPriceSwitcher.Core.SiteConfiguration
     CnyConversionRate = 7.2m,
     Enabled = false
 };
-var editSession = new SupplierEditorSession(registry, testSettings, existingSite);
+var editSession = new SupplierEditorSession(testProbe, registry, testSettings, existingSite, testNotifications);
 Assert(editSession.Original == existingSite, "edit session must retain reference to original configuration");
 Assert(editSession.Descriptor?.SiteType == "two", "edit session must select matching descriptor by site type");
 Assert(editSession.AuthenticationMode == "账户", "edit session must preserve existing authentication mode");
@@ -216,13 +216,130 @@ Assert(editSession.CanSave && editBuilt && updatedSite is not null, "edit sessio
 Assert(updatedSite!.Enabled == false, "edit session must preserve original site Enabled status");
 Assert(updatedSite.GroupRatioSource == "手动", "edited site must mark GroupRatioSource as manual");
 
-var sessionViewModel = new SiteEditorViewModel(editSession, testProbe, testCredentials, testNotifications, testSettings);
+var sessionViewModel = new SiteEditorViewModel(editSession, testCredentials, testNotifications, testSettings);
 Assert(ReferenceEquals(sessionViewModel.Session, editSession), "view model must expose underlying session");
 Assert(sessionViewModel.ProviderId == "existing-provider" && sessionViewModel.CanSave, "view model must project session properties");
 editSession.ProviderId = "changed-provider";
 Assert(sessionViewModel.ProviderId == "changed-provider", "changes in session must reflect in view model");
-var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testProbe, testCredentials, testNotifications, sSettings), registry);
+var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testCredentials, testNotifications, sSettings), testProbe, registry, testNotifications);
 Assert(sessionFactory is not null, "session factory must instantiate successfully");
+
+var probeTestAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
+var probeTestRegistry = new ProviderPriceSwitcher.Application.PricingAdapterRegistry([probeTestAdapter]);
+var probeTestSettings = new ProviderPriceSwitcher.Application.LocalAppSettings { Model = "model-a", RequestTimeoutSeconds = 2, Sites = [] };
+var probeUseCase = new ProviderPriceSwitcher.Application.PricingProbeUseCase(probeTestRegistry);
+var probeNotifications = new FakeNotifications();
+
+var probeSession = new SupplierEditorSession(probeUseCase, probeTestRegistry, probeTestSettings, notifications: probeNotifications);
+probeSession.ProviderId = "test-probe-provider";
+probeSession.DisplayName = "Test Probe Provider";
+probeSession.BaseUrl = "https://probe.example/api/";
+probeSession.Model = "model-a";
+probeSession.CurrentGroup = "default-group";
+probeSession.CurrentGroupRatio = "1.0";
+
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Idle && string.IsNullOrEmpty(probeSession.ProbeMessage) && !probeSession.IsProbing, "initial probe state must be Idle");
+Assert(probeSession.GroupOptions.SequenceEqual(["default-group"]), "initial group options must contain initial current group");
+Assert(probeSession.CanProbe && probeSession.CanSave, "valid session draft must be savable and probeable");
+
+probeTestAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
+{
+    ["default-group"] = 1.25m,
+    ["vip-group"] = 0.85m,
+    ["svip-group"] = 0.5m
+};
+await probeSession.ProbeAsync();
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Succeeded, "successful probe must transition to Succeeded state");
+Assert(probeSession.ProbeMessage.Contains("成功", StringComparison.Ordinal) && probeSession.ProbeMessage.Contains("1.25", StringComparison.Ordinal), "probe message must format current group ratio");
+Assert(probeSession.CurrentGroupRatio == "1.25", "successful probe must update current group ratio when present in probe results");
+Assert(probeSession.GroupOptions.OrderBy(g => g).SequenceEqual(["default-group", "svip-group", "vip-group"]), "successful probe must populate GroupOptions with sorted candidates");
+
+probeSession.CurrentGroup = "vip-group";
+Assert(probeSession.CurrentGroupRatio == "0.85", "selecting a probed candidate group must automatically apply its probed ratio");
+probeSession.CurrentGroup = "svip-group";
+Assert(probeSession.CurrentGroupRatio == "0.5", "selecting another probed candidate group must automatically apply its probed ratio");
+probeSession.CurrentGroup = "custom-manual-group";
+Assert(probeSession.CurrentGroupRatio == "0.5", "entering a custom group not in probed ratios must retain current ratio");
+Assert(probeSession.GroupOptions.Contains("custom-manual-group"), "entering a new custom group must add it to GroupOptions");
+
+probeTestAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
+{
+    ["regular"] = 1.0m,
+    ["premium"] = 0.75m
+};
+probeSession.CurrentGroup = "custom-manual-group";
+probeSession.CurrentGroupRatio = "2.22";
+await probeSession.ProbeAsync();
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Succeeded, "probe missing current group must succeed");
+Assert(probeSession.ProbeMessage.Contains("未包含当前组", StringComparison.Ordinal) && probeSession.ProbeMessage.Contains("2.22", StringComparison.Ordinal), "probe message for missing current group must clearly report retained ratio");
+Assert(probeSession.CurrentGroup == "custom-manual-group", "probe missing current group must preserve current group");
+Assert(probeSession.CurrentGroupRatio == "2.22", "probe missing current group must NOT overwrite current group ratio");
+Assert(probeSession.GroupOptions.Contains("custom-manual-group") && probeSession.GroupOptions.Contains("regular") && probeSession.GroupOptions.Contains("premium"), "GroupOptions must contain both returned candidates and preserved current group");
+
+probeTestAdapter.Block = true;
+var manualProbeTask = probeSession.ProbeAsync();
+Assert(probeSession.IsProbing && probeSession.ProbeState == SupplierEditorProbeState.Probing && !probeSession.CanSave && !probeSession.CanProbe, "probing session must be busy");
+probeSession.CancelProbe();
+probeTestAdapter.Block = false;
+await manualProbeTask;
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Canceled && probeSession.ProbeMessage == "已取消价格查询。" && !probeSession.IsProbing && probeSession.CanSave, "canceled probe must update state and restore CanSave");
+
+probeTestAdapter.ReturnedFailure = ProviderPriceSwitcher.Application.PricingAdapterFailure.Authentication;
+await probeSession.ProbeAsync();
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Failed && probeSession.ProbeMessage == "需要重新绑定凭据。", "auth failure must map to authentication user message");
+
+probeTestAdapter.ReturnedFailure = null;
+
+// Real probe timeout lifecycle test
+var timeoutProbeSettings = new ProviderPriceSwitcher.Application.LocalAppSettings { Model = "model-a", RequestTimeoutSeconds = 1, Sites = [] };
+var timeoutSession = new SupplierEditorSession(probeUseCase, probeTestRegistry, timeoutProbeSettings, notifications: probeNotifications);
+timeoutSession.ProviderId = "timeout-provider";
+timeoutSession.BaseUrl = "https://probe.example/api/";
+timeoutSession.Model = "model-a";
+timeoutSession.CurrentGroup = "default";
+timeoutSession.CurrentGroupRatio = "1.0";
+probeTestAdapter.Block = true;
+var timeoutTask = timeoutSession.ProbeAsync();
+await timeoutTask;
+probeTestAdapter.Block = false;
+Assert(timeoutSession.ProbeState == SupplierEditorProbeState.Failed && timeoutSession.ProbeMessage == "请求超时，请稍后重试。", "real probe timeout expiration must transition to Failed state with timeout message");
+
+// Descriptors-only session without probe must have CanProbe == false
+var noProbeSession = new SupplierEditorSession(probeTestRegistry.Descriptors, "model-a");
+noProbeSession.ProviderId = "no-probe-provider";
+noProbeSession.BaseUrl = "https://probe.example/api/";
+noProbeSession.Model = "model-a";
+noProbeSession.CurrentGroup = "default";
+noProbeSession.CurrentGroupRatio = "1.0";
+Assert(noProbeSession.CanSave && !noProbeSession.CanProbe, "session without probe must have CanProbe == false even when draft is valid");
+
+var negativeTimeoutThrown = false;
+try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry.Descriptors, "model-a", requestTimeoutSeconds: -1); }
+catch (ArgumentOutOfRangeException) { negativeTimeoutThrown = true; }
+Assert(negativeTimeoutThrown, "negative timeout must throw ArgumentOutOfRangeException at boundary");
+
+var nullProbeThrown = false;
+try { _ = new SupplierEditorSession(null!, probeTestRegistry, probeTestSettings); }
+catch (ArgumentNullException) { nullProbeThrown = true; }
+Assert(nullProbeThrown, "null probe must throw ArgumentNullException at boundary");
+
+var nullRegistryThrown = false;
+try { _ = new SupplierEditorSession(probeUseCase, null!, probeTestSettings); }
+catch (ArgumentNullException) { nullRegistryThrown = true; }
+Assert(nullRegistryThrown, "null registry must throw ArgumentNullException at boundary");
+
+var nullSettingsThrown = false;
+try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry, null!); }
+catch (ArgumentNullException) { nullSettingsThrown = true; }
+Assert(nullSettingsThrown, "null settings must throw ArgumentNullException at boundary");
+probeTestAdapter.Block = true;
+var closeProbeTask = probeSession.ProbeAsync();
+Assert(probeSession.IsProbing, "probe must be active before CloseAsync");
+var closeTask = probeSession.CloseAsync();
+probeTestAdapter.Block = false;
+await closeTask;
+await closeProbeTask;
+Assert(probeSession.ProbeState == SupplierEditorProbeState.Canceled && !probeSession.IsProbing, "CloseAsync must cancel active probe and await completion");
 
 var hpSites = new ProviderPriceSwitcher.Core.SiteConfiguration[]
 {
@@ -803,7 +920,7 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
-        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, localSettings, fakeInferenceKeys), registry);
+        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, credentialStore, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
             settingsRepository,
@@ -923,7 +1040,7 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, localSettings, fakeInferenceKeys), registry);
+        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, credentialStore, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
         var cascadeKeys = new CascadeInferenceKeyStore();
         var cascadeSettings = settings with { ActiveProviderId = site.ProviderId };
         settingsRepository.Save(cascadeSettings);
@@ -1000,19 +1117,19 @@ var windowThread = new Thread(() =>
         editorVm.CancelProbeCommand.Execute(null);
         WaitFor(() => !editorVm.IsProbing);
         WaitFor(() => editorVm.ProbeCommand.CanExecute(null));
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Canceled && editorVm.CurrentGroup == "edited-during-probe" && editorVm.CurrentGroupRatio == "1" && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must preserve group and ratio edits and restore commands without an error notification");
+        Assert(editorVm.ProbeState == SupplierEditorProbeState.Canceled && editorVm.CurrentGroup == "edited-during-probe" && editorVm.CurrentGroupRatio == "1" && editorVm.ProbeCommand.CanExecute(null) && editorVm.SaveCommand.CanExecute(null) && !editorVm.CancelProbeCommand.CanExecute(null) && notifications.ErrorCalls == 0, "canceled probe must preserve group and ratio edits and restore commands without an error notification");
         probeAdapter.Block = false;
         probeAdapter.ReturnedFailure = ProviderPriceSwitcher.Application.PricingAdapterFailure.Request;
         editorVm.ProbeCommand.Execute(null);
         WaitFor(() => probeAdapter.FetchCalls == 2);
         WaitFor(() => !editorVm.IsProbing);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Failed && editorVm.CurrentGroupRatio == "1", "failed probe must preserve the previous current-group ratio");
+        Assert(editorVm.ProbeState == SupplierEditorProbeState.Failed && editorVm.CurrentGroupRatio == "1", "failed probe must preserve the previous current-group ratio");
         probeAdapter.ReturnedFailure = null;
         probeAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal) { ["different-group"] = 0.05m };
         editorVm.ProbeCommand.Execute(null);
         WaitFor(() => probeAdapter.FetchCalls == 3);
         WaitFor(() => !editorVm.IsProbing);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && editorVm.CurrentGroupRatio == "1", "successful probe missing the current group must preserve the previous ratio");
+        Assert(editorVm.ProbeState == SupplierEditorProbeState.Succeeded && editorVm.CurrentGroupRatio == "1", "successful probe missing the current group must preserve the previous ratio");
         probeAdapter.ReturnedGroupRatios = new Dictionary<string, decimal>(StringComparer.Ordinal)
         {
             ["edited-during-probe"] = 0.2m,
@@ -1031,7 +1148,7 @@ var windowThread = new Thread(() =>
         WaitFor(() => probeAdapter.FetchCalls == 4);
         WaitFor(() => !editorVm.IsProbing);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Assert(editorVm.ProbeState == SiteEditorProbeState.Succeeded && probeAdapter.FetchCalls == 4 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the editable current group after focus moves to the probe button");
+        Assert(editorVm.ProbeState == SupplierEditorProbeState.Succeeded && probeAdapter.FetchCalls == 4 && !groupMissingDuringRefresh && editorVm.CurrentGroup == "edited-during-probe" && currentGroupBox.Text == "edited-during-probe", "price probe must preserve the editable current group after focus moves to the probe button");
         Assert(editorVm.CurrentGroupRatio == "0.2", $"successful probe must replace the current group's stale ratio; actual ratio: {editorVm.CurrentGroupRatio}");
         currentGroupBox.Focus();
         currentGroupBox.SelectedItem = "different-group";
@@ -1061,11 +1178,21 @@ var windowThread = new Thread(() =>
         var saveViewModel = (SiteEditorViewModel)saveDialog.DataContext;
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
-        var directSession = new SupplierEditorSession(registry, settings, site);
-        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), credentialStore, notifications, sSettings), registry);
+        var directSession = new SupplierEditorSession(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, settings, site, notifications);
+        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, credentialStore, notifications, sSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
         var createdFromSession = sessionFactoryInSta.Create(directSession, settings, window);
         Assert(ReferenceEquals(createdFromSession.Session, directSession) && ReferenceEquals(createdFromSession.ViewModel.Session, directSession), "factory must support direct session injection into dialog in STA");
         Assert(createdFromSession.Session.ProviderId == site.ProviderId, "session in created dialog must match injected session data");
+
+        probeAdapter.Block = true;
+        createdFromSession.Show();
+        createdFromSession.ViewModel.ProbeCommand.Execute(null);
+        Assert(createdFromSession.ViewModel.IsProbing, "probe must be active before closing dialog");
+        createdFromSession.Close();
+        probeAdapter.Block = false;
+        WaitFor(() => !createdFromSession.ViewModel.IsProbing && !createdFromSession.IsVisible);
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert(!createdFromSession.IsVisible && createdFromSession.ViewModel.ProbeState == SupplierEditorProbeState.Canceled, "closing dialog during probe must cancel, await probe completion, and finish closing the window in STA");
 
         var trayHost = new FakeTrayHost();
         var trayExitRequested = false;
