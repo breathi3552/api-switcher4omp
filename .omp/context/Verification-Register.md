@@ -316,6 +316,15 @@
 - **App runner:** Session 契约测试覆盖初始 Idle 状态、探测成功更新倍率与排序候选、候选分组选择自动应用探测倍率、探测响应缺失当前分组时不抹除现有分组与倍率、手动取消探测并恢复 CanSave/CanProbe、探测超时与认证异常结构化映射为用户文案、并发 `CloseAsync` 自动取消并异步等待探测完成；STA 冒烟测试覆盖真实 ComboBox 焦点切换下保留当前分组、选择候选更新倍率、正在探测时关闭窗口触发 `CloseAsync` 并正常退出。
 - **Final verification and release:** `pwsh -Command "./eng/Verify.ps1 -Impact CrossLayer -AllRunners"` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh -Command "./eng/Publish.ps1"` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106225994` bytes）产物及 sidecar manifest hash。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+## Issue #25 站点访问凭据会话过渡与脱敏摘要证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-08-30` 完成。
+- **scope:** 在 `SupplierEditorSession` 中集中管理站点访问凭据（`SaveCredential`、`ClearCredential`、`UpdateCredentialStatus` 与 `CredentialSummary`）的保存、清除、二次确认与脱敏状态流转；`SiteEditorViewModel` 委托 Session 管理凭据状态并完成 clean cutover 移除过渡构造；WPF `SiteEditorDialog` 在 `finally` 块中立即清空 PasswordBox；严格保证 Token 与 Cookie 明文永不进入 Session 可观察属性、草稿状态、ViewModel、日志与异常。
+- **App runner:** Session 契约测试覆盖未配置初始状态提示、设置 ProviderId 自动刷新凭据摘要、非凭据站点类型隐藏凭据区域与空输入校验告警、安全保存凭据并生成脱敏摘要、会话可观察状态与摘要绝不留存明文凭据不变量、二次确认取消不执行清除、确认后清除凭据并恢复未配置状态、构造函数空值参数边界断言；STA 冒烟测试覆盖 PasswordBox 凭据输入与绑定更新、密码框立即清空与遮罩摘要显示、取消清除凭据保全现有摘要、确认清除凭据成功删除并重置占位符文本。
+- **Final verification and release:** `pwsh -NoProfile -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106226499` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** Standards 与 Spec 审查均 0 发现通过。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 
 ## Status update protocol
 

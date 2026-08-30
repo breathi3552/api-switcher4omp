@@ -9,6 +9,7 @@ public enum SupplierEditorProbeState { Idle, Probing, Succeeded, Canceled, Faile
 public sealed class SupplierEditorSession : ObservableObject
 {
     private readonly PricingProbeUseCase? _probe;
+    private readonly ISiteAccessCredentialStore? _credentials;
     private readonly int _requestTimeoutSeconds;
     private readonly IUserNotificationService? _notifications;
 
@@ -34,6 +35,7 @@ public sealed class SupplierEditorSession : ObservableObject
     public SupplierEditorSession(
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
+        ISiteAccessCredentialStore credentials,
         LocalAppSettings settings,
         SiteConfiguration? original = null,
         IUserNotificationService? notifications = null)
@@ -41,6 +43,24 @@ public sealed class SupplierEditorSession : ObservableObject
             probe ?? throw new ArgumentNullException(nameof(probe)),
             (registry ?? throw new ArgumentNullException(nameof(registry))).Descriptors,
             (settings ?? throw new ArgumentNullException(nameof(settings))).Model,
+            credentials ?? throw new ArgumentNullException(nameof(credentials)),
+            settings.RequestTimeoutSeconds,
+            original,
+            notifications)
+    {
+    }
+
+    public SupplierEditorSession(
+        PricingProbeUseCase probe,
+        IPricingAdapterRegistry registry,
+        LocalAppSettings settings,
+        SiteConfiguration? original = null,
+        IUserNotificationService? notifications = null)
+        : this(
+            probe ?? throw new ArgumentNullException(nameof(probe)),
+            (registry ?? throw new ArgumentNullException(nameof(registry))).Descriptors,
+            (settings ?? throw new ArgumentNullException(nameof(settings))).Model,
+            null,
             settings.RequestTimeoutSeconds,
             original,
             notifications)
@@ -51,7 +71,7 @@ public sealed class SupplierEditorSession : ObservableObject
         IReadOnlyList<PricingAdapterDescriptor> descriptors,
         string defaultModel,
         SiteConfiguration? original = null)
-        : this(null, descriptors, defaultModel, 10, original, null)
+        : this(null, descriptors, defaultModel, null, 10, original, null)
     {
     }
 
@@ -62,9 +82,22 @@ public sealed class SupplierEditorSession : ObservableObject
         int requestTimeoutSeconds = 10,
         SiteConfiguration? original = null,
         IUserNotificationService? notifications = null)
+        : this(probe, descriptors, defaultModel, null, requestTimeoutSeconds, original, notifications)
+    {
+    }
+
+    public SupplierEditorSession(
+        PricingProbeUseCase? probe,
+        IReadOnlyList<PricingAdapterDescriptor> descriptors,
+        string defaultModel,
+        ISiteAccessCredentialStore? credentials,
+        int requestTimeoutSeconds = 10,
+        SiteConfiguration? original = null,
+        IUserNotificationService? notifications = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(requestTimeoutSeconds);
         _probe = probe;
+        _credentials = credentials;
         _requestTimeoutSeconds = requestTimeoutSeconds;
         _notifications = notifications;
 
@@ -91,15 +124,16 @@ public sealed class SupplierEditorSession : ObservableObject
             GroupOptions.Add(_currentGroup);
         }
 
+        UpdateCredentialStatus();
+
         ProbeCommand = new AsyncCommand(() => ProbeAsync(), HandleError, () => CanProbe);
         CancelProbeCommand = new RelayCommand(CancelProbe, () => IsProbing);
     }
-
     public SiteConfiguration? Original { get; }
     public IReadOnlyList<PricingAdapterDescriptor> Descriptors { get; }
     public ObservableCollection<string> GroupOptions { get; } = [];
     public IReadOnlyDictionary<string, decimal>? ProbedGroupRatios => _probedGroupRatios;
-
+    public SiteCredentialSummary CredentialSummary { get; private set; } = new() { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured };
     public AsyncCommand ProbeCommand { get; }
     public RelayCommand CancelProbeCommand { get; }
 
@@ -137,6 +171,7 @@ public sealed class SupplierEditorSession : ObservableObject
             AuthenticationMode = value?.AuthenticationModes.Count > 0 ? value.AuthenticationModes[0] : null;
             OnPropertyChanged(nameof(AuthenticationModes));
             OnPropertyChanged(nameof(CredentialVisible));
+            UpdateCredentialStatus();
             NotifyDraftChanged();
         }
     }
@@ -161,10 +196,12 @@ public sealed class SupplierEditorSession : ObservableObject
         set
         {
             if (SetProperty(ref _providerId, value))
+            {
+                UpdateCredentialStatus();
                 NotifyDraftChanged();
+            }
         }
     }
-
     public string DisplayName
     {
         get => _displayName;
@@ -250,6 +287,56 @@ public sealed class SupplierEditorSession : ObservableObject
             if (SetProperty(ref _cnyConversionRate, value))
                 NotifyDraftChanged();
         }
+    }
+    public bool SaveCredential(string token, string cookie)
+    {
+        if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cookie))
+        {
+            _notifications?.ShowWarning("访问令牌和 Cookie 不能为空。", "校验失败");
+            return false;
+        }
+        if (_credentials is null) return false;
+
+        _credentials.SaveCredential(new SiteCredentialRecord
+        {
+            ProviderId = ProviderId.Trim(),
+            SiteType = Descriptor!.SiteType,
+            AuthorizationScheme = "Bearer",
+            AccessToken = token.Trim(),
+            CookieHeader = cookie.Trim()
+        });
+        UpdateCredentialStatus();
+        return true;
+    }
+
+    public bool ClearCredential()
+    {
+        if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || _credentials is null)
+            return false;
+        if (_notifications is not null && !_notifications.Confirm("确定清除本地凭据吗？", "清除凭据"))
+            return false;
+
+        _credentials.ClearCredential(ProviderId.Trim());
+        UpdateCredentialStatus();
+        return true;
+    }
+
+    public void UpdateCredentialStatus()
+    {
+        if (_credentials is null || string.IsNullOrWhiteSpace(ProviderId))
+        {
+            CredentialSummary = new SiteCredentialSummary
+            {
+                ProviderId = ProviderId ?? string.Empty,
+                Status = SiteCredentialStatus.NotConfigured,
+                StatusText = string.IsNullOrWhiteSpace(ProviderId) ? "请先填写 ProviderId。" : "未配置凭据"
+            };
+        }
+        else
+        {
+            CredentialSummary = _credentials.GetSummary(ProviderId.Trim());
+        }
+        OnPropertyChanged(nameof(CredentialSummary));
     }
 
     public void CancelProbe()

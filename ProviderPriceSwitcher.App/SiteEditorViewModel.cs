@@ -1,7 +1,5 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Globalization;
-using System.Windows.Input;
 using ProviderPriceSwitcher.Application;
 using ProviderPriceSwitcher.Core;
 
@@ -9,7 +7,6 @@ namespace ProviderPriceSwitcher.App;
 
 public sealed class SiteEditorViewModel : ObservableObject
 {
-    private readonly ISiteAccessCredentialStore _credentials;
     private readonly IInferenceApiKeyUseCase _inferenceKeyUseCase;
     private readonly IUserNotificationService _notifications;
     private readonly LocalAppSettings _settings;
@@ -17,24 +14,22 @@ public sealed class SiteEditorViewModel : ObservableObject
 
     public SiteEditorViewModel(
         SupplierEditorSession session,
-        ISiteAccessCredentialStore credentials,
         IUserNotificationService notifications,
         LocalAppSettings settings,
         IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
     {
         Session = session ?? throw new ArgumentNullException(nameof(session));
-        _credentials = credentials;
         _inferenceKeyUseCase = inferenceKeyUseCase ?? new NullInferenceApiKeyUseCase();
         _notifications = notifications;
         _settings = settings;
 
         Session.PropertyChanged += OnSessionPropertyChanged;
 
-        UpdateCredentialStatus();
         UpdateInferenceKeyStatus();
 
         SaveCommand = new RelayCommand(Save, () => CanSave);
     }
+
 
     public SiteEditorViewModel(
         PricingProbeUseCase probe,
@@ -44,9 +39,10 @@ public sealed class SiteEditorViewModel : ObservableObject
         LocalAppSettings settings,
         SiteConfiguration? original = null,
         IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
-        : this(new SupplierEditorSession(probe, registry, settings, original, notifications), credentials, notifications, settings, inferenceKeyUseCase)
+        : this(new SupplierEditorSession(probe, registry, credentials, settings, original, notifications), notifications, settings, inferenceKeyUseCase)
     {
     }
+
     public SupplierEditorSession Session { get; }
 
     public IReadOnlyList<PricingAdapterDescriptor> Descriptors => Session.Descriptors;
@@ -137,7 +133,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     public SiteConfiguration? SavedSite { get; private set; }
     public RelayCommand SaveCommand { get; }
     public event EventHandler? Saved;
-    public SiteCredentialSummary CredentialSummary { get; private set; } = new() { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured };
+    public SiteCredentialSummary CredentialSummary => Session.CredentialSummary;
     public InferenceApiKeySummary? InferenceKeySummary { get; private set; }
     public string InferenceKeyDisplayText => InferenceKeySummary?.MaskedKey ?? "未配置";
     public string KeyActionMessage { get => _lastKeyActionMessage ?? string.Empty; private set => SetProperty(ref _lastKeyActionMessage, value); }
@@ -174,39 +170,13 @@ public sealed class SiteEditorViewModel : ObservableObject
         OnPropertyChanged(nameof(InferenceKeyDisplayText));
     }
 
-    public bool SaveCredential(string token, string cookie)
-    {
-        if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cookie))
-        {
-            _notifications.ShowWarning("访问令牌和 Cookie 不能为空。", "校验失败");
-            return false;
-        }
-        _credentials.SaveCredential(new SiteCredentialRecord
-        {
-            ProviderId = ProviderId.Trim(),
-            SiteType = Descriptor!.SiteType,
-            AuthorizationScheme = "Bearer",
-            AccessToken = token.Trim(),
-            CookieHeader = cookie.Trim()
-        });
-        UpdateCredentialStatus();
-        return true;
-    }
+    public bool SaveCredential(string token, string cookie) => Session.SaveCredential(token, cookie);
 
-    public bool ClearCredential()
-    {
-        if (!CredentialVisible || string.IsNullOrWhiteSpace(ProviderId) || !_notifications.Confirm("确定清除本地凭据吗？", "清除凭据"))
-            return false;
-        _credentials.ClearCredential(ProviderId.Trim());
-        UpdateCredentialStatus();
-        return true;
-    }
+    public bool ClearCredential() => Session.ClearCredential();
 
     public void UpdateCredentialStatus()
     {
-        CredentialSummary = string.IsNullOrWhiteSpace(ProviderId)
-            ? new SiteCredentialSummary { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured, StatusText = "请先填写 ProviderId。" }
-            : _credentials.GetSummary(ProviderId.Trim());
+        Session.UpdateCredentialStatus();
         OnPropertyChanged(nameof(CredentialSummary));
     }
 
@@ -226,17 +196,20 @@ public sealed class SiteEditorViewModel : ObservableObject
         switch (e.PropertyName)
         {
             case nameof(SupplierEditorSession.ProviderId):
-                UpdateCredentialStatus();
                 UpdateInferenceKeyStatus();
                 OnPropertyChanged(nameof(ProviderId));
+                OnPropertyChanged(nameof(CredentialSummary));
                 RaiseCommands();
                 break;
             case nameof(SupplierEditorSession.Descriptor):
-                UpdateCredentialStatus();
                 OnPropertyChanged(nameof(Descriptor));
                 OnPropertyChanged(nameof(AuthenticationModes));
                 OnPropertyChanged(nameof(CredentialVisible));
+                OnPropertyChanged(nameof(CredentialSummary));
                 RaiseCommands();
+                break;
+            case nameof(SupplierEditorSession.CredentialSummary):
+                OnPropertyChanged(nameof(CredentialSummary));
                 break;
             case nameof(SupplierEditorSession.AuthenticationMode):
                 OnPropertyChanged(nameof(AuthenticationMode));

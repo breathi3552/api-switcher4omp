@@ -148,6 +148,67 @@ sessionChanges.Clear();
 newSession.Descriptor = newSession.Descriptors[2];
 Assert(newSession.AuthenticationMode == "匿名" && !newSession.CredentialVisible, "switching to non-credential descriptor must reset auth and hide credential");
 sessionChanges.Clear();
+var credNotifications = new FakeNotifications();
+var credStore = new FakeCredentialStore();
+var credSession = new SupplierEditorSession(testProbe, registry, credStore, testSettings, null, credNotifications);
+Assert(credSession.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured && credSession.CredentialSummary.StatusText == "请先填写 ProviderId。", "empty session without providerId must report not configured with prompt");
+
+var credPropChanges = new List<string>();
+credSession.PropertyChanged += (_, e) => { if (e.PropertyName is not null) credPropChanges.Add(e.PropertyName); };
+
+credSession.ProviderId = "synthetic-provider";
+Assert(credPropChanges.Contains(nameof(SupplierEditorSession.CredentialSummary)) && credSession.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.Available, "setting providerId must update credential summary and notify");
+credPropChanges.Clear();
+
+credSession.Descriptor = credSession.Descriptors[0];
+Assert(!credSession.CredentialVisible, "descriptor without credential requirement must hide credential area");
+Assert(!credSession.SaveCredential("tok", "cook") && credNotifications.WarningCalls == 1, "SaveCredential on non-credential descriptor must show warning and fail");
+Assert(!credSession.ClearCredential() && credStore.ClearCalls == 0, "ClearCredential on non-credential descriptor must fail without store call");
+
+credSession.Descriptor = credSession.Descriptors[1];
+Assert(credSession.CredentialVisible, "credential descriptor must show credential area");
+
+Assert(!credSession.SaveCredential("", "cookie") && credNotifications.WarningCalls == 2, "SaveCredential with empty token must fail");
+Assert(!credSession.SaveCredential("token", "") && credNotifications.WarningCalls == 3, "SaveCredential with empty cookie must fail");
+Assert(!credSession.SaveCredential("   ", "   ") && credNotifications.WarningCalls == 4, "SaveCredential with whitespace must fail");
+Assert(credStore.SaveCalls == 0, "failed SaveCredential calls must not touch credential store");
+
+credStore.ExpectedToken = "secret-access-token-998877";
+credStore.ExpectedCookie = "secret-cookie-header-112233";
+var credSaveSuccess = credSession.SaveCredential("  secret-access-token-998877  ", "  secret-cookie-header-112233  ");
+Assert(credSaveSuccess && credStore.SaveCalls == 1 && credStore.LastSaveMatchedExpectedInput, "SaveCredential must trim secrets and persist via store");
+Assert(credSession.CredentialSummary.AccessTokenSummary == "synt********n-ui" && credSession.CredentialSummary.CookieSummary == "cook********e-ui", "CredentialSummary must reflect store masked summaries");
+
+const string secretToken = "secret-access-token-998877";
+const string secretCookie = "secret-cookie-header-112233";
+Assert(!credSession.ProviderId.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.DisplayName.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.BaseUrl.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.Model.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.CurrentGroup.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.CurrentGroupRatio.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.ProbeMessage.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.CredentialSummary.AccessTokenSummary!.Contains(secretToken, StringComparison.Ordinal)
+    && !credSession.CredentialSummary.CookieSummary!.Contains(secretCookie, StringComparison.Ordinal),
+    "secret tokens and cookies must never be retained in session observable state or summaries");
+
+var credViewModel = new SiteEditorViewModel(credSession, credNotifications, testSettings);
+Assert(ReferenceEquals(credViewModel.Session, credSession), "view model session reference must match");
+Assert(credViewModel.CredentialSummary.AccessTokenSummary == credSession.CredentialSummary.AccessTokenSummary, "view model must project session credential summary");
+
+var vmChanges = new List<string>();
+credViewModel.PropertyChanged += (_, e) => { if (e.PropertyName is not null) vmChanges.Add(e.PropertyName); };
+
+credNotifications.ConfirmResult = false;
+var clearCanceled = credViewModel.ClearCredential();
+Assert(!clearCanceled && credStore.ClearCalls == 0 && credNotifications.ConfirmCalls == 1 && credNotifications.LastConfirmMessage == "确定清除本地凭据吗？", "cancelled clear confirmation must not clear credential store");
+
+credNotifications.ConfirmResult = true;
+var clearConfirmed = credViewModel.ClearCredential();
+Assert(clearConfirmed && credStore.ClearCalls == 1 && credStore.LastClearedProvider == "synthetic-provider" && credNotifications.ConfirmCalls == 2, "confirmed clear must call store and notify");
+Assert(credSession.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured && credViewModel.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured, "cleared credentials must update summary to NotConfigured on both session and viewmodel");
+Assert(vmChanges.Contains(nameof(SiteEditorViewModel.CredentialSummary)), "clearing credentials must notify viewmodel CredentialSummary change");
+
 
 newSession.Descriptor = newSession.Descriptors[0];
 newSession.ProviderId = "test-provider";
@@ -216,12 +277,12 @@ Assert(editSession.CanSave && editBuilt && updatedSite is not null, "edit sessio
 Assert(updatedSite!.Enabled == false, "edit session must preserve original site Enabled status");
 Assert(updatedSite.GroupRatioSource == "手动", "edited site must mark GroupRatioSource as manual");
 
-var sessionViewModel = new SiteEditorViewModel(editSession, testCredentials, testNotifications, testSettings);
+var sessionViewModel = new SiteEditorViewModel(editSession, testNotifications, testSettings);
 Assert(ReferenceEquals(sessionViewModel.Session, editSession), "view model must expose underlying session");
 Assert(sessionViewModel.ProviderId == "existing-provider" && sessionViewModel.CanSave, "view model must project session properties");
 editSession.ProviderId = "changed-provider";
 Assert(sessionViewModel.ProviderId == "changed-provider", "changes in session must reflect in view model");
-var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testCredentials, testNotifications, sSettings), testProbe, registry, testNotifications);
+var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testNotifications, sSettings), testProbe, registry, testCredentials, testNotifications);
 Assert(sessionFactory is not null, "session factory must instantiate successfully");
 
 var probeTestAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
@@ -332,6 +393,11 @@ var nullSettingsThrown = false;
 try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry, null!); }
 catch (ArgumentNullException) { nullSettingsThrown = true; }
 Assert(nullSettingsThrown, "null settings must throw ArgumentNullException at boundary");
+var nullCredentialsThrown = false;
+try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry, null!, testSettings); }
+catch (ArgumentNullException) { nullCredentialsThrown = true; }
+Assert(nullCredentialsThrown, "null credentials in constructor must throw ArgumentNullException at boundary");
+
 probeTestAdapter.Block = true;
 var closeProbeTask = probeSession.ProbeAsync();
 Assert(probeSession.IsProbing, "probe must be active before CloseAsync");
@@ -920,7 +986,7 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
-        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, credentialStore, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
+        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
             settingsRepository,
@@ -1040,7 +1106,7 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, credentialStore, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
+        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
         var cascadeKeys = new CascadeInferenceKeyStore();
         var cascadeSettings = settings with { ActiveProviderId = site.ProviderId };
         settingsRepository.Save(cascadeSettings);
@@ -1108,6 +1174,17 @@ var windowThread = new Thread(() =>
         editorVm.UpdateCredentialStatus();
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         Assert(tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0 && tokenPlaceholder.Text == "********" && cookiePlaceholder.Text == "********", "short credential summaries must use the fixed mask in both empty overlays");
+        var clearCredentialButton = Descendants(dialog).OfType<System.Windows.Controls.Button>().Single(button => Equals(button.Content, "清除站点凭据"));
+        var clearCallsBeforeCancel = credentialStore.ClearCalls;
+        notifications.ConfirmResult = false;
+        clearCredentialButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(credentialStore.ClearCalls == clearCallsBeforeCancel && tokenPlaceholder.Text == "********", "cancelling clear credential confirmation in dialog must not clear credentials");
+        notifications.ConfirmResult = true;
+        clearCredentialButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert(credentialStore.ClearCalls == clearCallsBeforeCancel + 1 && tokenPlaceholder.Text == "未配置" && cookiePlaceholder.Text == "未配置" && tokenBox.Password.Length == 0 && cookieBox.Password.Length == 0,
+            "confirmed clear credential in dialog must delete credentials, clear password boxes, and reset placeholders");
+
         probeAdapter.Block = true;
         editorVm.ProbeCommand.Execute(null);
         Assert(editorVm.IsProbing && !editorVm.ProbeCommand.CanExecute(null) && !editorVm.SaveCommand.CanExecute(null) && editorVm.CancelProbeCommand.CanExecute(null), "probe must become busy and prevent reentry while enabling cancel");
@@ -1179,7 +1256,7 @@ var windowThread = new Thread(() =>
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
         var directSession = new SupplierEditorSession(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, settings, site, notifications);
-        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, credentialStore, notifications, sSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, notifications);
+        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, notifications, sSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
         var createdFromSession = sessionFactoryInSta.Create(directSession, settings, window);
         Assert(ReferenceEquals(createdFromSession.Session, directSession) && ReferenceEquals(createdFromSession.ViewModel.Session, directSession), "factory must support direct session injection into dialog in STA");
         Assert(createdFromSession.Session.ProviderId == site.ProviderId, "session in created dialog must match injected session data");
@@ -1460,6 +1537,7 @@ sealed class FakeNotifications : IUserNotificationService
 
 sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredentialStore
 {
+    private bool _hasCredential = true;
     public int LoadCalls { get; private set; }
     public int SaveCalls { get; private set; }
     public int ClearCalls { get; private set; }
@@ -1480,6 +1558,7 @@ sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredent
     public void SaveCredential(ProviderPriceSwitcher.Core.SiteCredentialRecord credential)
     {
         SaveCalls++;
+        _hasCredential = true;
         LastSaveMatchedExpectedInput = credential.ProviderId == "synthetic-provider"
             && credential.SiteType == "two"
             && credential.AccessToken == ExpectedToken
@@ -1489,6 +1568,7 @@ sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredent
     public void ClearCredential(string providerId)
     {
         ClearCalls++;
+        _hasCredential = false;
         LastClearedProvider = providerId;
     }
 
@@ -1498,10 +1578,10 @@ sealed class FakeCredentialStore : ProviderPriceSwitcher.Core.ISiteAccessCredent
         return new ProviderPriceSwitcher.Core.SiteCredentialSummary
         {
             ProviderId = providerId,
-            Status = ClearCalls == 0 ? ProviderPriceSwitcher.Core.SiteCredentialStatus.Available : ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured,
-            StatusText = ClearCalls == 0 ? "已配置" : "未配置",
-            AccessTokenSummary = SaveCalls > 0 ? AccessTokenSummaryOverride ?? "synt********n-ui" : null,
-            CookieSummary = SaveCalls > 0 ? CookieSummaryOverride ?? "cook********e-ui" : null,
+            Status = _hasCredential ? ProviderPriceSwitcher.Core.SiteCredentialStatus.Available : ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured,
+            StatusText = _hasCredential ? "已配置" : "未配置",
+            AccessTokenSummary = _hasCredential && SaveCalls > 0 ? AccessTokenSummaryOverride ?? "synt********n-ui" : null,
+            CookieSummary = _hasCredential && SaveCalls > 0 ? CookieSummaryOverride ?? "cook********e-ui" : null,
             UpdatedAt = DateTimeOffset.UtcNow
         };
     }

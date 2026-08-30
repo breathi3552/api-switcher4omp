@@ -115,7 +115,7 @@ public partial class App : System.Windows.Application
                 new OmpProcessLauncher(new OmpProcessService(), new AppPathDefaults()),
                 _loggerFactory.CreateLogger<OmpLaunchUseCase>());
             var ompReplacement = new OmpConfigurationReplacementUseCase(ompConfiguration);
-            var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, credentialStore, _notifications, localSettings, inferenceKeyUseCase), new PricingProbeUseCase(adapterRegistry), adapterRegistry, _notifications);
+            var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, _notifications, localSettings, inferenceKeyUseCase), new PricingProbeUseCase(adapterRegistry), adapterRegistry, credentialStore, _notifications);
             var sitesFactory = new SitesDialogFactory((localSettings, currentProvider) => new SitesDialog(localSettings, siteManagement, snapshotQuery, editorFactory, currentProvider, _notifications));
             var settingsFactory = new SettingsDialogFactory(localSettings => new SettingsDialog(localSettings));
             _workflow = new HomepageWorkflow(

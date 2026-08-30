@@ -90,6 +90,7 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
     private readonly Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> _create;
     private readonly PricingProbeUseCase _probe;
     private readonly IPricingAdapterRegistry _registry;
+    private readonly ISiteAccessCredentialStore? _credentials;
     private readonly IUserNotificationService _notifications;
 
     public SiteEditorDialogFactory(
@@ -97,20 +98,30 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
         IUserNotificationService notifications)
+        : this(create, probe, registry, null, notifications)
+    {
+    }
+
+    public SiteEditorDialogFactory(
+        Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> create,
+        PricingProbeUseCase probe,
+        IPricingAdapterRegistry registry,
+        ISiteAccessCredentialStore? credentials,
+        IUserNotificationService notifications)
     {
         _create = create ?? throw new ArgumentNullException(nameof(create));
         _probe = probe ?? throw new ArgumentNullException(nameof(probe));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
+        _credentials = credentials;
         _notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
     }
 
     public SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, settings.RequestTimeoutSeconds, original, _notifications);
+        var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, _credentials, settings.RequestTimeoutSeconds, original, _notifications);
         return Create(session, settings, owner);
     }
-
     public SiteEditorDialog Create(SupplierEditorSession session, LocalAppSettings settings, Window owner)
     {
         ArgumentNullException.ThrowIfNull(session);
