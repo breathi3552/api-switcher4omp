@@ -209,6 +209,185 @@ Assert(clearConfirmed && credStore.ClearCalls == 1 && credStore.LastClearedProvi
 Assert(credSession.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured && credViewModel.CredentialSummary.Status == ProviderPriceSwitcher.Core.SiteCredentialStatus.NotConfigured, "cleared credentials must update summary to NotConfigured on both session and viewmodel");
 Assert(vmChanges.Contains(nameof(SiteEditorViewModel.CredentialSummary)), "clearing credentials must notify viewmodel CredentialSummary change");
 
+var keyNotifications = new FakeNotifications();
+var keyUseCase = new FakeInferenceApiKeyUseCase();
+var keySession = new SupplierEditorSession(
+    testProbe,
+    registry,
+    testCredentials,
+    keyUseCase,
+    testSettings,
+    null,
+    keyNotifications);
+
+Assert(keySession.InferenceKeySummary is null && keySession.InferenceKeyDisplayText == "未配置",
+    "new session without ProviderId must have null InferenceKeySummary and '未配置' displayText");
+
+var keyPropChanges = new List<string>();
+keySession.PropertyChanged += (_, e) => { if (e.PropertyName is not null) keyPropChanges.Add(e.PropertyName); };
+
+var preconfiguredSummary = new ProviderPriceSwitcher.Core.InferenceApiKeySummary
+{
+    ProviderId = "test-key-provider",
+    KeyHandle = "initial-handle",
+    BoundGroup = "default-group",
+    MaskedKey = "sk-***1234",
+    UpdatedAt = DateTimeOffset.UtcNow
+};
+keyUseCase.Summary = preconfiguredSummary;
+keySession.ProviderId = "test-key-provider";
+Assert(keyPropChanges.Contains(nameof(SupplierEditorSession.InferenceKeySummary))
+    && keyPropChanges.Contains(nameof(SupplierEditorSession.InferenceKeyDisplayText)),
+    "setting ProviderId must notify InferenceKeySummary and InferenceKeyDisplayText");
+Assert(keySession.InferenceKeySummary?.MaskedKey == "sk-***1234"
+    && keySession.InferenceKeyDisplayText == "sk-***1234",
+    "setting ProviderId must update InferenceKeySummary and displayText from usecase");
+keyPropChanges.Clear();
+
+keyUseCase.Summary = null;
+keySession.ProviderId = "other-key-provider";
+Assert(keySession.InferenceKeySummary is null && keySession.InferenceKeyDisplayText == "未配置",
+    "switching ProviderId to one without key must reset summary to null and displayText to '未配置'");
+keyPropChanges.Clear();
+
+keySession.ProviderId = "test-key-provider";
+keySession.CurrentGroup = "";
+
+var saveNoGroup = keySession.SaveInferenceKey("sk-new-secret-5678");
+Assert(!saveNoGroup && keyUseCase.SaveCalls == 0 && keySession.KeyActionMessage == "请先填写当前分组和 API key。",
+    "SaveInferenceKey without CurrentGroup must fail and set message");
+
+keySession.ProviderId = "";
+keySession.CurrentGroup = "prod-group";
+var saveNoProvider = keySession.SaveInferenceKey("sk-new-secret-5678");
+Assert(!saveNoProvider && keyUseCase.SaveCalls == 0 && keySession.KeyActionMessage == "请先填写当前分组和 API key。",
+    "SaveInferenceKey without ProviderId must fail and set message");
+
+keySession.ProviderId = "test-key-provider";
+keySession.CurrentGroup = "prod-group";
+keyUseCase.Summary = preconfiguredSummary;
+keySession.UpdateInferenceKeyStatus();
+var saveEmpty = keySession.SaveInferenceKey("");
+var saveWhitespace = keySession.SaveInferenceKey("   ");
+Assert(!saveEmpty && !saveWhitespace && keyUseCase.SaveCalls == 0
+    && keySession.InferenceKeySummary?.MaskedKey == "sk-***1234"
+    && keySession.KeyActionMessage == "已保留现有 API key。",
+    "SaveInferenceKey with empty or whitespace input must preserve existing key and set preservation message");
+
+const string secretToSave = "sk-test-secret-99881122";
+var saveResult = keySession.SaveInferenceKey("  " + secretToSave + "  ");
+Assert(saveResult && keyUseCase.SaveCalls == 1
+    && keyUseCase.LastSavedProviderId == "test-key-provider"
+    && keyUseCase.LastSavedBoundGroup == "prod-group"
+    && keyUseCase.LastSavedApiKey == secretToSave
+    && keySession.InferenceKeySummary?.MaskedKey == "sk-t…1122"
+    && keySession.InferenceKeyDisplayText == "sk-t…1122"
+    && keySession.KeyActionMessage == "API key 已更新并安全保存。",
+    "SaveInferenceKey must trim inputs, invoke usecase with current group, update masked summary and display text");
+
+Assert(!keySession.ProviderId.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.DisplayName.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.BaseUrl.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.Model.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.CurrentGroup.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.CurrentGroupRatio.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.ProbeMessage.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.KeyActionMessage.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.InferenceKeyDisplayText.Contains(secretToSave, StringComparison.Ordinal)
+    && !keySession.InferenceKeySummary!.MaskedKey.Contains(secretToSave, StringComparison.Ordinal),
+    "secret API key material must never be retained in session observable properties or summaries");
+
+var keyViewModel = new SiteEditorViewModel(keySession, keyNotifications, testSettings);
+Assert(ReferenceEquals(keyViewModel.Session, keySession), "view model session reference must match");
+Assert(keyViewModel.InferenceKeyDisplayText == "sk-t…1122" && keyViewModel.InferenceKeySummary?.MaskedKey == "sk-t…1122",
+    "view model must project session InferenceKeyDisplayText and InferenceKeySummary");
+Assert(keyViewModel.KeyActionMessage == "API key 已更新并安全保存。", "view model must project session KeyActionMessage");
+
+keyNotifications.ConfirmResult = false;
+var deleteCanceled = await keySession.DeleteInferenceKeyAsync();
+Assert(!deleteCanceled && keyUseCase.DeleteCalls == 0
+    && keyNotifications.ConfirmCalls == 1 && keyNotifications.LastConfirmMessage == "确定删除当前供应商的模型推理 API key 吗？"
+    && keySession.InferenceKeySummary?.MaskedKey == "sk-t…1122",
+    "cancelled delete confirmation must not invoke usecase delete and must preserve existing key");
+
+keyNotifications.ConfirmResult = true;
+var deleteGate = new TaskCompletionSource();
+keyUseCase.DeleteGate = deleteGate;
+var inFlightDeleteTask = keySession.DeleteInferenceKeyAsync();
+Assert(keySession.IsDeletingInferenceKey, "session must report IsDeletingInferenceKey while delete is in progress");
+var reentrantDeleteResult = await keySession.DeleteInferenceKeyAsync();
+Assert(!reentrantDeleteResult && keyUseCase.DeleteCalls == 1,
+    "concurrent DeleteInferenceKeyAsync call must be rejected to prevent re-entrancy");
+deleteGate.SetResult();
+var deleteConfirmed = await inFlightDeleteTask;
+Assert(deleteConfirmed && keyUseCase.DeleteCalls == 1 && !keySession.IsDeletingInferenceKey
+    && keySession.InferenceKeySummary is null && keySession.InferenceKeyDisplayText == "未配置"
+    && keySession.KeyActionMessage == "API key 已删除。",
+    "confirmed delete must complete, reset IsDeletingInferenceKey, clear summary and set deleted message");
+keyUseCase.DeleteGate = null;
+
+keyUseCase.Summary = preconfiguredSummary;
+keySession.UpdateInferenceKeyStatus();
+keyUseCase.ThrowOnDelete = true;
+var deleteFailed = false;
+try { await keySession.DeleteInferenceKeyAsync(); }
+catch (InvalidOperationException) { deleteFailed = true; }
+Assert(deleteFailed && !keySession.IsDeletingInferenceKey && keySession.KeyActionMessage == "API key 删除失败，请重试。",
+    "failing delete must restore IsDeletingInferenceKey, set failure message and rethrow exception");
+keyUseCase.ThrowOnDelete = false;
+
+var cascadeKeyStore = new InMemoryInferenceApiKeyStore();
+cascadeKeyStore.Save(new ProviderPriceSwitcher.Core.InferenceApiKeyRecord
+{
+    ProviderId = "cascade-provider",
+    KeyHandle = "cascade-handle",
+    ApiKey = "sk-cascade-key-12345678",
+    BoundGroup = "cascade-group"
+});
+var cascadeSettingsDir = Path.Combine(Path.GetTempPath(), $"CascadeTest-{Guid.NewGuid():N}");
+Directory.CreateDirectory(cascadeSettingsDir);
+try
+{
+    var cascadeSettingsRepo = new ProviderPriceSwitcher.Infrastructure.JsonSettingsRepository(cascadeSettingsDir);
+    var cascadeActiveSettings = testSettings with { ActiveProviderId = "cascade-provider" };
+    cascadeSettingsRepo.Save(cascadeActiveSettings);
+    var cascadeActiveRoute = new ProviderPriceSwitcher.Application.ActiveRouteState();
+    cascadeActiveRoute.Apply(new ProviderPriceSwitcher.Core.RouteSnapshot("cascade-provider", "https://cascade.example/v1/", "cascade-handle"));
+    var cascadeRouteController = new FakeRouteController();
+    var cascadeResolver = new ProviderPriceSwitcher.Application.InferenceApiKeyResolverBridge(cascadeKeyStore);
+    var cascadeUseCase = new ProviderPriceSwitcher.Application.InferenceApiKeyUseCase(
+        cascadeKeyStore,
+        new FakeInferenceBindingStore(),
+        cascadeActiveRoute,
+        cascadeRouteController,
+        cascadeResolver,
+        cascadeSettingsRepo);
+
+    var cascadeSession = new SupplierEditorSession(
+        testProbe,
+        registry,
+        testCredentials,
+        cascadeUseCase,
+        cascadeActiveSettings,
+        null,
+        keyNotifications);
+    cascadeSession.ProviderId = "cascade-provider";
+    cascadeSession.CurrentGroup = "cascade-group";
+    Assert(cascadeSession.InferenceKeySummary is not null, "cascade session must load initial summary from store");
+
+    keyNotifications.ConfirmResult = true;
+    var cascadeDeleteResult = await cascadeSession.DeleteInferenceKeyAsync();
+    Assert(cascadeDeleteResult, "DeleteInferenceKeyAsync on active provider must succeed");
+    Assert(cascadeRouteController.ClearCount == 1, "deleting active provider's inference key must clear sidecar route");
+    Assert(cascadeActiveRoute.CurrentProviderId is null, "deleting active provider's inference key must clear active route state");
+    Assert(cascadeSettingsRepo.Load().ActiveProviderId is null, "deleting active provider's inference key must clear ActiveProviderId in persisted settings");
+    Assert(cascadeKeyStore.ClearCalls == 1 && cascadeKeyStore.Load("cascade-provider") is null, "inference key must be cleared from store");
+    Assert(cascadeSession.InferenceKeySummary is null && cascadeSession.InferenceKeyDisplayText == "未配置", "cascade session must reflect cleared key");
+}
+finally
+{
+    if (Directory.Exists(cascadeSettingsDir)) Directory.Delete(cascadeSettingsDir, true);
+}
 
 newSession.Descriptor = newSession.Descriptors[0];
 newSession.ProviderId = "test-provider";
@@ -282,7 +461,8 @@ Assert(ReferenceEquals(sessionViewModel.Session, editSession), "view model must 
 Assert(sessionViewModel.ProviderId == "existing-provider" && sessionViewModel.CanSave, "view model must project session properties");
 editSession.ProviderId = "changed-provider";
 Assert(sessionViewModel.ProviderId == "changed-provider", "changes in session must reflect in view model");
-var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testNotifications, sSettings), testProbe, registry, testCredentials, testNotifications);
+var testInferenceKeys = new FakeInferenceApiKeyUseCase();
+var sessionFactory = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testNotifications, sSettings), testProbe, registry, testCredentials, testNotifications, testInferenceKeys);
 Assert(sessionFactory is not null, "session factory must instantiate successfully");
 
 var probeTestAdapter = new FakeAdapter(new("two", "Two", true, ["令牌", "账户"]));
@@ -397,6 +577,15 @@ var nullCredentialsThrown = false;
 try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry, null!, testSettings); }
 catch (ArgumentNullException) { nullCredentialsThrown = true; }
 Assert(nullCredentialsThrown, "null credentials in constructor must throw ArgumentNullException at boundary");
+var nullInferenceKeysThrown = false;
+try { _ = new SupplierEditorSession(probeUseCase, probeTestRegistry, testCredentials, null!, testSettings); }
+catch (ArgumentNullException) { nullInferenceKeysThrown = true; }
+Assert(nullInferenceKeysThrown, "null inference key use case in constructor must throw ArgumentNullException at boundary");
+
+var nullFactoryInferenceKeysThrown = false;
+try { _ = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, testNotifications, sSettings), probeUseCase, probeTestRegistry, testCredentials, testNotifications, null!); }
+catch (ArgumentNullException) { nullFactoryInferenceKeysThrown = true; }
+Assert(nullFactoryInferenceKeysThrown, "null inference key use case in factory constructor must throw ArgumentNullException at boundary");
 
 probeTestAdapter.Block = true;
 var closeProbeTask = probeSession.ProbeAsync();
@@ -986,7 +1175,7 @@ var windowThread = new Thread(() =>
         var pricingCheck = new ProviderPriceSwitcher.Application.PricingCheckUseCase(refresh, settingsRepository, snapshots);
         var settingsUseCase = new ProviderPriceSwitcher.Application.SettingsUseCase(settingsRepository);
         var fakeInferenceKeys = new FakeInferenceApiKeyUseCase();
-        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
+        var editorFactory = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, fakeInferenceKeys);
         var fakeOmpLauncher = new FakeOmpLauncher();
         var ompLaunch = new ProviderPriceSwitcher.Application.OmpLaunchUseCase(
             settingsRepository,
@@ -1106,7 +1295,7 @@ var windowThread = new Thread(() =>
         Assert(launcher.Calls == 1, "minimum group row must not launch");
         navigationWindow.Close();
 
-        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings, fakeInferenceKeys), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
+        var editorFactoryForDialog = new SiteEditorDialogFactory((session, localSettings) => new SiteEditorViewModel(session, notifications, localSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, fakeInferenceKeys);
         var cascadeKeys = new CascadeInferenceKeyStore();
         var cascadeSettings = settings with { ActiveProviderId = site.ProviderId };
         settingsRepository.Save(cascadeSettings);
@@ -1245,10 +1434,17 @@ var windowThread = new Thread(() =>
         deleteInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         Assert(fakeInferenceKeys.DeleteCalls == 0 && fakeInferenceKeys.Summary?.MaskedKey == "new-…cret", "cancelled inference key deletion must preserve the existing key");
         notifications.ConfirmResult = true;
+        fakeInferenceKeys.DeleteGate = new TaskCompletionSource();
         deleteInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        WaitFor(() => fakeInferenceKeys.DeleteCalls == 1);
+        Assert(!deleteInferenceButton.IsEnabled && dialog.Session.IsDeletingInferenceKey, "delete button must be disabled and session must be in deleting state while delete is in-flight");
+        deleteInferenceButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert(fakeInferenceKeys.DeleteCalls == 1, "re-entrant click on disabled delete button must not trigger duplicate delete calls");
+        fakeInferenceKeys.DeleteGate.SetResult();
+        fakeInferenceKeys.DeleteGate = null;
+        WaitFor(() => fakeInferenceKeys.DeleteCalls == 1 && !dialog.Session.IsDeletingInferenceKey && deleteInferenceButton.IsEnabled);
         System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-        Assert(fakeInferenceKeys.Summary is null && inferencePlaceholder.Text == "未配置", $"confirmed inference key deletion must clear the saved key and summary; summary='{fakeInferenceKeys.Summary?.MaskedKey}', placeholder='{inferencePlaceholder.Text}', deletes={fakeInferenceKeys.DeleteCalls}");
+        Assert(fakeInferenceKeys.Summary is null && inferencePlaceholder.Text == "未配置" && dialog.Session.KeyActionMessage == "API key 已删除。",
+            $"confirmed inference key deletion must clear the saved key and summary; summary='{fakeInferenceKeys.Summary?.MaskedKey}', placeholder='{inferencePlaceholder.Text}', deletes={fakeInferenceKeys.DeleteCalls}");
         dialog.Close();
 
         var saveDialog = editorFactoryForDialog.Create(site, settings, window);
@@ -1256,7 +1452,7 @@ var windowThread = new Thread(() =>
         saveDialog.Dispatcher.BeginInvoke(() => saveViewModel.SaveCommand.Execute(null));
         Assert(saveDialog.ShowDialog() == true && saveViewModel.SavedSite?.ProviderId == "synthetic-provider", "save command must close the modal dialog successfully and expose SavedSite");
         var directSession = new SupplierEditorSession(new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, settings, site, notifications);
-        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, notifications, sSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications);
+        var sessionFactoryInSta = new SiteEditorDialogFactory((s, sSettings) => new SiteEditorViewModel(s, notifications, sSettings), new ProviderPriceSwitcher.Application.PricingProbeUseCase(registry), registry, credentialStore, notifications, fakeInferenceKeys);
         var createdFromSession = sessionFactoryInSta.Create(directSession, settings, window);
         Assert(ReferenceEquals(createdFromSession.Session, directSession) && ReferenceEquals(createdFromSession.ViewModel.Session, directSession), "factory must support direct session injection into dialog in STA");
         Assert(createdFromSession.Session.ProviderId == site.ProviderId, "session in created dialog must match injected session data");
@@ -1426,33 +1622,70 @@ sealed class InMemoryInferenceApiKeyStore : ProviderPriceSwitcher.Core.IInferenc
     public ProviderPriceSwitcher.Core.InferenceApiKeyRecord? Load(string providerId) => _keys.GetValueOrDefault(providerId);
     public void Save(ProviderPriceSwitcher.Core.InferenceApiKeyRecord record) => _keys[record.ProviderId] = record;
     public void Clear(string providerId) { _keys.Remove(providerId); ClearCalls++; }
-    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => null;
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) =>
+        _keys.TryGetValue(providerId, out var record)
+            ? new ProviderPriceSwitcher.Core.InferenceApiKeySummary
+            {
+                ProviderId = record.ProviderId,
+                KeyHandle = record.KeyHandle,
+                BoundGroup = record.BoundGroup,
+                MaskedKey = ProviderPriceSwitcher.Core.InferenceApiKeySummary.Mask(record.ApiKey),
+                UpdatedAt = record.UpdatedAt
+            }
+            : null;
+}
+
+sealed class FakeInferenceBindingStore : ProviderPriceSwitcher.Application.IInferenceBindingStore
+{
+    public void Recover() { }
+    public ProviderPriceSwitcher.Core.InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup) =>
+        new()
+        {
+            ProviderId = providerId,
+            KeyHandle = "synthetic-handle",
+            BoundGroup = boundGroup,
+            MaskedKey = ProviderPriceSwitcher.Core.InferenceApiKeySummary.Mask(apiKey),
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
 }
 
 sealed class FakeInferenceApiKeyUseCase : ProviderPriceSwitcher.Application.IInferenceApiKeyUseCase
 {
     public int SaveCalls { get; private set; }
     public int DeleteCalls { get; private set; }
+    public string? LastSavedProviderId { get; private set; }
+    public string? LastSavedApiKey { get; private set; }
+    public string? LastSavedBoundGroup { get; private set; }
+    public string? LastDeletedProviderId { get; private set; }
+    public TaskCompletionSource? DeleteGate { get; set; }
+    public bool ThrowOnDelete { get; set; }
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary? Summary { get; set; }
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary? GetSummary(string providerId) => Summary;
     public ProviderPriceSwitcher.Core.InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup)
     {
         SaveCalls++;
+        LastSavedProviderId = providerId;
+        LastSavedApiKey = apiKey;
+        LastSavedBoundGroup = boundGroup;
         Summary = new ProviderPriceSwitcher.Core.InferenceApiKeySummary
         {
             ProviderId = providerId,
             KeyHandle = "synthetic-handle",
             BoundGroup = boundGroup,
-            MaskedKey = "new-…cret",
+            MaskedKey = ProviderPriceSwitcher.Core.InferenceApiKeySummary.Mask(apiKey),
             UpdatedAt = DateTimeOffset.UtcNow
         };
         return Summary;
     }
-    public Task DeleteAsync(string providerId, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(string providerId, CancellationToken cancellationToken = default)
     {
         DeleteCalls++;
+        LastDeletedProviderId = providerId;
+        if (DeleteGate is not null)
+            await DeleteGate.Task.WaitAsync(cancellationToken);
+        if (ThrowOnDelete)
+            throw new InvalidOperationException("Simulated delete failure");
         Summary = null;
-        return Task.CompletedTask;
     }
 }
 sealed class FakeRouteController : ProviderPriceSwitcher.Application.IRouteController

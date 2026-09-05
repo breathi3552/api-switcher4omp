@@ -7,29 +7,22 @@ namespace ProviderPriceSwitcher.App;
 
 public sealed class SiteEditorViewModel : ObservableObject
 {
-    private readonly IInferenceApiKeyUseCase _inferenceKeyUseCase;
     private readonly IUserNotificationService _notifications;
     private readonly LocalAppSettings _settings;
-    private string? _lastKeyActionMessage;
 
     public SiteEditorViewModel(
         SupplierEditorSession session,
         IUserNotificationService notifications,
-        LocalAppSettings settings,
-        IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
+        LocalAppSettings settings)
     {
         Session = session ?? throw new ArgumentNullException(nameof(session));
-        _inferenceKeyUseCase = inferenceKeyUseCase ?? new NullInferenceApiKeyUseCase();
         _notifications = notifications;
         _settings = settings;
 
         Session.PropertyChanged += OnSessionPropertyChanged;
 
-        UpdateInferenceKeyStatus();
-
         SaveCommand = new RelayCommand(Save, () => CanSave);
     }
-
 
     public SiteEditorViewModel(
         PricingProbeUseCase probe,
@@ -37,9 +30,8 @@ public sealed class SiteEditorViewModel : ObservableObject
         ISiteAccessCredentialStore credentials,
         IUserNotificationService notifications,
         LocalAppSettings settings,
-        SiteConfiguration? original = null,
-        IInferenceApiKeyUseCase? inferenceKeyUseCase = null)
-        : this(new SupplierEditorSession(probe, registry, credentials, settings, original, notifications), notifications, settings, inferenceKeyUseCase)
+        SiteConfiguration? original = null)
+        : this(new SupplierEditorSession(probe, registry, credentials, settings, original, notifications), notifications, settings)
     {
     }
 
@@ -134,41 +126,15 @@ public sealed class SiteEditorViewModel : ObservableObject
     public RelayCommand SaveCommand { get; }
     public event EventHandler? Saved;
     public SiteCredentialSummary CredentialSummary => Session.CredentialSummary;
-    public InferenceApiKeySummary? InferenceKeySummary { get; private set; }
-    public string InferenceKeyDisplayText => InferenceKeySummary?.MaskedKey ?? "未配置";
-    public string KeyActionMessage { get => _lastKeyActionMessage ?? string.Empty; private set => SetProperty(ref _lastKeyActionMessage, value); }
+    public InferenceApiKeySummary? InferenceKeySummary => Session.InferenceKeySummary;
+    public string InferenceKeyDisplayText => Session.InferenceKeyDisplayText;
+    public string KeyActionMessage => Session.KeyActionMessage;
+    public bool IsDeletingInferenceKey => Session.IsDeletingInferenceKey;
 
-    public bool SaveInferenceKey(string apiKey)
-    {
-        if (string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(CurrentGroup))
-        {
-            KeyActionMessage = "请先填写当前分组和 API key。";
-            return false;
-        }
-        _inferenceKeyUseCase.Save(ProviderId, apiKey, CurrentGroup);
-        UpdateInferenceKeyStatus();
-        KeyActionMessage = "API key 已更新并安全保存。";
-        return true;
-    }
-
-    public void ReportInferenceKeyDeleteFailure() => KeyActionMessage = "API key 删除失败，请重试。";
-
-    public async Task<bool> DeleteInferenceKeyAsync(CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(ProviderId)) return false;
-        if (!_notifications.Confirm("确定删除当前供应商的模型推理 API key 吗？", "删除 API key")) return false;
-        await _inferenceKeyUseCase.DeleteAsync(ProviderId, cancellationToken);
-        UpdateInferenceKeyStatus();
-        KeyActionMessage = "API key 已删除。";
-        return true;
-    }
-
-    public void UpdateInferenceKeyStatus()
-    {
-        InferenceKeySummary = string.IsNullOrWhiteSpace(ProviderId) ? null : _inferenceKeyUseCase.GetSummary(ProviderId);
-        OnPropertyChanged(nameof(InferenceKeySummary));
-        OnPropertyChanged(nameof(InferenceKeyDisplayText));
-    }
+    public bool SaveInferenceKey(string apiKey) => Session.SaveInferenceKey(apiKey);
+    public void ReportInferenceKeyDeleteFailure() => Session.ReportInferenceKeyDeleteFailure();
+    public Task<bool> DeleteInferenceKeyAsync(CancellationToken cancellationToken = default) => Session.DeleteInferenceKeyAsync(cancellationToken);
+    public void UpdateInferenceKeyStatus() => Session.UpdateInferenceKeyStatus();
 
     public bool SaveCredential(string token, string cookie) => Session.SaveCredential(token, cookie);
 
@@ -196,10 +162,24 @@ public sealed class SiteEditorViewModel : ObservableObject
         switch (e.PropertyName)
         {
             case nameof(SupplierEditorSession.ProviderId):
-                UpdateInferenceKeyStatus();
                 OnPropertyChanged(nameof(ProviderId));
                 OnPropertyChanged(nameof(CredentialSummary));
+                OnPropertyChanged(nameof(InferenceKeySummary));
+                OnPropertyChanged(nameof(InferenceKeyDisplayText));
                 RaiseCommands();
+                break;
+            case nameof(SupplierEditorSession.InferenceKeySummary):
+                OnPropertyChanged(nameof(InferenceKeySummary));
+                OnPropertyChanged(nameof(InferenceKeyDisplayText));
+                break;
+            case nameof(SupplierEditorSession.InferenceKeyDisplayText):
+                OnPropertyChanged(nameof(InferenceKeyDisplayText));
+                break;
+            case nameof(SupplierEditorSession.KeyActionMessage):
+                OnPropertyChanged(nameof(KeyActionMessage));
+                break;
+            case nameof(SupplierEditorSession.IsDeletingInferenceKey):
+                OnPropertyChanged(nameof(IsDeletingInferenceKey));
                 break;
             case nameof(SupplierEditorSession.Descriptor):
                 OnPropertyChanged(nameof(Descriptor));
@@ -253,11 +233,4 @@ public sealed class SiteEditorViewModel : ObservableObject
     {
         SaveCommand?.RaiseCanExecuteChanged();
     }
-}
-
-file sealed class NullInferenceApiKeyUseCase : IInferenceApiKeyUseCase
-{
-    public InferenceApiKeySummary? GetSummary(string providerId) => null;
-    public InferenceApiKeySummary Save(string providerId, string apiKey, string boundGroup) => throw new InvalidOperationException("推理 key 用例未装配。");
-    public Task DeleteAsync(string providerId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }

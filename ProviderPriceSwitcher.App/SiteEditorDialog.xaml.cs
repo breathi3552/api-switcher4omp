@@ -14,7 +14,6 @@ public sealed partial class SiteEditorDialog : Window
 {
     private readonly SiteEditorViewModel _viewModel;
     private bool _closePending;
-    private bool _deletingInferenceKey;
 
     public SiteEditorViewModel ViewModel => _viewModel;
     public SupplierEditorSession Session => _viewModel.Session;
@@ -73,15 +72,12 @@ public sealed partial class SiteEditorDialog : Window
             && e.AddedItems.OfType<string>().FirstOrDefault() is { } selected)
             _viewModel.CurrentGroup = selected;
     }
-
     private async void DeleteInferenceKeyClick(object sender, RoutedEventArgs e)
     {
-        if (_deletingInferenceKey) return;
-        _deletingInferenceKey = true;
         if (sender is System.Windows.Controls.Button button) button.IsEnabled = false;
         try { await _viewModel.DeleteInferenceKeyAsync(); }
         catch { _viewModel.ReportInferenceKeyDeleteFailure(); }
-        finally { _deletingInferenceKey = false; if (sender is System.Windows.Controls.Button completed) completed.IsEnabled = true; }
+        finally { if (sender is System.Windows.Controls.Button completed) completed.IsEnabled = true; }
     }
 }
 
@@ -91,14 +87,16 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
     private readonly PricingProbeUseCase _probe;
     private readonly IPricingAdapterRegistry _registry;
     private readonly ISiteAccessCredentialStore? _credentials;
+    private readonly IInferenceApiKeyUseCase _inferenceKeyUseCase;
     private readonly IUserNotificationService _notifications;
 
     public SiteEditorDialogFactory(
         Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> create,
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
-        IUserNotificationService notifications)
-        : this(create, probe, registry, null, notifications)
+        IUserNotificationService notifications,
+        IInferenceApiKeyUseCase inferenceKeyUseCase)
+        : this(create, probe, registry, null, notifications, inferenceKeyUseCase)
     {
     }
 
@@ -107,19 +105,21 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
         ISiteAccessCredentialStore? credentials,
-        IUserNotificationService notifications)
+        IUserNotificationService notifications,
+        IInferenceApiKeyUseCase inferenceKeyUseCase)
     {
         _create = create ?? throw new ArgumentNullException(nameof(create));
         _probe = probe ?? throw new ArgumentNullException(nameof(probe));
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _credentials = credentials;
         _notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
+        _inferenceKeyUseCase = inferenceKeyUseCase ?? throw new ArgumentNullException(nameof(inferenceKeyUseCase));
     }
 
     public SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, _credentials, settings.RequestTimeoutSeconds, original, _notifications);
+        var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, _credentials, _inferenceKeyUseCase, settings.RequestTimeoutSeconds, original, _notifications);
         return Create(session, settings, owner);
     }
     public SiteEditorDialog Create(SupplierEditorSession session, LocalAppSettings settings, Window owner)

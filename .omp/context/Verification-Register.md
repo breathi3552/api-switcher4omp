@@ -325,6 +325,15 @@
 - **Final fixed-base dual-axis review:** Standards 与 Spec 审查均 0 发现通过。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #26 模型推理 API Key 分组绑定、原子更新与级联清理证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-09-05` 完成。
+- **scope:** 在 `SupplierEditorSession` 中集中管理模型推理 API key 的原子保存（`SaveInferenceKey`）、二次确认异步删除（`DeleteInferenceKeyAsync`）与状态刷新（`UpdateInferenceKeyStatus`），维护 `InferenceKeySummary` 与 `InferenceKeyDisplayText`；保存时强制绑定当前分组（CurrentGroup），空/空白输入保留现有 key 并保留摘要；删除当前正在生效的供应商的 API key 时联动清除全局当前供应商以及 sidecar 路由快照；在 Session 内部与 UI 按钮层建立可靠的防重入保护（`IsDeletingInferenceKey`）；彻底移除生产代码中的 `NullInferenceApiKeyUseCase`，`SiteEditorDialogFactory` 强制显式注入 `IInferenceApiKeyUseCase`，`SiteEditorViewModel` 委托 Session 管理 API Key 生命周期并清理废弃构造重载。
+- **App runner:** Session 契约测试覆盖未配置 ProviderId 初始状态（null 摘要与 "未配置" 文本）、设置/切换 ProviderId 自动刷新摘要与变更通知、缺失当前分组或 ProviderId 拒绝保存并提示、空/空白 API key 保存保全现有 key 与摘要、有效输入原子保存绑定当前分组并更新脱敏掩码（如 `sk-t…1122`）、明文凭据绝不进入 Session 可观察属性的安全不变量、二次确认取消保留 key、二次确认删除成功清除 key 与摘要、并发调用防重入拒绝、删除异常捕获与状态恢复、联动真实 `InferenceApiKeyUseCase` 清除生效供应商的全局状态（sidecar 路由清空、activeRoute 清空、本地持久化 `ActiveProviderId` 置空、key store 清空）、构造函数空值参数边界断言；STA 冒烟测试覆盖 PasswordBox 凭据输入与更新后立即清空明文、空输入保全现有 key、取消删除保全 key、确认删除期间按钮禁用与 Session 防重入状态、删除完成后安全重置占位符并恢复按钮交互。
+- **Final verification and release:** `pwsh -Command "./eng/Verify.ps1 -Impact CrossLayer -AllRunners"` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh -Command "./eng/Publish.ps1"` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106226667` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** Round 2 Standards 与 Spec 审查均 0 发现通过。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
+
 
 ## Status update protocol
 

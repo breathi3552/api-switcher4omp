@@ -10,9 +10,11 @@ public sealed class SupplierEditorSession : ObservableObject
 {
     private readonly PricingProbeUseCase? _probe;
     private readonly ISiteAccessCredentialStore? _credentials;
+    private readonly IInferenceApiKeyUseCase? _inferenceKeyUseCase;
     private readonly int _requestTimeoutSeconds;
     private readonly IUserNotificationService? _notifications;
-
+    private string? _keyActionMessage;
+    private bool _isDeletingInferenceKey;
     private PricingAdapterDescriptor? _descriptor;
     private string? _authenticationMode;
     private string _providerId = string.Empty;
@@ -36,6 +38,7 @@ public sealed class SupplierEditorSession : ObservableObject
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
         ISiteAccessCredentialStore credentials,
+        IInferenceApiKeyUseCase inferenceKeyUseCase,
         LocalAppSettings settings,
         SiteConfiguration? original = null,
         IUserNotificationService? notifications = null)
@@ -44,6 +47,26 @@ public sealed class SupplierEditorSession : ObservableObject
             (registry ?? throw new ArgumentNullException(nameof(registry))).Descriptors,
             (settings ?? throw new ArgumentNullException(nameof(settings))).Model,
             credentials ?? throw new ArgumentNullException(nameof(credentials)),
+            inferenceKeyUseCase ?? throw new ArgumentNullException(nameof(inferenceKeyUseCase)),
+            settings.RequestTimeoutSeconds,
+            original,
+            notifications)
+    {
+    }
+
+    public SupplierEditorSession(
+        PricingProbeUseCase probe,
+        IPricingAdapterRegistry registry,
+        ISiteAccessCredentialStore credentials,
+        LocalAppSettings settings,
+        SiteConfiguration? original = null,
+        IUserNotificationService? notifications = null)
+        : this(
+            probe ?? throw new ArgumentNullException(nameof(probe)),
+            (registry ?? throw new ArgumentNullException(nameof(registry))).Descriptors,
+            (settings ?? throw new ArgumentNullException(nameof(settings))).Model,
+            credentials ?? throw new ArgumentNullException(nameof(credentials)),
+            null,
             settings.RequestTimeoutSeconds,
             original,
             notifications)
@@ -61,6 +84,7 @@ public sealed class SupplierEditorSession : ObservableObject
             (registry ?? throw new ArgumentNullException(nameof(registry))).Descriptors,
             (settings ?? throw new ArgumentNullException(nameof(settings))).Model,
             null,
+            null,
             settings.RequestTimeoutSeconds,
             original,
             notifications)
@@ -71,7 +95,7 @@ public sealed class SupplierEditorSession : ObservableObject
         IReadOnlyList<PricingAdapterDescriptor> descriptors,
         string defaultModel,
         SiteConfiguration? original = null)
-        : this(null, descriptors, defaultModel, null, 10, original, null)
+        : this(null, descriptors, defaultModel, null, null, 10, original, null)
     {
     }
 
@@ -82,7 +106,7 @@ public sealed class SupplierEditorSession : ObservableObject
         int requestTimeoutSeconds = 10,
         SiteConfiguration? original = null,
         IUserNotificationService? notifications = null)
-        : this(probe, descriptors, defaultModel, null, requestTimeoutSeconds, original, notifications)
+        : this(probe, descriptors, defaultModel, null, null, requestTimeoutSeconds, original, notifications)
     {
     }
 
@@ -94,10 +118,24 @@ public sealed class SupplierEditorSession : ObservableObject
         int requestTimeoutSeconds = 10,
         SiteConfiguration? original = null,
         IUserNotificationService? notifications = null)
+        : this(probe, descriptors, defaultModel, credentials, null, requestTimeoutSeconds, original, notifications)
+    {
+    }
+
+    public SupplierEditorSession(
+        PricingProbeUseCase? probe,
+        IReadOnlyList<PricingAdapterDescriptor> descriptors,
+        string defaultModel,
+        ISiteAccessCredentialStore? credentials,
+        IInferenceApiKeyUseCase? inferenceKeyUseCase,
+        int requestTimeoutSeconds = 10,
+        SiteConfiguration? original = null,
+        IUserNotificationService? notifications = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(requestTimeoutSeconds);
         _probe = probe;
         _credentials = credentials;
+        _inferenceKeyUseCase = inferenceKeyUseCase;
         _requestTimeoutSeconds = requestTimeoutSeconds;
         _notifications = notifications;
 
@@ -125,6 +163,7 @@ public sealed class SupplierEditorSession : ObservableObject
         }
 
         UpdateCredentialStatus();
+        UpdateInferenceKeyStatus();
 
         ProbeCommand = new AsyncCommand(() => ProbeAsync(), HandleError, () => CanProbe);
         CancelProbeCommand = new RelayCommand(CancelProbe, () => IsProbing);
@@ -134,6 +173,18 @@ public sealed class SupplierEditorSession : ObservableObject
     public ObservableCollection<string> GroupOptions { get; } = [];
     public IReadOnlyDictionary<string, decimal>? ProbedGroupRatios => _probedGroupRatios;
     public SiteCredentialSummary CredentialSummary { get; private set; } = new() { ProviderId = string.Empty, Status = SiteCredentialStatus.NotConfigured };
+    public InferenceApiKeySummary? InferenceKeySummary { get; private set; }
+    public string InferenceKeyDisplayText => InferenceKeySummary?.MaskedKey ?? "未配置";
+    public string KeyActionMessage
+    {
+        get => _keyActionMessage ?? string.Empty;
+        private set => SetProperty(ref _keyActionMessage, value);
+    }
+    public bool IsDeletingInferenceKey
+    {
+        get => _isDeletingInferenceKey;
+        private set => SetProperty(ref _isDeletingInferenceKey, value);
+    }
     public AsyncCommand ProbeCommand { get; }
     public RelayCommand CancelProbeCommand { get; }
 
@@ -198,6 +249,7 @@ public sealed class SupplierEditorSession : ObservableObject
             if (SetProperty(ref _providerId, value))
             {
                 UpdateCredentialStatus();
+                UpdateInferenceKeyStatus();
                 NotifyDraftChanged();
             }
         }
@@ -337,6 +389,70 @@ public sealed class SupplierEditorSession : ObservableObject
             CredentialSummary = _credentials.GetSummary(ProviderId.Trim());
         }
         OnPropertyChanged(nameof(CredentialSummary));
+    }
+
+    public bool SaveInferenceKey(string? apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(ProviderId) || string.IsNullOrWhiteSpace(CurrentGroup))
+        {
+            KeyActionMessage = "请先填写当前分组和 API key。";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            KeyActionMessage = InferenceKeySummary is not null ? "已保留现有 API key。" : "请先填写当前分组和 API key。";
+            return false;
+        }
+
+        if (_inferenceKeyUseCase is null)
+        {
+            KeyActionMessage = "推理 key 用例未装配。";
+            return false;
+        }
+
+        _inferenceKeyUseCase.Save(ProviderId.Trim(), apiKey.Trim(), CurrentGroup.Trim());
+        UpdateInferenceKeyStatus();
+        KeyActionMessage = "API key 已更新并安全保存。";
+        return true;
+    }
+
+    public void ReportInferenceKeyDeleteFailure() => KeyActionMessage = "API key 删除失败，请重试。";
+
+    public async Task<bool> DeleteInferenceKeyAsync(CancellationToken cancellationToken = default)
+    {
+        if (_isDeletingInferenceKey) return false;
+        if (string.IsNullOrWhiteSpace(ProviderId) || _inferenceKeyUseCase is null) return false;
+
+        IsDeletingInferenceKey = true;
+        try
+        {
+            if (_notifications is not null && !_notifications.Confirm("确定删除当前供应商的模型推理 API key 吗？", "删除 API key"))
+                return false;
+
+            await _inferenceKeyUseCase.DeleteAsync(ProviderId.Trim(), cancellationToken).ConfigureAwait(false);
+            UpdateInferenceKeyStatus();
+            KeyActionMessage = "API key 已删除。";
+            return true;
+        }
+        catch (Exception)
+        {
+            ReportInferenceKeyDeleteFailure();
+            throw;
+        }
+        finally
+        {
+            IsDeletingInferenceKey = false;
+        }
+    }
+
+    public void UpdateInferenceKeyStatus()
+    {
+        InferenceKeySummary = (_inferenceKeyUseCase is null || string.IsNullOrWhiteSpace(ProviderId))
+            ? null
+            : _inferenceKeyUseCase.GetSummary(ProviderId.Trim());
+        OnPropertyChanged(nameof(InferenceKeySummary));
+        OnPropertyChanged(nameof(InferenceKeyDisplayText));
     }
 
     public void CancelProbe()
