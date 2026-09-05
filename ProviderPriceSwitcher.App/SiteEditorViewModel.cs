@@ -7,32 +7,11 @@ namespace ProviderPriceSwitcher.App;
 
 public sealed class SiteEditorViewModel : ObservableObject
 {
-    private readonly IUserNotificationService _notifications;
-    private readonly LocalAppSettings _settings;
-
-    public SiteEditorViewModel(
-        SupplierEditorSession session,
-        IUserNotificationService notifications,
-        LocalAppSettings settings)
+    public SiteEditorViewModel(SupplierEditorSession session)
     {
         Session = session ?? throw new ArgumentNullException(nameof(session));
-        _notifications = notifications;
-        _settings = settings;
-
         Session.PropertyChanged += OnSessionPropertyChanged;
-
         SaveCommand = new RelayCommand(Save, () => CanSave);
-    }
-
-    public SiteEditorViewModel(
-        PricingProbeUseCase probe,
-        IPricingAdapterRegistry registry,
-        ISiteAccessCredentialStore credentials,
-        IUserNotificationService notifications,
-        LocalAppSettings settings,
-        SiteConfiguration? original = null)
-        : this(new SupplierEditorSession(probe, registry, credentials, settings, original, notifications), notifications, settings)
-    {
     }
 
     public SupplierEditorSession Session { get; }
@@ -66,11 +45,7 @@ public sealed class SiteEditorViewModel : ObservableObject
     public string CurrentGroup
     {
         get => Session.CurrentGroup;
-        set
-        {
-            if (Session.CurrentGroup == value) return;
-            Session.CurrentGroup = value;
-        }
+        set => Session.CurrentGroup = value;
     }
 
     public string Model
@@ -140,11 +115,7 @@ public sealed class SiteEditorViewModel : ObservableObject
 
     public bool ClearCredential() => Session.ClearCredential();
 
-    public void UpdateCredentialStatus()
-    {
-        Session.UpdateCredentialStatus();
-        OnPropertyChanged(nameof(CredentialSummary));
-    }
+    public void UpdateCredentialStatus() => Session.UpdateCredentialStatus();
 
     public Task CloseAsync() => Session.CloseAsync();
 
@@ -159,78 +130,11 @@ public sealed class SiteEditorViewModel : ObservableObject
     public bool TryBuild(out SiteConfiguration site) => Session.TryBuild(out site);
     private void OnSessionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        switch (e.PropertyName)
+        if (string.IsNullOrEmpty(e.PropertyName)) return;
+        OnPropertyChanged(e.PropertyName);
+        if (e.PropertyName == nameof(SupplierEditorSession.CanSave))
         {
-            case nameof(SupplierEditorSession.ProviderId):
-                OnPropertyChanged(nameof(ProviderId));
-                OnPropertyChanged(nameof(CredentialSummary));
-                OnPropertyChanged(nameof(InferenceKeySummary));
-                OnPropertyChanged(nameof(InferenceKeyDisplayText));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.InferenceKeySummary):
-                OnPropertyChanged(nameof(InferenceKeySummary));
-                OnPropertyChanged(nameof(InferenceKeyDisplayText));
-                break;
-            case nameof(SupplierEditorSession.InferenceKeyDisplayText):
-                OnPropertyChanged(nameof(InferenceKeyDisplayText));
-                break;
-            case nameof(SupplierEditorSession.KeyActionMessage):
-                OnPropertyChanged(nameof(KeyActionMessage));
-                break;
-            case nameof(SupplierEditorSession.IsDeletingInferenceKey):
-                OnPropertyChanged(nameof(IsDeletingInferenceKey));
-                break;
-            case nameof(SupplierEditorSession.Descriptor):
-                OnPropertyChanged(nameof(Descriptor));
-                OnPropertyChanged(nameof(AuthenticationModes));
-                OnPropertyChanged(nameof(CredentialVisible));
-                OnPropertyChanged(nameof(CredentialSummary));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.CredentialSummary):
-                OnPropertyChanged(nameof(CredentialSummary));
-                break;
-            case nameof(SupplierEditorSession.AuthenticationMode):
-                OnPropertyChanged(nameof(AuthenticationMode));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.CurrentGroup):
-                OnPropertyChanged(nameof(CurrentGroup));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.CurrentGroupRatio):
-                OnPropertyChanged(nameof(CurrentGroupRatio));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.IsProbing):
-                OnPropertyChanged(nameof(IsProbing));
-                OnPropertyChanged(nameof(CanSave));
-                OnPropertyChanged(nameof(CanProbe));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.ProbeState):
-                OnPropertyChanged(nameof(ProbeState));
-                break;
-            case nameof(SupplierEditorSession.ProbeMessage):
-                OnPropertyChanged(nameof(ProbeMessage));
-                break;
-            case nameof(SupplierEditorSession.CanSave):
-                OnPropertyChanged(nameof(CanSave));
-                RaiseCommands();
-                break;
-            case nameof(SupplierEditorSession.CanProbe):
-                OnPropertyChanged(nameof(CanProbe));
-                break;
-            default:
-                if (!string.IsNullOrEmpty(e.PropertyName))
-                    OnPropertyChanged(e.PropertyName);
-                break;
+            SaveCommand.RaiseCanExecuteChanged();
         }
-    }
-
-    private void RaiseCommands()
-    {
-        SaveCommand?.RaiseCanExecuteChanged();
     }
 }

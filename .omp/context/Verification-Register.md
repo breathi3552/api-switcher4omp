@@ -334,6 +334,14 @@
 - **Final fixed-base dual-axis review:** Round 2 Standards 与 Spec 审查均 0 发现通过。
 - **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
+## Issue #27 全量 Cutover、ViewModel/Dialog 精简与全链路验证证据
+
+- **status:** implementation complete; final CrossLayer、双轴审查和 release evidence 于 `2026-09-05` 完成。
+- **scope:** 完成彻底的 Clean Cutover：将 `SiteEditorViewModel` 和 `SiteEditorDialog` 精简为纯呈现与窗口生命周期适配器，移除所有未使用的状态字段（`_notifications`、`_settings`）、硬编码冗余的 switch 分支和过时代码路径；`SiteEditorDialogFactory` 精简会话注入签名，移除冗余的 `LocalAppSettings` 传参；重构 `ProviderPriceSwitcher.App.Tests`，将原先在 STA 中通过繁重 UI 事件模拟的会话逻辑全面迁移至确定性的 Session 契约测试，STA 冒烟测试仅聚焦于 PasswordBox 清空、ComboBox 焦点与 Closing 拦截。
+- **App runner:** Session 契约测试覆盖初始 Idle 状态、字段变更与草稿验证、探测成功/失败保全分组与倍率规则、探测超时与异常文案映射、站点凭据保存/清除/二次确认与脱敏摘要、推理 API key 保存/清除/二次确认与全局级联清理、构造函数与工厂参数空值边界断言；STA 冒烟测试聚焦覆盖真实 ComboBox 焦点与编辑/候选选择更新 ViewModel、PasswordBox（TokenBox/CookieBox/InferenceKeyBox）输入后在 save/clear 按钮点击后立即在 finally 块中清空明文并展示安全脱敏占位符、Modal Save 保存成功并关闭窗口、正在探测时关闭窗口拦截 Closing 并异步取消等待 `CloseAsync`。
+- **Final verification and release:** `pwsh -NoProfile -File eng/Verify.ps1 -Impact CrossLayer -AllRunners` 通过 static manifest/dependency checks、SDK `8.0.423`、solution build（0 warnings / 0 errors）、format verification 和全部八个 runner；`pwsh -NoProfile -File eng/Publish.ps1` 生成并验收 framework-dependent（`173568` bytes）和 self-contained（`106226284` bytes）产物及 sidecar manifest hash。
+- **Final fixed-base dual-axis review:** Round 1 Standards 与 Spec 审查均 0 发现通过。
+- **Isolation:** 全部场景使用临时 roots、合成设置和 fake/loopback；未触及真实 Provider、真实凭据、真实用户配置、生产 OMP root 或运行中的 OMP 进程。
 
 ## Status update protocol
 

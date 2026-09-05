@@ -7,7 +7,7 @@ namespace ProviderPriceSwitcher.App;
 public interface ISiteEditorDialogFactory
 {
     SiteEditorDialog Create(SiteConfiguration? original, LocalAppSettings settings, Window owner);
-    SiteEditorDialog Create(SupplierEditorSession session, LocalAppSettings settings, Window owner);
+    SiteEditorDialog Create(SupplierEditorSession session, Window owner);
 }
 
 public sealed partial class SiteEditorDialog : Window
@@ -83,7 +83,7 @@ public sealed partial class SiteEditorDialog : Window
 
 public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
 {
-    private readonly Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> _create;
+    private readonly Func<SupplierEditorSession, SiteEditorViewModel> _create;
     private readonly PricingProbeUseCase _probe;
     private readonly IPricingAdapterRegistry _registry;
     private readonly ISiteAccessCredentialStore? _credentials;
@@ -91,7 +91,7 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
     private readonly IUserNotificationService _notifications;
 
     public SiteEditorDialogFactory(
-        Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> create,
+        Func<SupplierEditorSession, SiteEditorViewModel> create,
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
         IUserNotificationService notifications,
@@ -101,7 +101,7 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
     }
 
     public SiteEditorDialogFactory(
-        Func<SupplierEditorSession, LocalAppSettings, SiteEditorViewModel> create,
+        Func<SupplierEditorSession, SiteEditorViewModel> create,
         PricingProbeUseCase probe,
         IPricingAdapterRegistry registry,
         ISiteAccessCredentialStore? credentials,
@@ -120,12 +120,12 @@ public sealed class SiteEditorDialogFactory : ISiteEditorDialogFactory
     {
         ArgumentNullException.ThrowIfNull(settings);
         var session = new SupplierEditorSession(_probe, _registry.Descriptors, settings.Model, _credentials, _inferenceKeyUseCase, settings.RequestTimeoutSeconds, original, _notifications);
-        return Create(session, settings, owner);
+        return Create(session, owner);
     }
-    public SiteEditorDialog Create(SupplierEditorSession session, LocalAppSettings settings, Window owner)
+
+    public SiteEditorDialog Create(SupplierEditorSession session, Window owner)
     {
         ArgumentNullException.ThrowIfNull(session);
-        ArgumentNullException.ThrowIfNull(settings);
-        return new(_create(session, settings), owner);
+        return new(_create(session), owner);
     }
 }
